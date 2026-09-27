@@ -46,6 +46,7 @@ import { scheduleTokenFileReHarden } from '../shared/security';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
+import { screenShowsAgentDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
 import { readPendingToolUse } from './transcript/pendingToolUse';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
@@ -4983,6 +4984,8 @@ function wireEvents(
     outputMark: (id) => sessionManager.getSession(id)?.ringBuffer.totalBytesWritten ?? null,
     render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
     clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
+    holdsPrompt: (id) => approvalRegistry?.list().pending
+      .some((request) => request.sessionId === id && request.kind === 'terminal_prompt') === true,
     log: (level, message) => log(level, message),
   });
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
@@ -6714,6 +6717,17 @@ async function main(): Promise<void> {
     },
     log: (level, message) => log(level, message),
     now: () => Date.now(),
+    // A nudge ends with an Enter; an approval waiting on a human is quiet, so
+    // the quiet gate alone would press it. Hold on a pending approval record,
+    // a pane blocked on a human, or a dialog on the visible screen.
+    approvalBlocked: (id) =>
+      sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true
+      || approvalRegistry?.list().pending.some((request) => request.sessionId === id) === true,
+    screenShowsApproval: async (id) => {
+      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot);
+      if (!frame || frame.rows.every((row) => !row.trim())) return null;
+      return screenShowsAgentDialog(frame.rows);
+    },
   });
   // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s).
   const processMonitor = new ProcessMonitor((config.daemon.livenessIntervalSec ?? 15) * 1000);

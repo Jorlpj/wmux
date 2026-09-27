@@ -837,13 +837,22 @@ localCompletionAlarm = new CompletionAlarm({
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow, {}, () => daemonClient);
-registerInputRpc(
+const inputRpc = registerInputRpc(
   rpcRouter,
   ptyManager,
   () => mainWindow,
   () => daemonClient,
   makeRoleBindingResolver(() => mainWindow),
   (ptyId, data) => ptyBridge.noteInterruptInput(ptyId, data),
+);
+// Non-operator deliveries (A2A, company, channel mention nudges) are pasted
+// and submitted here, behind the same approval guard as `input.send`, checked
+// again right before the Enter. Registered once, beside the router, so
+// crash-recovery handler reloads do not double-register it.
+ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent: unknown) =>
+  typeof ptyId === 'string' && ptyId && typeof text === 'string'
+    ? inputRpc.gatedSubmit(ptyId, text, typeof agent === 'string' ? agent : null)
+    : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
 );
 registerApprovalsRpc(rpcRouter, () => daemonClient);
 registerDeckRpc(rpcRouter, () => mainWindow);
