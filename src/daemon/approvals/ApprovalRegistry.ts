@@ -99,9 +99,10 @@ import type {
   ApprovalResolveParams,
   ApprovalResolveResult,
   AnswerRefusalReason,
+  TerminalPromptDetail,
   TerminalPromptNote,
 } from './types';
-import { TERMINAL_PROMPT_WEB_ANSWER } from './types';
+import { TERMINAL_PROMPT_DETAIL_MAX_BYTES, TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE } from './types';
 import type { QuestionShape } from './askUserQuestion';
 
 /** The pane's state at one instant: output bytes, key-carrying input, the PTY incarnation. */
@@ -139,24 +140,95 @@ interface DialogRead {
 
 /** The tool call a dialog is bound to (transcript, or the PermissionRequest hook). */
 interface ToolCallBinding {
-  /** The transcript `tool_use` id; absent for a hook-only binding without one. */
+  /** The transcript `tool_use` id; absent for a hook binding. */
   id?: string;
   name: string;
   input: Record<string, unknown>;
+  /** Transcript bindings: unanswered `tool_use` blocks in the window (see PendingToolUse). */
+  unanswered?: number;
+  /** Hook bindings: the hook's `prompt_id`, an extra discriminator. */
+  promptId?: string;
+  /** A note's own input with no evidence behind it: summary and label only. */
+  unbindable?: boolean;
+}
+
+/** JSON with object keys sorted, so the same input hashes the same from any source. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** sha256 (hex) of a tool call's WHOLE input — every field, untruncated. */
+function toolInputHash(input: Record<string, unknown>): string {
+  return crypto.createHash('sha256').update(canonicalJson(input)).digest('hex');
 }
 
 /**
- * A dialog's fingerprint bound to one tool call instance AND to the pane's
+ * A dialog's fingerprint bound to one tool call instance — its `tool_use` id
+ * AND a hash of its whole input, so a command longer than anything the
+ * screen or the record shows is still covered in full — and to the pane's
  * input epoch (the fence revision it was read at). A key or click since the
  * phone's read therefore always shows up as a different fingerprint: the
  * refreshed record the phone must re-confirm.
  */
-function bindFingerprint(screen: string, toolUseId: string | undefined, keyRevision: number | undefined): string {
+function bindFingerprint(
+  screen: string,
+  toolUseId: string | undefined,
+  keyRevision: number | undefined,
+  inputHash: string | undefined,
+): string {
   return crypto
     .createHash('sha256')
-    .update(`${screen}|${toolUseId ?? ''}|${keyRevision ?? ''}`)
+    .update(`${screen}|${toolUseId ?? ''}|${keyRevision ?? ''}|${inputHash ?? ''}`)
     .digest('hex')
     .slice(0, screen.length);
+}
+
+/**
+ * What a `terminal_prompt` record was minted from, kept on EVERY such record
+ * (answerable or not) under a Symbol key: it lives exactly as long as the
+ * record in daemon memory and never reaches JSON — approvals.json, the pipe
+ * RPC, SSE and the push payload all serialize without it. A daemon restart
+ * expires every pending record, so nothing is lost with it.
+ */
+const IDENTITY: unique symbol = Symbol('terminal-prompt-identity');
+interface TerminalPromptIdentity {
+  /** The screen hash of the dialog read at creation; absent when none was read. */
+  screenFp?: string;
+  /** The pane at the instant the record was minted (the read, else the mint). */
+  mark?: { keyInputRevision: number; incarnation: string | null };
+  /**
+   * The tool call the record was bound to, with its whole input's hash: by
+   * its transcript id, or (no id) by the PermissionRequest hook's evidence.
+   */
+  call?: { id?: string; name: string; command: string; description?: string; inputHash: string; promptId?: string };
+  /** The dialog read at creation spelled exactly that call's command. */
+  matched: boolean;
+  /** Matched with its top scrolled off (see buildTerminalPrompt). */
+  topCut: boolean;
+}
+type WithIdentity = ApprovalRequest & { [IDENTITY]?: TerminalPromptIdentity };
+const identityOf = (r: ApprovalRequest): TerminalPromptIdentity | undefined => (r as WithIdentity)[IDENTITY];
+
+/**
+ * The PermissionRequest hook's word that a call is waiting on its dialog: the
+ * call's tool and whole input (and its hash), the hook's `prompt_id`, and the
+ * pane's key revision / PTY incarnation when it arrived. Kept per pane from
+ * the hook until the pane's records are swept; two at once means two calls
+ * waiting, and then none of them proves anything.
+ */
+interface PermissionEvidence {
+  name: string;
+  input: Record<string, unknown>;
+  inputHash: string;
+  promptId?: string;
+  mark: { keyInputRevision: number; incarnation: string | null } | null;
+  /** When the hook arrived (registry clock). */
+  at: number;
 }
 
 /** One line of log-safe text: control characters gone, capped. */
@@ -254,6 +326,12 @@ export interface ApprovalRegistryDeps {
    * its dialog binds to this call (or to the PermissionRequest hook's input).
    */
   pendingToolUse?: (sessionId: string) => PendingToolUse | null;
+  /**
+   * The pane's own Claude session id (its transcript's basename), or null when
+   * unknown. A PermissionRequest hook counts as evidence for this pane only
+   * when its `session_id` is this one.
+   */
+  agentSessionId?: (sessionId: string) => string | null;
   /** `terminal_prompt` — the pane's state right now, read synchronously just before the write. */
   promptScreenMark?: (sessionId: string) => PromptScreenMark | null;
   /** Injected for tests: the wait between creation-time screen reads. */
@@ -296,6 +374,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   private readonly sweepSeq = new Map<string, number>();
   /** Per pane: the pending refresh after a key/click (see noteFenceInput). */
   private readonly refreshTimers = new Map<string, () => void>();
+  /**
+   * Per pane: the last PermissionRequest hook's call (see PermissionEvidence).
+   * Set by a hook note, dropped by every sweep of the pane's records.
+   */
+  private readonly permissionEvidence = new Map<string, PermissionEvidence[]>();
 
   constructor(deps: ApprovalRegistryDeps) {
     this.deps = deps;
@@ -349,6 +432,32 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     pending.sort((a, b) => a.createdAt - b.createdAt);
     terminal.sort((a, b) => (b.resolvedAt ?? b.createdAt) - (a.resolvedAt ?? a.createdAt));
     return { pending, recentlyResolved: terminal };
+  }
+
+  /**
+   * The full command a PENDING bound `terminal_prompt` is about, for
+   * `GET /api/approvals/:id/detail`. Null for anything else.
+   */
+  terminalPromptDetail(id: string): TerminalPromptDetail | null {
+    const record = this.requests.find((r) => r.id === id);
+    if (!record || record.kind !== 'terminal_prompt' || record.state !== 'pending') return null;
+    const call = record.promptFingerprint ? identityOf(record)?.call : undefined;
+    if (!call) return null;
+    const full = Buffer.from(call.command, 'utf8');
+    let command = call.command;
+    const truncated = full.length > TERMINAL_PROMPT_DETAIL_MAX_BYTES;
+    if (truncated) {
+      // Cut on a character boundary: drop a partial trailing UTF-8 sequence.
+      command = full.subarray(0, TERMINAL_PROMPT_DETAIL_MAX_BYTES).toString('utf8').replace(/\uFFFD+$/, '');
+    }
+    return {
+      id: record.id,
+      ...(record.toolName ? { toolName: record.toolName } : {}),
+      command,
+      commandHash: crypto.createHash('sha256').update(full).digest('hex'),
+      commandBytes: full.length,
+      truncated,
+    };
   }
 
   /** Count only — skips the copy+sort `list()` does for callers that just need a number. */
@@ -543,6 +652,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   private async noteTerminalPromptInner(note: TerminalPromptNote): Promise<void> {
     const { sessionId } = note;
     if (!isClaudeFamilyAgent(note.agent)) return;
+    if (note.source === 'hook' && this.notePermissionEvidence(note)) {
+      // A record already up for this dialog (the detector saw it first, or the
+      // transcript lagged) gets another look now that the hook's proof is in.
+      const stale = this.requests.find((r) => r.state === 'pending' && r.sessionId === sessionId
+        && r.kind === 'terminal_prompt' && !r.promptFingerprint && r.pressedAt === undefined);
+      if (stale && this.deps.readPromptScreen) {
+        this.upgradeTerminalPromptLater(note, stale.id).catch((err: unknown) => {
+          this.deps.log?.('warn', `[approvals] terminal prompt upgrade failed for ${sessionId}: ${String(err)}`);
+        });
+      }
+    }
     if (this.terminalPromptReads.has(sessionId)) return;
     // Pinned BEFORE any await: only this record may be superseded below. A
     // question created while the screen is read is a new one, not stale.
@@ -592,6 +712,61 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     } finally {
       this.terminalPromptReads.delete(sessionId);
     }
+  }
+
+  /**
+   * Remember that the PermissionRequest hook fired for this call — only when
+   * its Claude `session_id` is the pane's own agent session. Returns whether
+   * it was kept.
+   */
+  private notePermissionEvidence(note: TerminalPromptNote): boolean {
+    if (!note.toolInput || !note.toolName || !note.hookSessionId) return false;
+    let own: string | null = null;
+    try {
+      own = this.deps.agentSessionId?.(note.sessionId) ?? null;
+    } catch {
+      own = null;
+    }
+    if (!own || own !== note.hookSessionId) return false;
+    const mark = this.deps.promptScreenMark?.(note.sessionId) ?? null;
+    const list = this.permissionEvidence.get(note.sessionId) ?? [];
+    list.push({
+      name: note.toolName,
+      input: note.toolInput,
+      inputHash: toolInputHash(note.toolInput),
+      ...(note.promptId ? { promptId: note.promptId } : {}),
+      mark: mark ? { keyInputRevision: mark.keyInputRevision, incarnation: mark.incarnation } : null,
+      at: this.now(),
+    });
+    this.permissionEvidence.set(note.sessionId, list);
+    return true;
+  }
+
+  /**
+   * A `terminal_prompt` record settled: its PermissionRequest is no longer
+   * pending. Drop every piece of evidence that is its (the same whole input)
+   * or older than it; a hook that arrived after it was minted, for another
+   * call, is the next dialog's and stays.
+   */
+  private pruneEvidence(record: ApprovalRequest): void {
+    const list = this.permissionEvidence.get(record.sessionId);
+    if (!list) return;
+    const hash = identityOf(record)?.call?.inputHash;
+    const kept = list.filter((e) => e.at > record.createdAt && e.inputHash !== hash);
+    if (kept.length > 0) this.permissionEvidence.set(record.sessionId, kept);
+    else this.permissionEvidence.delete(record.sessionId);
+  }
+
+  /** The ONE pending PermissionRequest on this pane, or null (none, or two at once). */
+  private soleEvidence(sessionId: string): PermissionEvidence | null {
+    const list = this.permissionEvidence.get(sessionId) ?? [];
+    return list.length === 1 ? list[0]! : null;
+  }
+
+  /** Does the pane's one pending PermissionRequest name exactly this call? */
+  private evidenceAgrees(sessionId: string, binding: { name: string; input: Record<string, unknown> }): boolean {
+    const evidence = this.soleEvidence(sessionId);
+    return !!evidence && evidence.name === binding.name && evidence.inputHash === toolInputHash(binding.input);
   }
 
   /**
@@ -744,7 +919,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   /**
    * The tool call the dialog should be for: the transcript's pending
    * `tool_use` first (it is the agent's own record, and its id binds one
-   * dialog instance), else the PermissionRequest hook's `tool_input`.
+   * dialog instance), else the pane's ONE pending PermissionRequest (the
+   * hook's `tool_input`; Claude Code 2.1.283 often writes the `tool_use` to
+   * the transcript only after the dialog is answered). A note's own input
+   * that is not such evidence (another session, two pending) is a label for
+   * the card, never a binding.
    */
   private bindingFor(sessionId: string, note: TerminalPromptNote): ToolCallBinding | null {
     let pending: PendingToolUse | null = null;
@@ -753,10 +932,19 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     } catch (err) {
       this.deps.log?.('warn', `[approvals] transcript read failed for ${sessionId}: ${String(err)}`);
     }
-    if (pending) return { id: pending.id, name: pending.name, input: pending.input };
-    if (note.toolInput && note.toolName) {
-      return { ...(note.toolUseId ? { id: note.toolUseId } : {}), name: note.toolName, input: note.toolInput };
+    if (pending) {
+      return {
+        id: pending.id,
+        name: pending.name,
+        input: pending.input,
+        ...(pending.unanswered !== undefined ? { unanswered: pending.unanswered } : {}),
+      };
     }
+    const evidence = this.soleEvidence(sessionId);
+    if (evidence) {
+      return { name: evidence.name, input: evidence.input, ...(evidence.promptId ? { promptId: evidence.promptId } : {}) };
+    }
+    if (note.toolInput && note.toolName) return { name: note.toolName, input: note.toolInput, unbindable: true };
     return null;
   }
 
@@ -804,13 +992,39 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     const summary = boundRecordText(command, TERMINAL_PROMPT_SUMMARY_MAX)
       ?? (parsed ? boundRecordText(parsed.commandText, TERMINAL_PROMPT_SUMMARY_MAX) : undefined)
       ?? note.summary;
-    const bound = !!parsed && !!binding && !!command
-      && command.length <= TERMINAL_PROMPT_SUMMARY_MAX
-      && dialogMatchesToolCall(parsed, { name: binding.name, command, ...(description ? { description } : {}) });
-    const answer = bound ? terminalPromptAnswerability(parsed, TERMINAL_PROMPT_SUMMARY_MAX) : null;
+    // The summary is capped for display; the binding takes the WHOLE command.
+    const call = binding && command && !binding.unbindable
+      ? { name: binding.name, command, ...(description ? { description } : {}) }
+      : null;
+    const topCut = !!parsed && !parsed.topRuleFound;
+    const mark = read?.mark ?? this.deps.promptScreenMark?.(note.sessionId) ?? null;
+    const bound = !!parsed && !!binding && !!call && (binding.id
+      // By the transcript's own call id. The hook's evidence, when there is
+      // any, must name the same call. A dialog whose top scrolled off also
+      // needs that evidence and the call to be provably the only one pending:
+      // an unanswered tool_use is also what a RUNNING tool looks like, and its
+      // output can print a question, options and a footer under its tail.
+      ? ((this.permissionEvidence.get(note.sessionId) ?? []).length === 0 || this.evidenceAgrees(note.sessionId, binding))
+        && (parsed.topRuleFound
+          ? dialogMatchesToolCall(parsed, call)
+          : binding.unanswered === 1
+            && this.evidenceAgrees(note.sessionId, binding)
+            && dialogMatchesToolCall(parsed, call, { topCut: true }))
+      // By the pane's ONE pending PermissionRequest (bindingFor): the dialog's
+      // title names its tool, no key reached the pane and the PTY is the same
+      // since the hook arrived, and the rows spell the hook's whole command.
+      : this.evidenceAgrees(note.sessionId, binding)
+        && !!mark && !!this.soleEvidence(note.sessionId)?.mark
+        && this.soleEvidence(note.sessionId)!.mark!.keyInputRevision === mark.keyInputRevision
+        && this.soleEvidence(note.sessionId)!.mark!.incarnation === mark.incarnation
+        && toolFromDialogTitle(parsed.title) === binding.name
+        && dialogMatchesToolCall(parsed, call, { topCut })
+    );
+    const answer = bound ? terminalPromptAnswerability(parsed) : null;
     const answerable = !!answer?.answerable;
     const risky = terminalPromptTextRisk(command, summary, parsed?.reason);
-    return {
+    const inputHash = binding && !binding.unbindable ? toolInputHash(binding.input) : undefined;
+    const record: WithIdentity = {
       id: this.newId(),
       sessionId: note.sessionId,
       ...(note.workspaceId ? { workspaceId: note.workspaceId } : {}),
@@ -824,7 +1038,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
             question: parsed.question,
             ...(parsed.reason ? { reason: parsed.reason } : {}),
             choices: answer!.choices,
-            promptFingerprint: bindFingerprint(parsed.fingerprint, binding?.id, read.mark.keyInputRevision),
+            promptFingerprint: bindFingerprint(parsed.fingerprint, binding?.id, read.mark.keyInputRevision, inputHash),
             ...(binding?.id ? { toolUseId: binding.id } : {}),
             keyRevisionAtCreate: read.mark.keyInputRevision,
           }
@@ -833,6 +1047,26 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       createdAt: this.now(),
       state: 'pending',
     };
+    // Non-enumerable: a spread copy (list results, event payloads) never
+    // carries it, so the full command stays inside the registry.
+    const identity: TerminalPromptIdentity = {
+      ...(parsed ? { screenFp: parsed.fingerprint } : {}),
+      ...(mark ? { mark: { keyInputRevision: mark.keyInputRevision, incarnation: mark.incarnation } } : {}),
+      ...(call && inputHash
+        ? {
+            call: {
+              ...call,
+              ...(binding?.id ? { id: binding.id } : {}),
+              ...(binding?.promptId ? { promptId: binding.promptId } : {}),
+              inputHash,
+            },
+          }
+        : {}),
+      matched: bound,
+      topCut: bound && topCut,
+    };
+    Object.defineProperty(record, IDENTITY, { value: identity, enumerable: false });
+    return record;
   }
 
   /**
@@ -863,6 +1097,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // Stamped at call time. The cooldown remembers WHICH dialog was released,
     // so only a repeat of that same dialog is held back.
     this.sweepSeq.set(sessionId, (this.sweepSeq.get(sessionId) ?? 0) + 1);
+    // The turn, the session or the pane is over: no PermissionRequest from it
+    // is pending any more. (A dialog leaving the screen settles its record,
+    // which prunes that record's own evidence — see pruneEvidence.)
+    if (reason !== 'screen-cleared' && reason !== 'answered-locally' && reason !== 'prompt-gone') {
+      this.permissionEvidence.delete(sessionId);
+    }
     if (reason === 'screen-cleared') {
       const released = this.requests.find(
         (r) => r.state === 'pending' && r.sessionId === sessionId && r.kind === 'terminal_prompt',
@@ -1208,10 +1448,51 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * which tool and choice, the fingerprint's first 8 characters. Never the
    * command or the reason line.
    */
+  /**
+   * Can the daemon PROVE the dialog on screen now is the one this record was
+   * minted for? The same call (transcript id and whole-input hash still the
+   * pending call's), the same PTY incarnation and no key/click since the
+   * record was created, the same dialog text, and its rows still spelling that
+   * call's command. Any doubt is `false`: the caller writes nothing.
+   */
+  private provenDialog(record: ApprovalRequest, live: DialogRead): 'ok' | 'call' | 'input' | 'screen' {
+    const identity = identityOf(record);
+    const call = identity?.call;
+    if (!identity?.matched || !call || !identity.mark || !identity.screenFp) return 'screen';
+    let pending: PendingToolUse | null = null;
+    try {
+      pending = this.deps.pendingToolUse?.(record.sessionId) ?? null;
+    } catch {
+      pending = null;
+    }
+    const sameCall = (c: { name: string; input: Record<string, unknown> }): boolean =>
+      c.name === call.name && toolInputHash(c.input) === call.inputHash;
+    if (call.id) {
+      if (!pending || pending.id !== call.id || !sameCall(pending)) return 'call';
+    } else {
+      // Bound by the hook: still the pane's ONE pending PermissionRequest, for
+      // the same whole input (and the same turn, when the hook named one); a
+      // transcript call that has appeared since must be that call too.
+      const evidence = this.soleEvidence(record.sessionId);
+      if (!evidence || !sameCall(evidence)) return 'call';
+      if (call.promptId && evidence.promptId && evidence.promptId !== call.promptId) return 'call';
+      if (pending && !sameCall(pending)) return 'call';
+    }
+    if (live.mark.incarnation !== identity.mark.incarnation || live.mark.keyInputRevision !== identity.mark.keyInputRevision) {
+      return 'input';
+    }
+    if (live.parsed.fingerprint !== identity.screenFp) return 'screen';
+    const matches = live.parsed.topRuleFound
+      ? dialogMatchesToolCall(live.parsed, call)
+      : identity.topCut && dialogMatchesToolCall(live.parsed, call, { topCut: true });
+    return matches ? 'ok' : 'screen';
+  }
+
   private async resolveTerminalPrompt(
     params: ApprovalResolveParams,
     record: ApprovalRequest,
   ): Promise<ApprovalResolveResult> {
+    if (params.terminalPromptDecline !== undefined) return this.declineTerminalPrompt(params, record);
     const choice = record.choices?.find((c) => c.key === params.choiceKey);
     const audit = (outcome: string): void => {
       this.deps.log?.(
@@ -1265,42 +1546,26 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
 
     for (let attempt = 1; attempt <= TERMINAL_PROMPT_ANSWER_ATTEMPTS; attempt++) {
-      // The call the dialog is for must still be the one pending.
-      let callChanged = false;
-      if (record.toolUseId) {
-        let pending: PendingToolUse | null = null;
-        try {
-          pending = this.deps.pendingToolUse?.(record.sessionId) ?? null;
-        } catch {
-          pending = null;
-        }
-        callChanged = !pending || pending.id !== record.toolUseId;
-      }
       const live = await this.readActiveDialog(record.sessionId);
       if (!live) return refuse('prompt-changed');
-      if (callChanged) {
-        // Another call's dialog is up (or none is pending): replace the record
-        // with what is there now, and refuse this answer.
+      // Everything the key rests on, re-proved from this read. A different
+      // call, a key or click since the record appeared (a human is at the
+      // terminal), or changed rows: never pressed through — the record is
+      // refreshed from this read (a new id and fingerprint, the reflex guard
+      // restarted), so the phone re-reads and can confirm what is up now.
+      const proven = this.provenDialog(record, live);
+      if (proven !== 'ok' || record.toolUseId !== identityOf(record)?.call?.id) {
+        const superseded = await this.supersedeWithFresh(record, live);
+        audit(`prompt-changed:${proven}`);
+        return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
+      }
+      const inputHash = identityOf(record)?.call?.inputHash;
+      if (bindFingerprint(live.parsed.fingerprint, record.toolUseId, record.keyRevisionAtCreate, inputHash) !== record.promptFingerprint) {
         const superseded = await this.supersedeWithFresh(record, live);
         audit('prompt-changed');
         return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
       }
-      // A key or click since the record appeared: a human is at the terminal,
-      // and what the phone confirmed may no longer be what is selected. Never
-      // pressed through — but the record is refreshed from this read (a new id
-      // and fingerprint, the reflex guard restarted), so the phone re-reads and
-      // can confirm the dialog as it is now.
-      if (record.keyRevisionAtCreate !== undefined && live.mark.keyInputRevision !== record.keyRevisionAtCreate) {
-        const superseded = await this.supersedeWithFresh(record, live);
-        audit('prompt-changed');
-        return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
-      }
-      if (bindFingerprint(live.parsed.fingerprint, record.toolUseId, record.keyRevisionAtCreate) !== record.promptFingerprint) {
-        const superseded = await this.supersedeWithFresh(record, live);
-        audit('prompt-changed');
-        return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
-      }
-      const stillAnswerable = terminalPromptAnswerability(live.parsed, TERMINAL_PROMPT_SUMMARY_MAX);
+      const stillAnswerable = terminalPromptAnswerability(live.parsed);
       if (!stillAnswerable.choices.some((c) => c.key === choice.key && c.label === choice.label)) {
         return refuse('prompt-changed');
       }
@@ -1368,6 +1633,143 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
+   * Decline the agent's own terminal dialog from a phone: ONE Esc, the
+   * dialog's cancel key. Allowed on a record without Yes/No choices too (a
+   * row the TUI cut, no plain Yes) — but ONLY when the daemon can prove the
+   * dialog on screen is the one the record was minted for. Never "some
+   * dialog is active": an Esc into another call's dialog cancels that call.
+   *
+   * Outside the mutation chain (reads only):
+   *   1. settled → `already-resolved` / `expired`; answered → `already-answered`
+   *   2. who: a human through the web decline route (its Symbol marker) and
+   *      `decision:'deny'` with no `choiceKey` → else `answer-in-terminal` /
+   *      `invalid-choice`
+   *   3. an echoed fingerprint must be the record's → else `prompt-changed`
+   *   4. when: not within TERMINAL_PROMPT_MIN_ANSWER_AGE_MS of creation
+   *   5. identity: the record was matched to a transcript call at creation
+   *      (screen rows spelled its command) → else `prompt-unverified`
+   *   6. proof (provenDialog): the same call id and whole input still
+   *      pending, the same PTY incarnation and key revision as at creation,
+   *      the same dialog text and rows → else `prompt-changed`
+   * Inside the chain, synchronously up to the write: the CAS (still pending,
+   * not answered) and the fence — the same PTY and no key/click since the
+   * read (refused at once), no output since the read (read again, up to
+   * TERMINAL_PROMPT_ANSWER_ATTEMPTS). The record then stays pending with
+   * `pressedAt` until the dialog is seen gone, exactly like an answer.
+   */
+  private async declineTerminalPrompt(
+    params: ApprovalResolveParams,
+    record: ApprovalRequest,
+  ): Promise<ApprovalResolveResult> {
+    const audit = (outcome: string): void => {
+      this.deps.log?.(
+        'info',
+        `[approvals] terminal-prompt decline outcome=${outcome} record=${record.id} session=${record.sessionId} ` +
+          `by="${logText(sanitizeResolvedBy(params.resolvedBy))}" tool=${logText(record.toolName, 40) || '-'} ` +
+          `via=escape fp=${(record.promptFingerprint ?? '').slice(0, 8) || '-'}`,
+      );
+    };
+    const refuse = (reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'>): ApprovalResolveResult => {
+      audit(reason);
+      return { ok: false, reason, request: copyRequest(record) };
+    };
+    const settled = (): ApprovalResolveResult => {
+      const reason = record.state === 'resolved' ? 'already-resolved' : 'expired';
+      audit(reason);
+      return {
+        ok: false,
+        reason,
+        ...(record.resolvedBy !== undefined ? { resolvedBy: record.resolvedBy } : {}),
+        request: copyRequest(record),
+      };
+    };
+
+    if (record.state !== 'pending') return settled();
+    if (record.pressedAt !== undefined) return refuse('already-answered');
+    if ((params.resolver ?? 'human') !== 'human' || params.terminalPromptDecline !== TERMINAL_PROMPT_WEB_DECLINE) {
+      audit('answer-in-terminal');
+      return { ok: false, reason: 'answer-in-terminal', answerRefusal: 'no-capability', request: copyRequest(record) };
+    }
+    if (params.decision !== 'deny' || params.choiceKey !== undefined) return refuse('invalid-choice');
+    if (params.promptFingerprint !== undefined && params.promptFingerprint !== record.promptFingerprint) {
+      return refuse('prompt-changed');
+    }
+    if (this.now() - record.createdAt < TERMINAL_PROMPT_MIN_ANSWER_AGE_MS) return refuse('answer-too-soon');
+    const identity = identityOf(record);
+    if (!identity?.matched || !identity.call) return refuse('prompt-unverified');
+
+    const refusedEarly = await this.reauthorize(params, record);
+    if (refusedEarly) {
+      audit(refusedEarly.ok ? 'ok' : refusedEarly.reason);
+      return refusedEarly;
+    }
+
+    for (let attempt = 1; attempt <= TERMINAL_PROMPT_ANSWER_ATTEMPTS; attempt++) {
+      const live = await this.readActiveDialog(record.sessionId);
+      if (!live) return refuse('prompt-changed');
+      const proven = this.provenDialog(record, live);
+      if (proven !== 'ok') {
+        audit(`prompt-changed:${proven}`);
+        return { ok: false, reason: 'prompt-changed', request: copyRequest(record) };
+      }
+
+      const refusedWrite = await this.reauthorize(params, record);
+      if (refusedWrite) {
+        audit(refusedWrite.ok ? 'ok' : refusedWrite.reason);
+        return refusedWrite;
+      }
+
+      const outcome = await this.mutate<'retry' | ApprovalResolveResult>(() => {
+        // ── Synchronous from here to the write: nothing can move in between. ──
+        if (record.state !== 'pending') {
+          return {
+            result: {
+              ok: false,
+              reason: record.state === 'resolved' ? 'already-resolved' : 'expired',
+              ...(record.resolvedBy !== undefined ? { resolvedBy: record.resolvedBy } : {}),
+              request: copyRequest(record),
+            },
+          };
+        }
+        if (record.pressedAt !== undefined) {
+          return { result: { ok: false, reason: 'already-answered', request: copyRequest(record) } };
+        }
+        const now = this.deps.promptScreenMark?.(record.sessionId) ?? null;
+        if (!now || now.incarnation !== live.mark.incarnation || now.keyInputRevision !== live.mark.keyInputRevision) {
+          return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
+        }
+        if (now.bytes !== live.mark.bytes) return { result: 'retry' };
+        record.pressedAt = this.now();
+        let delivered = false;
+        try {
+          delivered = this.deps.writeToSession(record.sessionId, '\x1b');
+        } catch (err) {
+          this.deps.log?.('warn', `[approvals] write failed for ${record.sessionId}: ${String(err)}`);
+        }
+        if (!delivered) {
+          delete record.pressedAt;
+          record.state = 'expired';
+          record.resolvedAt = this.now();
+          return {
+            events: [{ type: 'expire', request: copyRequest(record) }],
+            result: { ok: false, reason: 'prompt-gone', request: copyRequest(record) },
+          };
+        }
+        record.decision = 'deny';
+        record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
+        return {
+          events: [{ type: 'press', request: copyRequest(record) }],
+          result: { ok: true, request: copyRequest(record), durable: true },
+        };
+      }, (result, durable) => (result !== 'retry' && result.ok ? { ...result, durable } : result));
+      if (outcome === 'retry') continue;
+      audit(outcome.ok ? 'pressed' : outcome.reason);
+      return outcome;
+    }
+    return refuse('prompt-changed');
+  }
+
+  /**
    * The dialog on screen changed under an answer: replace the record with one
    * built from what is there now (a new id and fingerprint), so the phone
    * re-reads and can answer the dialog that is actually up. `create` carries
@@ -1423,6 +1825,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // No events means nothing changed, so nothing had to be written.
       let durable = true;
       if (events.length > 0) {
+        for (const event of events) {
+          if (event.request.kind !== 'terminal_prompt') continue;
+          if (event.request.state !== 'resolved' && event.request.state !== 'expired') continue;
+          const settled = this.requests.find((r) => r.id === event.request.id);
+          if (settled) this.pruneEvidence(settled);
+        }
         this.requests = trimHistory(this.requests);
         durable = await this.persist();
         for (const event of events) this.emit(event);

@@ -351,8 +351,9 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, protocolVersion,
-                      minProtocolVersion, serverVersion}
+                      gatedTools, gateEnabled?, fleetSidebar?, terminalPromptDetail?,
+                      terminalPromptDecline?, protocolVersion, minProtocolVersion,
+                      serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
                       liveness?, lastAssistantText?, surfaceTitle?, paneName?}]}
@@ -411,6 +412,13 @@ gate defaults to on, so treat a missing key as "unknown" and not as "off". The
 gate is daemon-wide rather than per-device, so a change made from one phone
 applies to every device; see `gate.state` above for the push that keeps them in
 step, and re-read this route on reconnect for the authoritative value.
+
+`terminalPromptDetail: true` says `GET /api/approvals/<id>/detail` is open
+(the server runs with `--allow-transcript`);
+`terminalPromptDecline` says `POST /api/approvals/<id>/decline` exists and is
+`true` only when THIS caller holds the input grant (see
+[`terminal_prompt`](#terminal_prompt--the-agents-own-permission-dialog)). Both
+are omitted by a daemon that predates them; read a missing key as `false`.
 
 `POST /api/input` is **403 unless the server was started with `--allow-input`**.
 Check `/api/config` and hide the keyboard rather than letting a user type into a
@@ -817,6 +825,8 @@ prompt, the daemon records a request any authenticated surface can answer.
 ```
 GET  /api/approvals          → {pending: [...], recentlyResolved: [...]}
 POST /api/approvals/<id>     body: {decision: 'approve' | 'deny', choiceKey?: string}
+GET  /api/approvals/<id>/detail    terminal_prompt only: the full command (see below)
+POST /api/approvals/<id>/decline   terminal_prompt only: one Esc (see below)
 ```
 
 Request fields: `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, and
@@ -918,21 +928,49 @@ What `/api/approvals` carries for this kind:
 | field | older client (no capability) | capable client |
 | --- | --- | --- |
 | `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, `workspaceId?` | yes | yes |
-| `toolName` (when known), `summary` (the command, ≤200 chars, display only) | yes | yes |
+| `toolName` (when known), `summary` (the command, ≤200 chars + `…`, display only — the full command is at `/detail`) | yes | yes |
 | `risk` (`critical` when the command or rule reads as destructive — `rm -rf`, `sudo`, …) | yes | yes |
 | `question`, `reason` | never | only when the record is answerable |
 | `choices`, `promptFingerprint` | never | only when the record is answerable, pending and not yet answered |
+| `hasDetail: true` (`GET /api/approvals/<id>/detail` has the full command) | never | with `choices`, on a server started with `--allow-transcript` |
 | `pressedAt`, `decision`, `selectedChoiceKey`, `resolvedBy`, `resolvedAt` | when set | when set |
 
 Never `options` or `screenTail`. A record is **answerable** only when all of
 this holds when it is created:
 
-- the whole dialog was read: its top rule (a full-width rule row at column 0)
-  is on screen, no row or field was cut, and it offers a plain `Yes`;
-- it is bound to the tool call the agent actually made — the pane's own Claude
-  transcript has that call as its latest `tool_use` with no result yet (or the
-  PermissionRequest hook carried it), with the same tool and exactly the command
-  the dialog shows, and that command fits the 200-character summary.
+- the dialog is the ACTIVE one, it offers a plain `Yes`, and no row of it was
+  cut by the TUI (a row ending in `…`);
+- it is bound to the tool call the agent actually made, with the same tool and
+  exactly the command the dialog shows, however long — either
+  - by the pane's own Claude transcript: that call is its latest `tool_use`
+    with no result yet, BY ITS ID (and a PermissionRequest pending for the
+    pane, if any, names the same call), or
+  - by the PermissionRequest hook, since Claude Code 2.1.283 often writes the
+    `tool_use` only after the dialog is answered and its hook carries no
+    `tool_use_id`: the hook's `session_id` is the pane's own Claude session,
+    it is the ONLY PermissionRequest pending on the pane (two at once → not
+    answerable), it arrived after the pane's previous dialog settled, no key
+    reached the pane and the PTY is the same since it arrived, the dialog's
+    title names the hook's tool, and the rows spell the hook's whole command.
+    `prompt_id` is compared when present, never proof on its own. A transcript
+    call that appears later must be that same call; The rows are matched against the
+  call's WHOLE command, including where the TUI broke a row inside a word (a
+  long path) and the `│` gutter newer Claude Code builds draw left of it; a
+  wrapped option label is one option;
+- **either** the whole dialog is on screen (its top rule, a full-width rule row
+  at column 0, and its title), **or** its top scrolled off a short pane and
+  then: the PermissionRequest hook fired for exactly that call (an unanswered
+  `tool_use` is also what a RUNNING tool looks like, and its output can print a
+  look-alike dialog), it is provably the ONLY unanswered call (no parallel
+  calls, and the transcript window read shows where the batch starts), at
+  least one command row is still on screen and is the tail of that
+  call's command, and the question row and every option row down to the footer
+  are on screen. If the option row to press is off screen the dialog is not
+  active and the record is informational.
+
+There is no length limit any more: a command longer than the 200-character
+`summary` is answerable. The `summary` is still capped (it travels on SSE, the
+push and `approvals.json`); fetch the whole command from `/detail`.
 
 A dialog found only on the screen, with no pending call to bind to or a call
 whose command differs, is **informational for everyone**. `summary` and `risk`
@@ -945,10 +983,45 @@ lasting rule — "Yes, and don't ask again for … commands", anything with
 answerable carries none of the four fields for anyone; show it as "answer on
 the computer".
 
-`promptFingerprint` is a 32-hex hash of the whole dialog (title, question,
-reason, every command line, every option) and the tool call it is bound to,
-independent of where the cursor is. The same dialog for the next, identical
-call is a different record with a different fingerprint.
+`promptFingerprint` is a 32-hex hash of the whole dialog as drawn (title when
+visible, question, reason, every visible command line, every option), the tool
+call it is bound to (its `tool_use` id AND a hash of its whole input, so a
+command longer than anything the screen or the record shows is covered in
+full) and the pane's input epoch, independent of where the cursor is. The same
+dialog for the next, identical call is a different record with a different
+fingerprint; a call whose input changed after you read the record fails with
+409 `prompt-changed`. Whitespace runs in the dialog collapse to one space and
+are never dropped. A resize that moves where the TUI broke a long word
+changes the hash; the record is then refreshed once.
+
+**Every remote key is proved first.** Before writing `1` (answer) or Esc
+(decline) the daemon re-reads the screen and requires: the same transcript
+call id and whole-input hash still pending, the same PTY and no key or click
+in the pane since the record was CREATED, the same dialog text, and its rows
+still spelling that call's command. If any of it cannot be shown it writes
+nothing and refuses (409 `prompt-changed` / `prompt-unverified`, 410 when the
+record ended), with `effect: "none"`.
+
+**The full command** (servers started with `--allow-transcript`; capable clients):
+
+```http
+GET /api/approvals/<id>/detail
+```
+
+200 `{"id","toolName"?,"command","commandHash","commandBytes","truncated"}` —
+`command` is the call's full command (Bash) or path/url, up to 64 KiB
+(`truncated: true` past that, cut on a character boundary); `commandHash` is
+the lowercase hex sha256 of the FULL command's UTF-8 bytes and `commandBytes`
+its UTF-8 length, both over the whole text even when `command` was cut.
+`Cache-Control: no-store`. It is transcript content, so it needs what the
+transcript needs: 403 `transcript-disabled` on a server without
+`--allow-transcript`, and 501 `answer-in-terminal` without
+`terminal-prompt-answer` in `X-Wmux-Client-Caps` (the capability that shows
+the dialog's question). No input grant — it types nothing. 404 for an unknown id, a settled record, another
+kind, a record that is not bound to its call (informational), and — for a
+paired device — the orchestrator brain's pane. It is never on the record, so
+never on SSE, a push or `approvals.json`. Offer it when the record has
+`hasDetail: true`.
 
 **Answering** (capable clients only; `choiceKey` is authoritative, `decision`
 must agree with it):
@@ -999,6 +1072,51 @@ resolves. An SSE `approval` event with `phase: "press"` marks the write.
 Without the capability header every answer is 501 `answer-in-terminal`: show
 "wmux cannot answer this agent remotely. Open the pane on the computer."
 
+**Declining** (capability `terminal-prompt-decline`, advertised in
+`/api/config` as `terminalPromptDecline`):
+
+```http
+POST /api/approvals/<id>/decline
+X-Wmux-Client-Caps: terminal-prompt-answer, terminal-prompt-decline
+Content-Type: application/json
+
+{"promptFingerprint":"<hex>"}
+```
+
+The body may be `{}`; `promptFingerprint` is optional (when sent it must be
+the record's), and `decision` / `via`, if sent, must be `"deny"` /
+`"escape"`. The daemon writes exactly ONE Esc — the dialog's own cancel — and
+only when it can PROVE the dialog on screen is the one this record was made
+for (see "Every remote key is proved first" above): never "some dialog is
+active". It also waits out the same 1.5 s after the record appeared as an
+answer (425). The record must have been matched to its transcript call when
+it was created — its rows spelled that call's command — else 409
+`prompt-unverified`. That includes a matched record the phone cannot answer
+Yes/No (a row the TUI cut, no plain `Yes`): decline is then the one way to
+cancel it remotely. A card created before any dialog was drawn, or for a
+dialog that shows a different command, cannot be declined. It needs the input grant (403
+otherwise, checked before and after the body and again right before the
+write) and is audit-logged like an answer. On success: 200
+`{"state":"pending","pressedAt":<ms>,"via":"escape","durable":true}`; the record
+then resolves (with `decision: "deny"`, no `selectedChoiceKey`) once the
+dialog is seen gone. Claude Code treats Esc as "No, interrupt": the turn stops
+with "Interrupted · What should Claude do instead?".
+
+Every refusal writes nothing and carries `effect: "none"`:
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 409 | `{error:"already-resolved", resolvedBy?, effect}` | The record already settled (answered anywhere, dialog gone) |
+| 409 | `{error:"already-answered", effect}` | A phone already answered or declined it; waiting for the dialog to close |
+| 409 | `{error:"prompt-changed", effect}` | No active dialog on the pane now, a different one, another call pending, a key/click or a new PTY since the record was created, or a stale `promptFingerprint` |
+| 409 | `{error:"prompt-unverified", effect}` | The record was never matched to one transcript call on screen |
+| 425 | `{error:"answer-too-soon", effect}` | Within 1.5 s of the record appearing. Ask again |
+| 410 | `{error:"expired", state?, effect}` | The record ended without an answer (turn ended, pane gone, replaced) |
+| 400 | `{error:"invalid-prompt-fingerprint"}` / `{error:"decision must be 'deny'"}` / `{error:"via must be 'escape'"}` / `{error:"not-a-terminal-prompt"}` | Bad body, or the id is another kind |
+| 403 | `{error:"read-only: …"}` | No input grant |
+| 404 | `{error:"not-found"}` | Unknown id, or (device) the brain's pane |
+| 501 | `{error:"answer-in-terminal"}` | No `terminal-prompt-decline` in `X-Wmux-Client-Caps` |
+
 **Typing cannot answer it.** While the pane has a pending `terminal_prompt`
 record (answerable or not, answered-and-waiting included), `POST /api/input` to
 that pane is refused with 409 `{"error":"terminal-prompt-active","effect":"none"}`
@@ -1046,6 +1164,15 @@ carries the command.
 **The SSE `approval` event** for this kind carries `kind: "terminal_prompt"` and
 `risk` when set, and no content (no tool, summary, question or choices): re-read
 `/api/approvals`.
+
+**History.** `recentlyResolved` lists a `terminal_prompt` only when a phone
+answered or declined it (`pressedAt` set), decided from the record alone —
+the same rows for every client. A record the daemon replaced before anyone
+pressed (every key in the pane and every late parse mints one) and a card
+that expired when its dialog closed are not answers anyone gave from a phone,
+and are not listed. A row may carry no `question` (an older client is never
+shown it; a record declined without Yes/No choices has none): render
+`toolName — summary` then, never "no question".
 
 **It goes away** when the dialog is answered (a key in the pane, from anyone),
 when the daemon sees the dialog gone from the screen, when the turn ends, the

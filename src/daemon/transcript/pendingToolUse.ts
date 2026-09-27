@@ -14,6 +14,15 @@ export interface PendingToolUse {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /**
+   * How many `tool_use` blocks in the read window have no `tool_result` yet,
+   * this one included. More than one means parallel calls: their dialogs come
+   * one at a time, so the latest call is not necessarily the dialog on screen.
+   * ABSENT when the count cannot be trusted: the read window was cut and no
+   * `user` entry precedes the earliest unanswered call inside it, so another
+   * call of the same batch may lie before the window.
+   */
+  unanswered?: number;
 }
 
 /** How much of the transcript's end is read. A permission wait is at the tail. */
@@ -34,25 +43,40 @@ function contentBlocks(entry: Json): Json[] {
  * `tool_result` answers it; null otherwise. Sidechain (subagent) entries are
  * not the pane's own dialog and are skipped.
  */
-export function latestPendingToolUse(entries: readonly unknown[]): PendingToolUse | null {
+export function latestPendingToolUse(
+  entries: readonly unknown[],
+  opts: { windowCut?: boolean } = {},
+): PendingToolUse | null {
   let latest: PendingToolUse | null = null;
   const answered = new Set<string>();
-  for (const entry of entries) {
-    if (!isObject(entry) || entry['isSidechain'] === true) continue;
+  const called: Array<{ id: string; at: number }> = [];
+  let firstUser = -1;
+  entries.forEach((entry, index) => {
+    if (!isObject(entry) || entry['isSidechain'] === true) return;
     const type = entry['type'];
+    if (type === 'user' && firstUser < 0) firstUser = index;
     for (const block of contentBlocks(entry)) {
       if (type === 'assistant' && block['type'] === 'tool_use') {
         const id = block['id'];
         const name = block['name'];
         if (typeof id === 'string' && id && typeof name === 'string' && name) {
           latest = { id, name, input: isObject(block['input']) ? block['input'] : {} };
+          called.push({ id, at: index });
         }
       } else if (type === 'user' && block['type'] === 'tool_result' && typeof block['tool_use_id'] === 'string') {
         answered.add(block['tool_use_id']);
       }
     }
-  }
-  return latest && !answered.has(latest.id) ? latest : null;
+  });
+  const found = latest as PendingToolUse | null;
+  if (!found || answered.has(found.id)) return null;
+  const open = called.filter((c) => !answered.has(c.id));
+  // A cut window may hide an earlier call of the same batch: the count is
+  // trusted only when a `user` entry (a prompt or a result) comes before the
+  // earliest unanswered call, i.e. the batch started inside the window.
+  const earliest = Math.min(...open.map((c) => c.at));
+  const known = !opts.windowCut || (firstUser >= 0 && firstUser < earliest);
+  return known ? { ...found, unanswered: new Set(open.map((c) => c.id)).size } : { ...found };
 }
 
 /**
@@ -82,7 +106,7 @@ export function readPendingToolUse(
         // A half-written last line, or a line cut by the window: skipped.
       }
     }
-    return latestPendingToolUse(entries);
+    return latestPendingToolUse(entries, { windowCut: start > 0 });
   } catch {
     return null;
   } finally {
