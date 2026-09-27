@@ -45,6 +45,7 @@ import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolic
 import { scheduleTokenFileReHarden } from '../shared/security';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
+import { readSessionTextReplay } from './sessionTextReplay';
 import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
 import { screenShowsAgentDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
@@ -351,7 +352,7 @@ function queuedTextSnapshot(sessionManager: DaemonSessionManager, sessionId: str
       cols: managed.meta.cols ?? 80,
       rows: managed.meta.rows ?? 24,
       scrollback,
-      initial: managed.ringBuffer.readAll(),
+      initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
     });
   });
 }
@@ -2487,7 +2488,7 @@ function registerRpcHandlers(
     if (capped.truncated) {
       log('info', `[readText] session=${p.id} response truncated to fit frame budget (${outcome.rows.length} rows)`);
     }
-    return { ok: true, mode: 'rows', rows: capped.rows, truncated: capped.truncated };
+    return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, truncated: capped.truncated };
   });
 
   // daemon.listSessions
