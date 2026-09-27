@@ -91,6 +91,18 @@ class FakeTerminal {
   clearSelection(): void { this.clearSelectionCalls++; this.selection = ''; }
   attachCustomKeyEventHandler(cb: (e: KeyboardEvent) => boolean): void { this.keyHandler = cb; }
 
+  /** xterm's OSC registry — the fake keeps the handlers so a test can play
+   *  the remote app emitting a sequence. */
+  oscHandlers = new Map<number, (data: string) => boolean>();
+  /** Read by the Alt+click guard on every mousedown in the mirror. */
+  modes = { mouseTrackingMode: 'none' };
+  parser = {
+    registerOscHandler: (ident: number, cb: (data: string) => boolean) => {
+      this.oscHandlers.set(ident, cb);
+      return { dispose: () => { this.oscHandlers.delete(ident); } };
+    },
+  };
+
   dispose(): void { this.disposed = true; }
 }
 
@@ -858,6 +870,222 @@ describe('RemoteMirrorTerminal', () => {
       expect(clipboardWrite).toHaveBeenCalledWith('read me');
 
       unmount();
+    });
+  });
+
+  // Remote copy through OSC 52. With mouse tracking on (Claude Code
+  // fullscreen) a drag never becomes an xterm selection; the remote app copies
+  // by emitting OSC 52, which the mirror used to drop — so the highlight was
+  // visible and nothing reached the clipboard.
+  describe('OSC 52 clipboard writes from the remote app', () => {
+    const osc52 = (text: string) => `c;${btoa(String.fromCharCode(...new TextEncoder().encode(text)))}`;
+    const surface = (rootEl: HTMLElement) => rootEl.firstElementChild!.firstElementChild as HTMLElement;
+    const gesture = (el: HTMLElement) => {
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    };
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('★ a write right after a drag in the mirror reaches the local clipboard', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+
+      const consumed = term.oscHandlers.get(52)?.(osc52('hello 한글 복사'));
+
+      expect(consumed).toBe(true);
+      expect(clipboardWrite).toHaveBeenCalledWith('hello 한글 복사');
+      unmount();
+    });
+
+    it('typing in the mirror does not open the window (no per-keystroke clipboard swap)', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      const el = surface(container);
+      for (const key of ['a', 'Shift', 'Meta', 'y']) {
+        el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      }
+
+      term.oscHandlers.get(52)?.(osc52('swapped while typing'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a bare mousedown with no matching mouseup does not open the window', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      surface(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('mid-press'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a lost mouseup is not revived by a later click elsewhere', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      // Pressed in the mirror, released where the window never saw it.
+      surface(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      // A later, unrelated click somewhere else in the app.
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('injected'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a completed drag is revoked by a click elsewhere before the write arrives', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('injected'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('window blur disarms a pending press', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      surface(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('injected'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a press held longer than the gesture bound does not count', () => {
+      vi.useFakeTimers();
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      surface(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      vi.advanceTimersByTime(11_000);
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('late'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('an honoured write is announced with the host it came from', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" hostLabel="build-box" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+
+      term.oscHandlers.get(52)?.(osc52('hello'));
+
+      expect(clipboardWrite).toHaveBeenCalledWith('hello');
+      expect(document.getElementById('wmux-copy-toast')?.textContent).toContain('build-box');
+      unmount();
+    });
+
+    it('with no gesture in the mirror, the host cannot set the clipboard', () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+
+      const consumed = term.oscHandlers.get(52)?.(osc52('injected'));
+
+      // Consumed either way, so it cannot fall through to another handler.
+      expect(consumed).toBe(true);
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a gesture outside the mirror does not arm it', () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('injected'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a gesture older than the window no longer counts', () => {
+      vi.useFakeTimers();
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+      vi.advanceTimersByTime(2500);
+
+      term.oscHandlers.get(52)?.(osc52('late'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('one gesture authorises one write', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+
+      term.oscHandlers.get(52)?.(osc52('first'));
+      term.oscHandlers.get(52)?.(osc52('second'));
+
+      expect(clipboardWrite).toHaveBeenCalledTimes(1);
+      expect(clipboardWrite).toHaveBeenCalledWith('first');
+      unmount();
+    });
+
+    it('never answers a clipboard read/query', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+
+      term.oscHandlers.get(52)?.('c;?');
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      expect(clipboardRead).not.toHaveBeenCalled();
+      expect(paneWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('is muted while an attach snapshot is being replayed', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+      act(() => {
+        metaHandlers.forEach((h) => h({ attachId: 'a1', cols: 80, rows: 24, snapshotB64: btoa('x') }));
+      });
+
+      term.oscHandlers.get(52)?.(osc52('old copy in the snapshot'));
+      expect(clipboardWrite).not.toHaveBeenCalled();
+
+      term.flushWrites();
+      term.oscHandlers.get(52)?.(osc52('live copy'));
+      expect(clipboardWrite).toHaveBeenCalledWith('live copy');
+      unmount();
+    });
+
+    it('a read-only host is ignored — the remote app never saw the gesture', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" readOnly />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+
+      term.oscHandlers.get(52)?.(osc52('from a spectator view'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('unregisters the handler on unmount', () => {
+      const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      expect(term.oscHandlers.has(52)).toBe(true);
+      unmount();
+      expect(term.oscHandlers.has(52)).toBe(false);
     });
   });
 });

@@ -4,17 +4,19 @@ import { useT } from '../../hooks/useT';
 import { sanitizeTitle } from '../../../main/pty/titleDetect';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import { computeMirrorFontSize, computeMirrorGeometry, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
-import { decideMirrorKeyWithRepeat } from './mirrorInput';
+import { createMirrorGestureTracker, decideMirrorKeyWithRepeat, shouldHonorMirrorClipboardWrite } from './mirrorInput';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE } from './keyboardProtocol';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { createAutoSelectionCopy } from '../../utils/autoSelectionCopy';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
-import { copySelectionWithFeedback } from '../../hooks/useTerminal';
+import { copySelectionWithFeedback, showCopyToastText } from '../../hooks/useTerminal';
+import { t as translate } from '../../i18n';
 import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } from '../../themes';
 import { resolveMinimumContrastRatio } from '../../tailwindPalette';
 import { createOsc8LinkHandler, isLoopbackHref } from '../../terminal/osc8LinkHandler';
 import { installAltClickTrackingGuard } from '../../utils/altClickUnderMouseTracking';
+import { createOsc52Handler } from '../../utils/osc52Clipboard';
 
 export interface RemoteMirrorTerminalProps {
   /** null while the pane attach is still in flight. */
@@ -31,6 +33,9 @@ export interface RemoteMirrorTerminalProps {
    *  it up. Optional: RemoteWorkspaceView's mirror-grid cells have no
    *  per-surface title to update and pass nothing. */
   onTitleChange?: (title: string) => void;
+  /** The paired host's label, named in the toast when the remote app sets
+   *  the local clipboard. */
+  hostLabel?: string;
 }
 
 /** Decode a base64 payload into raw bytes and hand it to xterm as-is — the
@@ -113,7 +118,7 @@ const MIN_REMOTE_RESIZE_ROWS = 8;
  * when it does not — the fallback is not a regression, it is what made this
  * safe to ship without a protocol bump.
  */
-export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitleChange }: RemoteMirrorTerminalProps) {
+export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitleChange, hostLabel }: RemoteMirrorTerminalProps) {
   const t = useT();
   // Ref, same reason as readOnlyRef below: the title subscription is wired
   // once inside the mount-only effect, and a parent re-render passing a new
@@ -137,6 +142,8 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
    */
   const remoteKeyboardRef = useRef(INITIAL_REMOTE_KEYBOARD_STATE);
   readOnlyRef.current = readOnly;
+  const hostLabelRef = useRef(hostLabel);
+  hostLabelRef.current = hostLabel;
   // Same reason: the key handler is installed once, at mount, and needs the
   // CURRENT attach to write to. Listing `attachId` in that effect's deps would
   // re-create the terminal on every reconnect and drop the mirrored scrollback.
@@ -505,6 +512,62 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       autoCopy.onSelection(term.getSelection());
     });
 
+    // OSC 52 clipboard-write bridge, gated. With mouse tracking on (Claude Code
+    // fullscreen, vim, tmux) a drag never becomes an xterm selection: the remote
+    // app draws its own highlight and, on mouse-up, asks the terminal to copy by
+    // emitting OSC 52. A local pane bridges that (useTerminal.ts); a mirror did
+    // not, so xterm dropped the request and nothing — not auto-copy, not ⌘C,
+    // not Ctrl+Shift+C, which all need an xterm selection — reached the local
+    // clipboard. These bytes come from another machine, though, so a write is
+    // honoured only right after a completed mouse drag in THIS mirror (see
+    // createMirrorGestureTracker and shouldHonorMirrorClipboardWrite).
+    // Keyboard input never opens the window, so a keyboard-driven yank in the
+    // remote app is not honoured here. `repaintDepthRef` is the mirror's replay
+    // mute: an attach/reconnect snapshot is stored output, and a write inside
+    // it is an old copy, not a new one.
+    //
+    // Mouse events rather than pointer capture: capturing on the container
+    // would retarget xterm's own drag events away from its screen element.
+    // A lost mouseup is handled by disarming instead (see the tracker).
+    const gestures = createMirrorGestureTracker();
+    const onPressInside = (e: MouseEvent): void => {
+      if (e.button === 0) gestures.pressInside(Date.now());
+    };
+    const onPressAnywhere = (e: MouseEvent): void => {
+      if (!(e.target instanceof Node) || !container.contains(e.target)) gestures.cancel();
+    };
+    const onRelease = (): void => { gestures.release(Date.now()); };
+    const onDisarm = (): void => { gestures.cancel(); };
+    const onVisibility = (): void => { if (document.visibilityState === 'hidden') gestures.cancel(); };
+    container.addEventListener('mousedown', onPressInside, true);
+    window.addEventListener('mousedown', onPressAnywhere, true);
+    window.addEventListener('mouseup', onRelease, true);
+    window.addEventListener('pointercancel', onDisarm, true);
+    window.addEventListener('blur', onDisarm);
+    document.addEventListener('visibilitychange', onVisibility);
+    const osc52Disposable = term.parser.registerOscHandler(52, createOsc52Handler({
+      isReplaying: () => !shouldHonorMirrorClipboardWrite({
+        now: Date.now(),
+        lastGestureAt: gestures.completedAt(),
+        replaying: repaintDepthRef.current > 0,
+        readOnly: readOnlyRef.current === true,
+        visible: typeof container.checkVisibility === 'function' ? container.checkVisibility() : container.isConnected,
+      }),
+      writeClipboard: (text) => {
+        // One gesture, one write: a host cannot follow the user's copy with a
+        // second, different payload inside the same window.
+        gestures.consume();
+        // Never silent: say which machine just set this one's clipboard.
+        const label = hostLabelRef.current;
+        showCopyToastText(label
+          ? translate('remote.clipboardCopiedFrom', { host: label })
+          : translate('remote.clipboardCopiedFromRemote'));
+        // Fire-and-forget, as on a local pane: the app already showed its own
+        // "copied" feedback and has no channel for a rejection.
+        void window.clipboardAPI.writeText(text).catch(() => { /* size cap / lock — nothing to report */ });
+      },
+    }));
+
     // #1086/#1091 — xterm's own parser already extracts the OSC 0/2 payload
     // (icon title / window title); sanitize it exactly like PTYBridge does
     // for a local pane before handing it to the surface-title callback.
@@ -572,6 +635,13 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     return () => {
       if (isMac) container.removeEventListener('paste', blockNativePaste, true);
       detachAltClickGuard();
+      container.removeEventListener('mousedown', onPressInside, true);
+      window.removeEventListener('mousedown', onPressAnywhere, true);
+      window.removeEventListener('mouseup', onRelease, true);
+      window.removeEventListener('pointercancel', onDisarm, true);
+      window.removeEventListener('blur', onDisarm);
+      document.removeEventListener('visibilitychange', onVisibility);
+      osc52Disposable.dispose();
       selectionDisposable.dispose();
       titleDisposable.dispose();
       // Cancels a debounced write that would otherwise fire against a disposed
