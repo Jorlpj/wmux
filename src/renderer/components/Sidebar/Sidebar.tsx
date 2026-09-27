@@ -15,7 +15,8 @@ import MissionsSection from './MissionsSection';
 import type { Workspace } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
-import { selectAttachedRemoteWorkspaces } from '../../stores/slices/remoteWorkspacesSlice';
+import { selectAttachedRemoteWorkspaces, remoteWorkspaceDisplayName, type AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
+import { remoteWorkspaceAttentionScore } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
@@ -28,6 +29,9 @@ import CompanyPanel from './CompanyPanel';
 import SidebarNavigation from './SidebarNavigation';
 import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+
+/** Namespaces a remote row's id in the shared glance order. */
+const REMOTE_ROW_PREFIX = 'remote:';
 
 
 // 워크스페이스가 소유한 모든 PTY를 dispose
@@ -94,13 +98,46 @@ export default function Sidebar() {
     if (!link.ownerId || link.ownerId === id || !liveIds.has(link.ownerId)) return ORPHAN_GROUP_KEY;
     return link.ownerId;
   }, [workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
+  // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
+  // attachments and must not render here: the user never asked for a mirror,
+  // and a row they cannot detach (nothing persists it) would be a ghost.
+  // useShallow, not a bare subscription: those invisible rows are rewritten on
+  // every poll round, and this list must not re-render the sidebar for them.
+  const remoteWorkspaces = useStore(useShallow(selectAttachedRemoteWorkspaces));
+  // Attached mirrors share the one glance list (they are never part of
+  // `workspaces[]` — see remoteWorkspacesSlice — so they keep their own row
+  // type). Row ids are namespaced so they cannot collide with a local id.
+  const remoteByRowId = useMemo(() => {
+    // Same query rule as the local rows above; a remote row also matches on
+    // its host, which it shows under its name.
+    const q = wsSearch.trim() ? wsSearch.toLowerCase() : '';
+    const fallbackHost = t('remote.hostFallback');
+    const byRowId = new Map<string, AttachedRemoteWorkspace>();
+    for (const rw of remoteWorkspaces) {
+      const name = remoteWorkspaceDisplayName(rw);
+      const host = rw.hostLabel || fallbackHost;
+      if (q && !name.toLowerCase().includes(q) && !host.toLowerCase().includes(q)) continue;
+      byRowId.set(`${REMOTE_ROW_PREFIX}${rw.key}`, rw);
+    }
+    return byRowId;
+  }, [remoteWorkspaces, wsSearch, t]);
+  const remoteRows = useMemo(
+    () => [...remoteByRowId].map(([id, rw]) => ({ id, name: remoteWorkspaceDisplayName(rw) })),
+    [remoteByRowId],
+  );
+  const remoteScores = useMemo(
+    () => Object.fromEntries([...remoteByRowId].map(([id, rw]) => [id, remoteWorkspaceAttentionScore(rw)])),
+    [remoteByRowId],
+  );
   const {
     ordered: orderedWorkspaces,
     onPointerEnter: onListPointerEnter,
     onPointerLeave: onListPointerLeave,
     onFocusCapture: onListFocus,
     onBlurCapture: onListBlur,
-  } = useGlanceBoardOrder(filteredWorkspaces, nestedOwnerOf);
+  } = useGlanceBoardOrder(filteredWorkspaces, nestedOwnerOf, remoteRows, remoteScores);
+  // Remote row ids are no workspace: linkOf finds none, so each one is a plain
+  // top-level node in its sorted slot.
   const tree = useMemo(() => {
     const byId = new Map(workspaces.map((w) => [w.id, w]));
     return buildSidebarTree(
@@ -112,14 +149,12 @@ export default function Sidebar() {
       new Set(workspaces.map((w) => w.id)),
     );
   }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
-  // attachments and must not render here: the user never asked for a mirror,
-  // and a row they cannot detach (nothing persists it) would be a ghost.
-  // useShallow, not a bare subscription: those invisible rows are rewritten on
-  // every poll round, and this list must not re-render the sidebar for them.
-  const remoteWorkspaces = useStore(useShallow(selectAttachedRemoteWorkspaces));
   const activeRemoteKey = useStore((s) => s.activeRemoteKey);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // While a mirror is on screen the local selection is only remembered, not
+  // shown: with remote rows in the same list, marking both would show two
+  // selected rows. Task-group folding still follows the real selection.
+  const shownActiveId = activeRemoteKey ? null : activeWorkspaceId;
   const setActiveRemoteKey = useStore((s) => s.setActiveRemoteKey);
   const detachRemoteWorkspace = useStore((s) => s.detachRemoteWorkspace);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
@@ -157,19 +192,21 @@ export default function Sidebar() {
   // Ctrl+F terminal-search shortcut (useKeyboard), so this is scoped to the
   // sidebar root via onKeyDown and stops propagation so the global handler
   // does not also fire.
+  // Remote rows share the list and the query, so they count toward showing it.
+  const listedCount = workspaces.length + remoteWorkspaces.length;
   const handleSidebarKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'f' && (e.ctrlKey || e.metaKey) && workspaces.length >= 3) {
+    if (e.key === 'f' && (e.ctrlKey || e.metaKey) && listedCount >= 3) {
       e.preventDefault();
       e.stopPropagation();
       wsSearchRef.current?.focus();
     }
-  }, [workspaces.length]);
+  }, [listedCount]);
 
   // The search input hides below 3 workspaces; clear any leftover query so
   // the list can't stay filtered with no visible way to reset it.
   useEffect(() => {
-    if (workspaces.length < 3) setWsSearch('');
-  }, [workspaces.length]);
+    if (listedCount < 3) setWsSearch('');
+  }, [listedCount]);
 
   // A1: 콜백을 useCallback으로 안정화해 memo(WorkspaceItem)가 실효하게 한다.
   // 요약만 구독하므로 개별 ws는 getState()로 명령형 조회한다(구독 다이어트).
@@ -212,7 +249,7 @@ export default function Sidebar() {
   const renderTask = useCallback((id: string) => (
     <WorkspaceItem
       workspaceId={id}
-      isActive={id === activeWorkspaceId}
+      isActive={id === shownActiveId}
       isMultiview={multiviewIds.includes(id)}
       index={workspaces.findIndex((w) => w.id === id)}
       onSelect={setActiveWorkspace}
@@ -225,7 +262,7 @@ export default function Sidebar() {
       onReorder={reorderWorkspace}
       taskRow
     />
-  ), [activeWorkspaceId, multiviewIds, workspaces, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
+  ), [shownActiveId, multiviewIds, workspaces, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
   return (
     <div
@@ -239,7 +276,7 @@ export default function Sidebar() {
       <SidebarNavigation />
       <div className="wmux-sidebar-section">
         <span className="truncate">{t('sidebar.workspaces')}</span>
-        <span className="wmux-sidebar-total">{workspaces.length}</span>
+        <span className="wmux-sidebar-total">{listedCount}</span>
         <button
           ref={pickerButtonRef}
           type="button"
@@ -252,7 +289,7 @@ export default function Sidebar() {
       </div>
 
       {/* Workspace search input — only visible when 3+ workspaces */}
-      {workspaces.length >= 3 && (
+      {listedCount >= 3 && (
         <div className="px-3 pb-1">
           <input
             ref={wsSearchRef}
@@ -307,6 +344,18 @@ export default function Sidebar() {
             tasks are ordinary rows; tasks whose owner is gone collect in the
             "From closed workspace" group below. */}
         {tree.top.map((node) => {
+          const rw = remoteByRowId.get(node.id);
+          if (rw) {
+            return (
+              <RemoteWorkspaceItem
+                key={node.id}
+                workspace={rw}
+                isActive={rw.key === activeRemoteKey}
+                onSelect={setActiveRemoteKey}
+                onDetach={detachRemoteWorkspace}
+              />
+            );
+          }
           const ws = workspaceById.get(node.id);
           if (!ws) return null;
           // A task whose owner is only hidden by the search filter still
@@ -316,7 +365,7 @@ export default function Sidebar() {
             <Fragment key={node.id}>
               <WorkspaceItem
                 workspaceId={ws.id}
-                isActive={ws.id === activeWorkspaceId}
+                isActive={ws.id === shownActiveId}
                 isMultiview={multiviewIds.includes(ws.id)}
                 index={workspaces.indexOf(ws)}
                 onSelect={setActiveWorkspace}
@@ -356,24 +405,6 @@ export default function Sidebar() {
             renderTask={renderTask}
             onCloseWorkspace={handleClose}
           />
-        )}
-
-        {/* Remote section — attached mirrors from other wmux hosts, rendered
-            under the local workspace rows. A remote workspace is never part
-            of `workspaces[]` (see remoteWorkspacesSlice), so it gets its own
-            row type here instead of joining the map above. */}
-        {remoteWorkspaces.length > 0 && (
-          <div className="pt-2 mt-1 border-t space-y-0.5" style={{ borderColor: 'var(--border-soft)' }}>
-            {remoteWorkspaces.map((rw) => (
-              <RemoteWorkspaceItem
-                key={rw.key}
-                workspace={rw}
-                isActive={rw.key === activeRemoteKey}
-                onSelect={setActiveRemoteKey}
-                onDetach={detachRemoteWorkspace}
-              />
-            ))}
-          </div>
         )}
 
         {/* #1011 — put-away workspaces: configuration snapshots, one click
