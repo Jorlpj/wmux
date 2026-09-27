@@ -217,6 +217,8 @@ let deviceStore: DeviceStore | null = null;
 let sessionLifecycle: WebSessionLifecycle | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 // Late-bound: the pipe server that carries notices exists only after boot.
+let notifyCodexIdentityRefused: ((id:string,reason:string)=>void) | undefined;
+const codexRefusalNoticedAt = new Map<string,number>();
 let broadcastCodexNotice: ((paneId:string|undefined,title:string,body:string)=>void) | undefined;
 // Every wmux Codex launch goes through a pane relay; before each, the shared
 // account server is started with no WMUX_* variable (never stopped/restarted).
@@ -228,7 +230,19 @@ const codexSharedRuntime = createCodexSharedRuntime({
 });
 const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Codex relay cleanup failed'),
   (id,owner)=>persistCodexRelayState?.(id,owner),
-  async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); });
+  {
+    ensureRuntime: async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); },
+    serverProven: (codeHome)=>codexSharedRuntime.state(codeHome)?.kind === 'clean',
+    refused: (id,reason)=>{
+      log('warn',`[codex-relay] refused a Codex request in ${id}: ${reason}`);
+      // One notice per pane per minute: a TUI can retry a refused request in a loop.
+      const now = Date.now();
+      if ((codexRefusalNoticedAt.get(id) ?? 0) + 60_000 > now) return;
+      if (codexRefusalNoticedAt.size > 1024) codexRefusalNoticedAt.clear();
+      codexRefusalNoticedAt.set(id,now);
+      notifyCodexIdentityRefused?.(id,reason);
+    },
+  });
 
 /**
  * #919 — canonical pane-agent identity for one pane, right now. Folds the
@@ -3475,6 +3489,10 @@ function registerRpcHandlers(
   chatBridge = bridge;
   broadcastCodexNotice = (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event',
     ...(paneId ? { sessionId: paneId } : {}), data: { source: 'security', title, body, ts: Date.now() } });
+  notifyCodexIdentityRefused = (paneId, reason) => pipeServer.broadcast({ type: 'notification.event', sessionId: paneId,
+    data: { source: 'security', title: 'Codex request not sent',
+      body: `wmux did not send a Codex request from this pane (${reason}).`,
+      ts: Date.now() } });
 
   pipeServer.onRpc('daemon.chat.skills', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'skills') || typeof params.id !== 'string') return { skills: [], state: 'unavailable' };
