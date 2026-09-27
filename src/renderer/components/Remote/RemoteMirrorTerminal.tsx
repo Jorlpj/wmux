@@ -28,6 +28,9 @@ export interface RemoteMirrorTerminalProps {
   attachId: string | null;
   /** Set when the attach itself failed (e.g. a rejected paneAttach). */
   error?: string;
+  /** The attach was refused because the host is on plain http to another
+   *  machine: show the needs-HTTPS line and take no input. */
+  insecureTransport?: boolean;
   /** True when the remote host was started without --allow-input — writes
    *  must be swallowed locally rather than silently dropped server-side. */
   readOnly?: boolean;
@@ -126,7 +129,7 @@ const MIN_REMOTE_RESIZE_ROWS = 8;
  * when it does not — the fallback is not a regression, it is what made this
  * safe to ship without a protocol bump.
  */
-export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitleChange, hostLabel, hostId }: RemoteMirrorTerminalProps) {
+export default function RemoteMirrorTerminal({ attachId, error, insecureTransport = false, readOnly, onTitleChange, hostLabel, hostId }: RemoteMirrorTerminalProps) {
   const t = useT();
   // Ref, same reason as readOnlyRef below: the title subscription is wired
   // once inside the mount-only effect, and a parent re-render passing a new
@@ -142,6 +145,8 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   /** The stream ended because the host rejected this computer's credential —
    *  says "pair again" instead of the generic connection-lost line. */
   const [authRejected, setAuthRejected] = useState(false);
+  /** The host is on plain http to another machine: its token is never sent. */
+  const [insecure, setInsecure] = useState(false);
   // Read via ref inside the attach-lifecycle effect below so a readOnly
   // flip (allowInput probe resolving after mount) doesn't tear down and
   // re-subscribe the whole attach — only paneWrite needs the live value.
@@ -154,7 +159,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   const remoteKeyboardRef = useRef(INITIAL_REMOTE_KEYBOARD_STATE);
   // A host that rejected the credential takes no input either: swallow it
   // locally instead of POSTing writes the host will refuse.
-  readOnlyRef.current = readOnly || authRejected;
+  readOnlyRef.current = readOnly || authRejected || insecure || insecureTransport;
   const hostIdRef = useRef(hostId);
   hostIdRef.current = hostId;
   const hostLabelRef = useRef(hostLabel);
@@ -1009,6 +1014,10 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
         readOnlyRef.current = true; // before the re-render: the next key is already swallowed
         setAuthRejected(true);
         if (hostIdRef.current) useStore.getState().setRemoteHostAuthRejected(hostIdRef.current, true);
+      } else if (e.reason === 'insecure-transport') {
+        readOnlyRef.current = true;
+        setInsecure(true);
+        if (hostIdRef.current) useStore.getState().setRemoteHostInsecure(hostIdRef.current, true);
       } else {
         setDisconnected(true);
       }
@@ -1047,7 +1056,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     // the single frame between a remote resize and the fit that answers it.
     <div ref={boxRef} className="relative w-full h-full min-h-0 min-w-0 overflow-hidden">
       <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
-      {error && (
+      {error && !insecureTransport && (
         <div
           className="absolute inset-0 flex items-center justify-center text-[11px] font-mono px-2 text-center"
           style={{ color: 'var(--accent-red)', background: 'var(--bg-base)' }}
@@ -1071,13 +1080,15 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
           {t('remote.disconnected')}
         </div>
       )}
-      {authRejected && (
+      {(authRejected || insecure || insecureTransport) && (
         <div
           role="alert"
           className="absolute bottom-0 left-0 right-0 px-2 py-1 text-[10px] font-mono"
           style={{ color: 'var(--accent-red)', background: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
         >
-          {t('remote.authRejected', { host: hostLabel || t('remote.hostFallback') })}
+          {insecure || insecureTransport
+            ? t('remote.insecureHost', { host: hostLabel || t('remote.hostFallback') })
+            : t('remote.authRejected', { host: hostLabel || t('remote.hostFallback') })}
         </div>
       )}
     </div>
