@@ -4,6 +4,7 @@ import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
+import { paneForegroundProgram, surfaceForegroundProgram } from '../utils/surfaceProgram';
 import { originFromCaller } from '../utils/fanoutProvenance';
 import { sanitizeFanoutOrigin } from '../../shared/fanoutOrigin';
 import { validateMessage } from '../../shared/types';
@@ -1257,6 +1258,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           ptyId: s.ptyId,
           title: s.title,
           shell: s.shell,
+          foregroundProgram: surfaceForegroundProgram(s, store.surfaceAgent, store),
           cwd: s.cwd || liveCwd,
           gitBranch: liveGitBranch,
           surfaceType: s.surfaceType || 'terminal',
@@ -1266,7 +1268,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           // activeSurfaceId as `isActive: true` would tell a client that a
           // surface nobody can see is the focused one.
           isActive: !stashedIds.has(leaf.id) && s.id === leaf.activeSurfaceId,
-          agentName: agent?.name ?? null,
+          agentName: surfaceForegroundProgram(s, store.surfaceAgent, store),
           agentStatus: agent?.status ?? null,
           // Always a boolean, never omitted: "key absent" and "false" must not
           // be the same wire shape, or a client has to guess whether it is
@@ -1535,6 +1537,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       return {
         id: l.id,
         surfaceCount: l.surfaces.length,
+        foregroundProgram: paneForegroundProgram(l, store.surfaceAgent, store),
         active: !isStashed && l.id === ws.activePaneId,
         // Explicit boolean on every row — see surface.list.
         stashed: isStashed,
@@ -1601,7 +1604,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           return [{
             ptyId: s.ptyId,
             surfaceId: s.id,
-            agentName: a?.name ?? null,
+            agentName: surfaceForegroundProgram(s, store.surfaceAgent, store),
             agentStatus: a?.status ?? null,
             ...(q ? { pendingQuestion: q } : {}),
           }];
