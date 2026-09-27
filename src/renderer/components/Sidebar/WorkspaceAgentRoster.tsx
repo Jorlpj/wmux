@@ -19,6 +19,19 @@ import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { buildMentionReference, buildMentionTargets, focusedMentionSource } from '../../utils/agentMention';
 import { insertMention, toastMentionInsert } from '../../utils/agentMentionInsert';
+import { requestedCountFor, selectRequestedCounts } from '../../utils/fanoutProvenance';
+
+/** Open this workspace's fan-out task group and bring it into view. */
+function revealTaskGroup(ownerWorkspaceId: string): void {
+  useStore.getState().setSidebarTaskGroupExpanded(ownerWorkspaceId, true);
+  requestAnimationFrame(() => {
+    // Matched on the attribute value rather than a CSS.escape'd selector:
+    // `CSS` is not defined in every DOM this runs in (jsdom has none).
+    const group = Array.from(document.querySelectorAll<HTMLElement>('[data-task-group]'))
+      .find((el) => el.dataset.taskGroup === ownerWorkspaceId);
+    group?.scrollIntoView?.({ block: 'nearest' });
+  });
+}
 
 /**
  * The roster row's `@`: insert this agent's reference into the focused agent's
@@ -323,6 +336,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
   const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
   // Glance board: per-pane "changed since you last looked".
   const unseenByPtyId = useStore(useShallow(selectSidebarUnseen));
+  // Per agent surface: how many open fan-out tasks nested under THIS
+  // workspace it requested (the lineage origin). One memoized map for the
+  // whole sidebar; each row only looks its count up.
+  const requestedCounts = useStore(selectRequestedCounts);
 
   if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
 
@@ -389,6 +406,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
             // the one thing a stashed row exists to prove — that the session is
             // still alive and still moving — at exactly the moment the user is
             // looking at it, and would leave keyboard users with no verb at all.
+            const requestedCount = requestedCountFor(requestedCounts, workspaceId, row);
             const verb = row.stashed
               ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
               : undefined;
@@ -554,6 +572,32 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     </span>
                   ) : null}
                 </button>
+                {requestedCount > 0 && (
+                  // A sibling of the row button (a button cannot hold one).
+                  <button
+                    type="button"
+                    draggable={false}
+                    data-roster-requested={requestedCount}
+                    className={`flex-none self-center whitespace-nowrap rounded px-1 text-[10px] tabular-nums text-[var(--text-muted)] hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
+                    title={t('sidebar.requester.badgeLabel', { count: requestedCount })}
+                    aria-label={t('sidebar.requester.badgeLabel', { count: requestedCount })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      revealTaskGroup(workspaceId);
+                    }}
+                    // The workspace row is a native drag source that selects
+                    // its workspace: none of the press may reach it.
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onMouseUp={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    {t('sidebar.requester.badge', { count: requestedCount })}
+                  </button>
+                )}
                 {/* Mention this agent in the focused one — shown on hover or
                     keyboard focus, never on the focused pane's own row. A
                     sibling of the row button (a button cannot hold one). */}

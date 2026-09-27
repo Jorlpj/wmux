@@ -4,6 +4,8 @@ import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
+import { originFromCaller } from '../utils/fanoutProvenance';
+import { sanitizeFanoutOrigin } from '../../shared/fanoutOrigin';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEvidence } from '../../shared/types';
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
@@ -1086,6 +1088,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       console.warn('[wmux:role-binding] fan-out agent not swapped', { role, note: swap.note });
     }
 
+    // Who asked: main resolved it ONCE when the fan-out was requested
+    // (fanout.resolveOrigin below) and sends the same origin with every task.
+    // Never re-resolved against today's layout — the requesting pane may have
+    // closed since, and its ptyId may belong to another pane by now.
+    const fanoutOrigin = sanitizeFanoutOrigin(params.fanoutOrigin);
+
     store.addWorkspace(name);
     const afterAdd = useStore.getState();
     const newWs = afterAdd.workspaces.find((w) => w.id === afterAdd.activeWorkspaceId);
@@ -1102,7 +1110,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // empty-leaf funnel spawn a plain shell into this pane first.
     const fanoutTaskOf = typeof params.fanoutTaskOf === 'string' ? params.fanoutTaskOf : '';
     // #1481 — lets the sidebar nest this workspace under its owner right away.
-    if (fanoutTaskOf) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf);
+    if (fanoutTaskOf) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf, fanoutOrigin);
 
     // Unnested so the FINAL command is readable: withDefaultShell first (there
     // has to be a command to rewrite), then the role binding, then the marker
@@ -1167,7 +1175,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     let ptyId: string;
     try {
       const created = await window.electronAPI.pty.create(
-        fanoutTaskOf ? { ...createOptions, fanoutTaskOf } : createOptions,
+        fanoutTaskOf ? { ...createOptions, fanoutTaskOf, ...(fanoutOrigin ? { fanoutOrigin } : {}) } : createOptions,
       );
       ptyId = created.id;
     } catch (err) {
@@ -1211,7 +1219,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // task would come back on the default (expensive) one with nothing said.
     // It carries the model-env marker exactly as launched, so main can tell
     // whether the neutralisation survived when it reports a stuck worker.
-    return { workspaceId: newWsId, ptyId, initialCommand: launchCommand };
+    return { workspaceId: newWsId, ptyId, initialCommand: launchCommand, ...(fanoutOrigin ? { fanoutOrigin } : {}) };
   }
 
   // -------------------------------------------------------------------------
@@ -2062,6 +2070,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   // map (orchestratorRoleBindings) live in the renderer store, so the renderer
   // is the natural place to resolve the pair. Fields are additive — legacy
   // callers that read only `workspaceId` are unaffected.
+  // Fan-out requester (#1575): main asks, once per fan-out and before any
+  // approval or git work, which pane holds the caller's ptyId. Scoped to the
+  // workspace main verified as the fan-out's owner: a pane found anywhere
+  // else is not recorded as the requester. Renderer-only (sendToRenderer from
+  // pipe/handlers/fanout.rpc.ts), never exposed on the pipe.
+  if (method === 'fanout.resolveOrigin') {
+    const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    if (!ptyId || !workspaceId) return { origin: null };
+    return { origin: originFromCaller(store, { kind: 'pane', ptyId }, workspaceId) ?? null };
+  }
+
   if (method === 'input.findOwnerWorkspace') {
     const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
     if (!ptyId) return { workspaceId: null };
