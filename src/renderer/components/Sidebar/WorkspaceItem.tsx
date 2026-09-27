@@ -28,7 +28,8 @@ import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTi
 import { timeAgo } from '../../utils/timeAgo';
 import { displayWorkspaceName, provenanceTooltip, requesterName, resolveTaskRequester } from '../../utils/fanoutProvenance';
 import { useShallow } from 'zustand/react/shallow';
-import TaskRequesterLine from './TaskRequesterLine';
+import { usePaneTaskSplit } from './SidebarTaskGroup';
+import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
 interface WorkspaceItemProps {
@@ -56,6 +57,17 @@ interface WorkspaceItemProps {
    * the drop math assumes flat siblings, and a task's place is its owner's.
    */
   taskRow?: boolean;
+  /**
+   * 2026-09-27 — this workspace's fan-out tasks (owner rows only). Each one
+   * nests under the roster row of the pane that requested it; the rest are
+   * Sidebar's "From closed pane" group. Undefined for a row with no tasks,
+   * so memo still holds for the common row.
+   */
+  nestedTaskIds?: readonly string[];
+  /** Renders one nested task row. */
+  renderTask?: (id: string) => React.ReactNode;
+  /** Sidebar's workspace close, for a pane group's "Close finished tasks". */
+  onCloseTask?: (id: string) => void;
 }
 
 /**
@@ -281,6 +293,41 @@ const REST_HIDDEN =
 const REST_HIDDEN_GAP_ROW = '-ml-2 group-hover:ml-0 group-focus-within:ml-0';
 const REST_HIDDEN_GAP_NAME_LINE = '-ml-1 group-hover:ml-0 group-focus-within:ml-0';
 
+/**
+ * 2026-09-27 — a task row renders INSIDE its owner's row (under the pane that
+ * requested it). Tailwind's `group-hover` matches any `.group` ancestor, so
+ * with the plain names hovering the owner row would reveal every nested
+ * task's chrome. Task rows use their own group name. Literal strings, so
+ * Tailwind's scanner sees every class.
+ */
+const TASK_REST_HIDDEN =
+  'opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150'
+  + ' group-hover/task:opacity-100 group-hover/task:pointer-events-auto group-hover/task:max-w-none group-hover/task:overflow-visible'
+  + ' group-focus-within/task:opacity-100 group-focus-within/task:pointer-events-auto group-focus-within/task:max-w-none group-focus-within/task:overflow-visible';
+const TASK_REST_HIDDEN_GAP_ROW = '-ml-2 group-hover/task:ml-0 group-focus-within/task:ml-0';
+const TASK_REST_HIDDEN_GAP_NAME_LINE = '-ml-1 group-hover/task:ml-0 group-focus-within/task:ml-0';
+
+/** The hover-revealed recipes for an owner row or a nested task row. */
+function hoverRecipes(taskRow: boolean) {
+  return taskRow
+    ? {
+      group: 'group/task',
+      restHidden: TASK_REST_HIDDEN,
+      gapRow: TASK_REST_HIDDEN_GAP_ROW,
+      gapNameLine: TASK_REST_HIDDEN_GAP_NAME_LINE,
+      hideOnHover: 'group-hover/task:hidden',
+      cluster: 'group-hover/task:opacity-100 group-hover/task:pointer-events-auto group-hover/task:max-w-none group-hover/task:overflow-visible',
+    }
+    : {
+      group: 'group',
+      restHidden: REST_HIDDEN,
+      gapRow: REST_HIDDEN_GAP_ROW,
+      gapNameLine: REST_HIDDEN_GAP_NAME_LINE,
+      hideOnHover: 'group-hover:hidden',
+      cluster: 'group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible',
+    };
+}
+
 function shortenPath(path: string, maxLen = 25): string {
   if (!path || path.length <= maxLen) return path;
   const parts = path.replace(/\\/g, '/').split('/');
@@ -288,7 +335,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, nestedTaskIds, renderTask, onCloseTask }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -360,9 +407,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // the name's width to sit there. The ACTIVE row keeps them — it is the one
   // row you are working in. See REST_HIDDEN for why hiding is not enough on its
   // own: at rest the chrome must also give its WIDTH back to the name.
-  const restHidden = isActive ? '' : `${REST_HIDDEN} ${REST_HIDDEN_GAP_ROW}`;
+  const hover = hoverRecipes(taskRow);
+  const restHidden = isActive ? '' : `${hover.restHidden} ${hover.gapRow}`;
   /** The same, for chrome that sits inside the `gap-1` name line. */
-  const restHiddenNameLine = isActive ? '' : `${REST_HIDDEN} ${REST_HIDDEN_GAP_NAME_LINE}`;
+  const restHiddenNameLine = isActive ? '' : `${hover.restHidden} ${hover.gapNameLine}`;
   // #997 — the roster's expanded state. It lives here, not in the roster,
   // because the control that toggles it now sits on THIS row while the list it
   // reveals is rendered below; the two would otherwise need to agree across a
@@ -370,6 +418,24 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // churn still does not rerender this component.
   const [rosterOpen, setRosterOpen] = useState(isActive);
   const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
+  // 2026-09-27 — fan-out tasks nest under the roster row of the pane that
+  // requested them, so folding the roster folds them too. Two things must not
+  // hide there: the task you are working in (entering it makes this row
+  // inactive, which would fold the roster under you), and a task that needs
+  // you (it re-opens the roster, the way a stash pulse does — again for each
+  // further task that starts needing you). If the user folds it anyway, the
+  // folded chip counts them in red.
+  const paneTaskSplit = usePaneTaskSplit(workspaceId, renderTask ? nestedTaskIds : undefined);
+  const paneTaskIds = useMemo(() => [...paneTaskSplit.byPane.values()].flat(), [paneTaskSplit]);
+  const paneTaskActive = useStore((s) => !!s.activeWorkspaceId && paneTaskIds.includes(s.activeWorkspaceId));
+  const paneTaskNeedYou = useStore((s) => paneTaskIds.reduce((n, id) => n + (taskNeedsYou(selectWorkspaceAgentStatus(s, id)) ? 1 : 0), 0));
+  const prevNeedYouRef = useRef(paneTaskNeedYou);
+  useEffect(() => {
+    if (paneTaskNeedYou > prevNeedYouRef.current) setRosterOpen(true);
+    prevNeedYouRef.current = paneTaskNeedYou;
+  }, [paneTaskNeedYou]);
+  // Renaming keeps the nested tasks in view: the rename must not hide them.
+  const rosterShown = rosterOpen || paneTaskActive || (editing && paneTaskIds.length > 0);
   // Counts only — a reference-stable projection of two integers, so this does
   // not rerender the row on terminal output the way the full roster would.
   // #1481 — the chip projection: counts plus up to three agents for the
@@ -384,12 +450,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   /** Rows whose roster summary must not wait for the pointer — see its JSX.
    *  #1481 — the summary now names who is here and what they are doing, which
    *  is the reason to scan the list, so it no longer hides at rest. */
-  const rosterAlwaysShown = rosterOpen || hasRoster;
+  const rosterAlwaysShown = rosterShown || hasRoster || paneTaskIds.length > 0;
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
+  // A row whose nested task needs you stays open when it moves to the
+  // background: folding it there would hide the one row asking for you.
+  const paneTaskNeedYouRef = useRef(paneTaskNeedYou);
+  paneTaskNeedYouRef.current = paneTaskNeedYou;
   useEffect(() => {
-    setRosterOpen(isActive);
+    setRosterOpen(isActive || paneTaskNeedYouRef.current > 0);
   }, [isActive]);
 
   // #977 — a pane that was just stashed disappeared from the layout. If the
@@ -438,8 +508,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const lineageOwner = useStore((s) => (taskRow ? s.fanoutLineage[workspaceId] : undefined));
   const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? lineageOwner ?? spawnOwner : undefined;
   const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
-  // Who asked for this task — subscribed once, shared by the visible
-  // requester line and the glyph's tooltip so the two can never disagree.
+  // Who asked for this task — for the fan-out glyph's tooltip. The sidebar
+  // shows it by nesting the task under the requesting pane (2026-09-27).
   const requester = useStore(useShallow((s) => (taskRow ? resolveTaskRequester(s, workspaceId) : undefined)));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
@@ -586,8 +656,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // nearest draggable ancestor as the native source, so `draggable={false}`
     // on a nested button is not enough. Reject a drag whose pointer originated
     // over the roster; clicks still handle disclosure and exact agent focus.
+    // Only THIS row's own roster counts: a task row nested in its owner's
+    // roster sits inside that roster, and must still drag itself.
     const pointerTarget = document.elementFromPoint(e.clientX, e.clientY);
-    if (pointerTarget?.closest('[data-workspace-agent-roster], [data-workspace-fanout]')) {
+    const control = pointerTarget?.closest('[data-workspace-agent-roster], [data-workspace-fanout]');
+    if (control && e.currentTarget.contains(control)) {
       e.preventDefault();
       return;
     }
@@ -815,7 +888,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         // Not while renaming: a text drag inside the input must stay a text drag.
         draggable={!!workspace && !editing}
         {...tokenAttrs('bgSurface', 'bg')}
-        className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
+        className={`${hover.group} sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-main)]'
@@ -997,9 +1070,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               workspaceId={workspaceId}
               agentCount={rosterCounts.agentCount}
               stashedCount={rosterCounts.stashedCount}
-              agents={rosterOpen ? undefined : rosterCounts.agents}
+              agents={rosterShown ? undefined : rosterCounts.agents}
               extra={rosterCounts.extra}
-              open={rosterOpen}
+              paneTaskCount={paneTaskIds.length}
+              paneTaskNeedYou={paneTaskNeedYou}
+              open={rosterShown}
               onToggle={toggleRoster}
             />
           </span>
@@ -1014,7 +1089,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* #1481 — not on a nested task row: its wash and red ring stay, and the
             owner's rollup line already says "N need you" for the group. */}
         {needsYou && !taskRow && (
-          <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : 'group-hover:hidden'}`}>
+          <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : hover.hideOnHover}`}>
             {t('workspace.needsYou')}
           </span>
         )}
@@ -1060,7 +1135,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             (chromeHitArea.test.ts asserts it), so this one item keeps its gap. */}
         <div
           data-workspace-actions
-          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible focus-within:opacity-100 focus-within:pointer-events-auto focus-within:max-w-none focus-within:overflow-visible`}
+          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150 ${hover.cluster} focus-within:opacity-100 focus-within:pointer-events-auto focus-within:max-w-none focus-within:overflow-visible`}
         >
           {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
           <button
@@ -1099,14 +1174,17 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           </button>
         </div>
         </div>
-        {/* Which pane asked for this task — at rest, on a line of its own at
-            the row's full width (the name line's hover actions and roster
-            summary would otherwise squeeze it to a few characters). */}
-        {taskRow && !editing && requester && <TaskRequesterLine requester={requester} />}
         {/* Mounted only when expanded: a collapsed list would subscribe to the
             whole roster projection to render nothing. */}
-        {!editing && rosterOpen && (
-          <WorkspaceAgentRoster workspaceId={workspaceId} pulsingPaneId={pulsingPaneId} />
+        {(!editing || paneTaskIds.length > 0) && rosterShown && (
+          <WorkspaceAgentRoster
+            workspaceId={workspaceId}
+            pulsingPaneId={pulsingPaneId}
+            taskIds={nestedTaskIds}
+            renderTask={renderTask}
+            onCloseTask={onCloseTask}
+            ownerActive={isActive}
+          />
         )}
       </div>
 
