@@ -43,7 +43,17 @@ class FakeTerminal {
     setupLog.push('open');
   }
   reset(): void { this.resetCalls++; }
-  resize(cols: number, rows: number): void { this.resized.push({ cols, rows }); }
+  /** xterm's own grid, as `term.cols`/`term.rows` report it. */
+  cols = 80;
+  rows = 24;
+  /** Left undefined unless a test lays the terminal out — `runFit` returns
+   *  early without an `.xterm-screen`, which is every other test's world. */
+  element: HTMLElement | undefined = undefined;
+  resize(cols: number, rows: number): void {
+    this.resized.push({ cols, rows });
+    this.cols = cols;
+    this.rows = rows;
+  }
   /**
    * xterm's `write(data, callback)` — the callback fires once the parser has
    * consumed the chunk, which is the seam the repaint gate hangs off. The fake
@@ -144,6 +154,7 @@ describe('RemoteMirrorTerminal', () => {
   let errorHandlers: Handler[];
   let paneDetach: ReturnType<typeof vi.fn>;
   let paneWrite: ReturnType<typeof vi.fn>;
+  let paneResize: ReturnType<typeof vi.fn>;
   let clipboardWrite: ReturnType<typeof vi.fn>;
   let clipboardRead: ReturnType<typeof vi.fn>;
 
@@ -157,6 +168,7 @@ describe('RemoteMirrorTerminal', () => {
     errorHandlers = [];
     paneDetach = vi.fn(() => Promise.resolve());
     paneWrite = vi.fn();
+    paneResize = vi.fn(() => Promise.resolve({ ok: true }));
 
     (window as unknown as { electronAPI: unknown }).electronAPI = {
       remote: {
@@ -182,6 +194,7 @@ describe('RemoteMirrorTerminal', () => {
         },
         paneDetach,
         paneWrite,
+        paneResize,
       },
     };
 
@@ -498,6 +511,202 @@ describe('RemoteMirrorTerminal', () => {
     expect(term.written).toHaveLength(writesAfterAttach); // nothing repainted
 
     unmount();
+  });
+
+  // The remote mirror "breathing" bug: every grant arrived as a resize event,
+  // changed the remote grid, and re-armed the resize request — so the mirror
+  // asked again, against a font the fit had just changed, for a grid one or
+  // two cells away, forever (~2 Hz, SIGWINCH on the host each time).
+  describe('remote resize requests', () => {
+    // A stepped cell model: xterm's cell size is not proportional to the font
+    // size (it rounds through the pixel ratio), which is what made each
+    // extrapolation disagree.
+    const dpr = () => window.devicePixelRatio || 1;
+    const cellW = (f: number) => Math.ceil(0.6021 * f * dpr()) / dpr();
+    const cellH = (f: number) => Math.ceil(1.1719 * f * dpr()) / dpr();
+
+    function layOut(container: HTMLElement, term: FakeTerminal, box: { w: number; h: number }) {
+      const el = document.createElement('div');
+      const screen = document.createElement('div');
+      screen.className = 'xterm-screen';
+      el.appendChild(screen);
+      const font = () => Number(term.options['fontSize']);
+      Object.defineProperty(screen, 'offsetWidth', { get: () => term.cols * cellW(font()) });
+      Object.defineProperty(screen, 'offsetHeight', { get: () => term.rows * cellH(font()) });
+      term.element = el;
+      const boxEl = container.querySelector('div.relative') as HTMLElement;
+      Object.defineProperty(boxEl, 'clientWidth', { get: () => box.w, configurable: true });
+      Object.defineProperty(boxEl, 'clientHeight', { get: () => box.h, configurable: true });
+    }
+
+    const settle = (ms = 1000) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    const remoteResize = (cols: number, rows: number) => act(async () => {
+      resizeHandlers.forEach((h) => h({ attachId: 'a1', cols, rows }));
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    async function mountAttached(box: { w: number; h: number }, grid: { cols: number; rows: number } | null) {
+      const view = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      layOut(view.container, term, box);
+      if (grid) {
+        await act(async () => {
+          metaHandlers.forEach((h) => h({ attachId: 'a1', ...grid, snapshotB64: btoa('') }));
+          term.flushWrites();
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+      }
+      return { ...view, term };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      useStore.setState({ terminalFontSize: 12.5 });
+      paneResize.mockImplementation((_id: string, cols: number, rows: number) =>
+        Promise.resolve({ ok: true, cols, rows }));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+    });
+
+    it('★ the echo of our own grant never re-opens the decision', async () => {
+      const { unmount } = await mountAttached({ w: 448, h: 726 }, { cols: 36, rows: 44 });
+      expect(paneResize).toHaveBeenCalledTimes(1);
+      expect(paneResize).toHaveBeenLastCalledWith('a1', 56, 48);
+
+      await remoteResize(56, 48);
+      await settle(30_000);
+      expect(paneResize).toHaveBeenCalledTimes(1);
+      unmount();
+    });
+
+    it('an external re-grid re-opens the decision once, and it settles', async () => {
+      const { unmount } = await mountAttached({ w: 448, h: 726 }, { cols: 36, rows: 44 });
+      await remoteResize(56, 48); // our grant
+
+      // Someone else (the host window, another viewer) re-grids the pane.
+      await remoteResize(53, 46);
+      expect(paneResize).toHaveBeenCalledTimes(2);
+      expect(paneResize).toHaveBeenLastCalledWith('a1', 56, 48);
+
+      await remoteResize(56, 48); // the echo of the re-request
+      await settle(30_000);
+      expect(paneResize).toHaveBeenCalledTimes(2);
+      unmount();
+    });
+
+    it('yields to a party that keeps overriding its grants (no ping-pong)', async () => {
+      const { unmount } = await mountAttached({ w: 448, h: 726 }, { cols: 36, rows: 44 });
+      await remoteResize(56, 48);
+      await remoteResize(53, 46); // override 1 → one re-request
+      await remoteResize(56, 48);
+      expect(paneResize).toHaveBeenCalledTimes(2);
+
+      await remoteResize(53, 46); // override 2 inside the window → yield
+      await settle(30_000);
+      expect(paneResize).toHaveBeenCalledTimes(2);
+      unmount();
+    });
+
+    it('asks again when the box itself changes size', async () => {
+      const box = { w: 448, h: 726 };
+      const { unmount } = await mountAttached(box, { cols: 36, rows: 44 });
+      expect(paneResize).toHaveBeenCalledTimes(1);
+
+      box.w = 800;
+      // A ResizeObserver callback in the app; jsdom has none, and a remote
+      // resize event is the other path that re-runs the fit.
+      await remoteResize(56, 48);
+      expect(paneResize).toHaveBeenCalledTimes(2);
+      expect(paneResize).toHaveBeenLastCalledWith('a1', 100, 48);
+      unmount();
+    });
+
+    it('a font change while shrunk measures the new ceiling first and ends at the configured font', async () => {
+      const { term, unmount } = await mountAttached({ w: 448, h: 726 }, { cols: 36, rows: 44 });
+      await remoteResize(56, 48);
+
+      await act(async () => {
+        useStore.setState({ terminalFontSize: 15 });
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      // 448 / ceil(0.6021 × 15) = 44 cols, 726 / ceil(1.1719 × 15) = 40 rows —
+      // the real 15px cell, not one extrapolated from the shrunk font.
+      expect(paneResize).toHaveBeenLastCalledWith('a1', 44, 40);
+      await remoteResize(44, 40);
+      expect(term.options['fontSize']).toBe(15);
+      unmount();
+    });
+
+    it('a change of device pixel ratio invalidates the measured cell and re-decides', async () => {
+      let onResolutionChange: (() => void) | null = null;
+      const matchMedia = vi.fn(() => ({
+        addEventListener: (_t: string, cb: () => void) => { onResolutionChange = cb; },
+        removeEventListener: vi.fn(),
+      }));
+      (window as unknown as { matchMedia: unknown }).matchMedia = matchMedia;
+      useStore.setState({ terminalFontSize: 12 });
+      try {
+        const { unmount } = await mountAttached({ w: 448, h: 726 }, { cols: 36, rows: 44 });
+        expect(paneResize).toHaveBeenLastCalledWith('a1', 56, 48);
+        await remoteResize(56, 48);
+
+        Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+        await act(async () => {
+          onResolutionChange?.();
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+        // At 2x, a 12px cell is ceil(14.45)/2 = 7.5 × ceil(28.13)/2 = 14.5.
+        expect(paneResize).toHaveBeenLastCalledWith('a1', 59, 50);
+        expect(matchMedia).toHaveBeenLastCalledWith('(resolution: 2dppx)');
+        unmount();
+      } finally {
+        delete (window as unknown as { matchMedia?: unknown }).matchMedia;
+      }
+    });
+
+    it('retries a rate-limited request with backoff, then stops at the grant', async () => {
+      paneResize
+        .mockImplementationOnce(() => Promise.resolve({ ok: false, reason: 'resize-too-often' }))
+        .mockImplementationOnce(() => Promise.reject(new Error('fetch failed')));
+      const { unmount } = await mountAttached({ w: 448, h: 726 }, { cols: 36, rows: 44 });
+      await settle(2000);
+      expect(paneResize).toHaveBeenCalledTimes(3);
+      expect(paneResize).toHaveBeenLastCalledWith('a1', 56, 48);
+      await remoteResize(56, 48);
+      await settle(30_000);
+      expect(paneResize).toHaveBeenCalledTimes(3);
+      unmount();
+    });
+
+    it('a desk-owned refusal is not hammered, only probed slowly until the host lets go', async () => {
+      paneResize.mockImplementation(() => Promise.resolve({ ok: false, reason: 'desk-owns-size' }));
+      const { unmount } = await mountAttached({ w: 448, h: 726 }, { cols: 36, rows: 44 });
+      expect(paneResize).toHaveBeenCalledTimes(1);
+      await settle(9_000);
+      expect(paneResize).toHaveBeenCalledTimes(1);
+
+      // The host window looked away (it sends no event for that).
+      paneResize.mockImplementation((_id: string, cols: number, rows: number) =>
+        Promise.resolve({ ok: true, cols, rows }));
+      await settle(2_000);
+      expect(paneResize).toHaveBeenCalledTimes(2);
+      await remoteResize(56, 48);
+      await settle(30_000);
+      expect(paneResize).toHaveBeenCalledTimes(2);
+      unmount();
+    });
+
+    it('learns the grid from a resize when the meta was missed', async () => {
+      const { unmount } = await mountAttached({ w: 448, h: 726 }, null);
+      await settle();
+      expect(paneResize).not.toHaveBeenCalled(); // xterm's default grid is not the remote's
+      await remoteResize(36, 44);
+      expect(paneResize).toHaveBeenCalledTimes(1);
+      expect(paneResize).toHaveBeenLastCalledWith('a1', 56, 48);
+      unmount();
+    });
   });
 
   it('ignores a resize aimed at a different attach', () => {
