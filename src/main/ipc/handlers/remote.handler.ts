@@ -29,12 +29,15 @@ import { toastManager } from '../../notification/ToastManager';
 import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../../shared/remoteHosts';
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import { DEVICE_KIND_HEADER } from '../../../shared/web';
+import { HostStatusProber, combineHostStatus } from '../../remote/hostStatus';
+import { credentialOriginProblem } from '../../../shared/remotePairInput';
 import type {
   PairFailureReason,
   RemoteAttachmentDescriptor,
   RemoteErrorReason,
   RemoteHost,
   RemoteHostPublic,
+  RemoteHostStatus,
   RemoteWorkspaceSummary,
 } from '../../../shared/remoteHosts';
 
@@ -76,6 +79,8 @@ export interface RegisterRemoteHandlersDeps {
   /** Test seam: fetch implementation for the `/api/config` add-time probe
    *  (runs before any RemoteHostClient exists, so it needs its own seam). */
   fetchImpl?: typeof fetch;
+  /** Test seam: the hub's status prober (clock, TTL, concurrency). */
+  statusProber?: HostStatusProber;
 }
 
 interface AttachRecord {
@@ -235,6 +240,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       new RemoteAttentionSubscriber({ host, onNotification, fetchImpl }));
   const fetchImpl: typeof fetch = deps.fetchImpl ?? fetch;
   const makeClient = deps.clientFactory ?? ((host: RemoteHost) => new RemoteHostClient(host, fetchImpl));
+  const statusProber = deps.statusProber ?? new HostStatusProber({ fetchImpl });
 
   const clients = new Map<string, RemoteHostClient>(); // hostId -> client, lazily built
   // RemoteHostsStore.add() has no allowInput param (Task 3 interface), so the
@@ -508,6 +514,26 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     return store.list().map(publicHost);
   }));
 
+  ipcMain.removeHandler(IPC.REMOTE_HOSTS_STATUS);
+  ipcMain.handle(IPC.REMOTE_HOSTS_STATUS, wrapHandler(IPC.REMOTE_HOSTS_STATUS,
+    async (_e: IpcMainInvokeEvent, force?: unknown): Promise<Record<string, RemoteHostStatus>> => {
+      const hosts = store.list().map((h) => store.get(h.id)).filter((h): h is RemoteHost => h !== null);
+      let probed: Awaited<ReturnType<HostStatusProber['probe']>>;
+      try {
+        probed = await statusProber.probe(hosts, { force: force === true });
+      } catch {
+        // The prober never throws by contract; if it ever did, report every
+        // host as unreachable rather than rejecting a UI read.
+        probed = Object.fromEntries(hosts.map((h) => [h.id, 'unreachable' as const]));
+      }
+      const out: Record<string, RemoteHostStatus> = {};
+      for (const host of hosts) {
+        const status = combineHostStatus(probed[host.id], clients.get(host.id));
+        if (status) out[host.id] = status;
+      }
+      return out;
+    }));
+
   ipcMain.removeHandler(IPC.REMOTE_HOSTS_ADD);
   ipcMain.handle(IPC.REMOTE_HOSTS_ADD, wrapHandler(IPC.REMOTE_HOSTS_ADD,
     async (
@@ -520,6 +546,13 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
       const parsed = parseWebUrl(url);
       if (!parsed) return { ok: false, error: 'invalid wmux web URL' };
+      // The token never crosses to another machine in the clear, and the
+      // address the operator sees must be the one it connects to.
+      const problem = credentialOriginProblem(new URL(url.trim()));
+      if (problem === 'userinfo') return { ok: false, error: 'invalid wmux web URL' };
+      if (problem === 'insecure') {
+        return { ok: false, error: 'that host needs HTTPS — a token is never sent to another computer over plain http' };
+      }
       if (store.list().some((h) => h.origin === parsed.origin)) {
         return { ok: false, error: 'already registered' };
       }
@@ -577,10 +610,19 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         if (u.protocol !== 'http:' && u.protocol !== 'https:') {
           return { ok: false, reason: 'invalid-origin' };
         }
+        // The minted credential never crosses to another machine in the
+        // clear, and `user@` would make the shown address a lie.
+        const problem = credentialOriginProblem(u);
+        if (problem === 'userinfo') return { ok: false, reason: 'invalid-origin' };
+        if (problem === 'insecure') return { ok: false, reason: 'insecure-transport' };
         origin = u.origin;
       } catch {
         return { ok: false, reason: 'invalid-origin' };
       }
+
+      // A re-pair renews THIS host's credential; it never rebinds the host to
+      // a different machine, whatever link was pasted.
+      if (replacing && replacing.origin !== origin) return { ok: false, reason: 'pairing-failed' };
 
       if (store.list().some((h) => h.origin === origin && h.id !== replacing?.id)) {
         return { ok: false, reason: 'already-registered' };
@@ -614,6 +656,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       }
       if (!result.ok) return { ok: false, reason: 'already-registered' };
       if (replacing) dropHostConnections(replacing.id);
+      statusProber.invalidate(result.host.id);
 
       allowInputCache.set(result.host.id, probe.allowInput);
       return { ok: true, host: { ...result.host, allowInput: probe.allowInput } };
@@ -636,6 +679,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       } catch { /* see above — an orphan descriptor restores as a stale row */ }
       syncAttentionSubs();
       allowInputCache.delete(hostId);
+      statusProber.invalidate(hostId);
       const client = clients.get(hostId);
       if (client) {
         client.detachAll();
@@ -934,6 +978,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_ADD);
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_PAIR);
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
+    ipcMain.removeHandler(IPC.REMOTE_HOSTS_STATUS);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACES_LIST);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACE_CREATE);
     ipcMain.removeHandler(IPC.REMOTE_SESSION_CLOSE);
