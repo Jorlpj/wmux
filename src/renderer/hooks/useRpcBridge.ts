@@ -9,6 +9,7 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
+import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
@@ -654,6 +655,32 @@ function a2aTargetHasAgent(
  * newlines, no message body (the body rides the dual-party-scoped task store,
  * fetched via a2a_task_query). Kept short so it doesn't wrap the prompt.
  */
+/**
+ * Whether a message from this caller should reopen `task`: the task has ended
+ * and the caller is provably its sender (shared rule, also enforced by the
+ * daemon). An unverified caller, a sibling pane or the receiver never reopens.
+ */
+function wantsSenderReopen(task: Task, callerWorkspaceId: string, callerAddr: PaneAddress | null): boolean {
+  return isTaskEnded(task) && isVerifiedTaskSender(task.metadata, callerWorkspaceId, callerAddr?.paneId);
+}
+
+/**
+ * Apply the reopen main decided on: the daemon's committed snapshot
+ * (`daemonReopenedTask`), or a cache-only reopen (`localReopen`) for a task
+ * the daemon does not hold. Main strips both from the wire, so neither can be
+ * forged by a caller. Returns whether the task reopened.
+ */
+function applySenderReopen(taskId: string, params: RpcParams): boolean {
+  const store = useStore.getState();
+  const snapshot = params.daemonReopenedTask;
+  if (snapshot && typeof snapshot === 'object' && (snapshot as { id?: unknown }).id === taskId) {
+    store.applyDaemonTaskUpdate(snapshot as Task);
+    return store.getTask(taskId)?.status.state === 'submitted';
+  }
+  if (params.localReopen === true) return store.reopenTask(taskId);
+  return false;
+}
+
 function buildA2aNudge(taskId: string, senderName: string): string {
   const id8 = taskId.replace(/^task[-_]?/, '').slice(0, 8);
   // Sanitize the user-editable workspace name: a CR/LF in it would otherwise
@@ -2549,6 +2576,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         };
       }
       const role = paneRole ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
+      // A verified sender writing to a task that already ended is new work for
+      // the receiver: the task reopens. Main asks first (preflight), commits the
+      // reopen in the daemon, then replays the call with the daemon's snapshot.
+      const reopenWanted = wantsSenderReopen(task, workspaceId, callerAddr);
+      if (params.reopenPreflight === true) return { ok: true, preflight: { reopen: reopenWanted } };
+      const reopened = applySenderReopen(taskId, params);
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
 
@@ -2710,7 +2743,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // silent, target workspace gone, and a failed pty write. Delivered
       // replies deliberately do NOT emit (the nudge already signals; emitting
       // per delivered message is the flood the create-path comment forbids).
-      if (delivery.notified !== true) {
+      // A reopen is a state change, so it always tees the pointer.
+      if (delivery.notified !== true || reopened) {
         const updatedTask = store.getTask(taskId);
         if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
       }
@@ -3018,6 +3052,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     const operator = a2aOperatorOrigin(params);
     // The pane write this update made, if any: a refusal is reported back.
     let updateWrite: A2aPtyWrite = { ptyId: null };
+    let updateReopened = false;
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     if (!taskId) return { error: 'a2a.task.update: missing "taskId"' };
@@ -3093,7 +3128,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         store.applyDaemonTaskUpdate(committedTask);
         transitioned = true;
       } else {
-        const result = store.updateTaskStatus(taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence);
+        const result = store.updateTaskStatus(
+          taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence, params.requirePaneIdentity === true,
+        );
         if (!result.ok) return { error: `a2a.task.update: ${result.error}` };
         transitioned = true;
       }
@@ -3121,6 +3158,32 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         return { error: 'a2a.task.update: caller pane is not a participant of this task' };
       }
       const role = paneRole ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
+
+      // A message-only update is a reply by another name, so it carries the
+      // reply path's round cap: without it a sender "thanks" -> reopen ->
+      // re-complete -> ... loop had no end. A status update is the receiver
+      // closing out the task and is not capped (nothing was mutated yet here
+      // when there is no status).
+      if (!nextState && (
+        countRoundTrips(task.history) >= REPLY_ROUND_CAP ||
+        maxSideMessages(task.history) > REPLY_ROUND_CAP * 2
+      )) {
+        return {
+          error:
+            `a2a.task.update: round cap reached — this thread has completed ${REPLY_ROUND_CAP} ` +
+            'round trips (or one side exceeded its message ceiling). Escalate to the human, or ' +
+            'have a NEW task opened that references this task id.',
+          reason: 'cap_reached',
+          roundTrips: countRoundTrips(task.history),
+        };
+      }
+
+      // Same rule as the reply branch: a verified sender's message reopens an
+      // ended task. Never in a call that also carries a status: only the
+      // receiver may transition, and its completion must stay closed.
+      const reopenWanted = !nextState && wantsSenderReopen(task, workspaceId, callerAddrUpdate);
+      if (params.reopenPreflight === true) return { ok: true, preflight: { reopen: reopenWanted } };
+      updateReopened = !nextState && applySenderReopen(taskId, params);
 
       const parts: Part[] = [{ kind: 'text', text: message }];
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
@@ -3209,10 +3272,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     if (transitioned && nextState) {
       const updatedTask = store.getTask(taskId);
       if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated', nextState);
-    } else if (updateWrite.refused) {
+    } else if (updateWrite.refused || updateReopened) {
       // The message is stored but its push was withheld: tee the pointer so a
       // receiver polling wmux_events_poll still learns the thread moved (the
-      // reply branch does the same for every not-notified outcome).
+      // reply branch does the same for every not-notified outcome). A reopen
+      // is a state change and tees the pointer too.
       const updatedTask = store.getTask(taskId);
       if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
     }
