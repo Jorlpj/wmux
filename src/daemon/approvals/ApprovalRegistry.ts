@@ -76,7 +76,7 @@ import {
   decideApprovalPress,
   keystrokesForAgent,
   looksLikeApprovalPrompt,
-  looksLikeChoiceOnScreen,
+  questionOnScreen,
   type ApprovalPressFacts,
 } from './approvalKeystrokes';
 import {
@@ -98,9 +98,11 @@ import type {
   ApprovalResolveFailure,
   ApprovalResolveParams,
   ApprovalResolveResult,
+  AnswerRefusalReason,
   TerminalPromptNote,
 } from './types';
 import { TERMINAL_PROMPT_WEB_ANSWER } from './types';
+import type { QuestionShape } from './askUserQuestion';
 
 /** The pane's state at one instant: output bytes, key-carrying input, the PTY incarnation. */
 export interface PromptScreenMark {
@@ -387,6 +389,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     question?: string;
     options?: string[];
     choices?: Array<{ key: string; label: string }>;
+    questionShape?: QuestionShape;
   }): Promise<void> {
     // Snapshot BEFORE queuing. `mutate` runs the body after the chain drains,
     // which can be seconds later (a resolve ahead of it is holding the chain
@@ -401,6 +404,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       question: input.question,
       options: input.options ? [...input.options] : undefined,
       choices: input.choices ? input.choices.map((c) => ({ ...c })) : undefined,
+      questionShape: input.questionShape,
     };
     return this.mutate(() => {
       const superseded = this.requests.find(
@@ -427,6 +431,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         ...(snapshot.question ? { question: snapshot.question } : {}),
         ...(snapshot.options && snapshot.options.length > 0 ? { options: [...snapshot.options] } : {}),
         ...(snapshot.choices && snapshot.choices.length > 0 ? { choices: snapshot.choices.map((c) => ({ ...c })) } : {}),
+        ...(snapshot.questionShape ? { questionShape: snapshot.questionShape } : {}),
         // Danger HINT for UI step-up, computed once at creation from the same
         // pattern list the PTY critical-action scanner uses. A miss or a false
         // positive changes nothing about whether this request can be answered.
@@ -521,7 +526,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * that includes the `tool_use` id. Anything else — detector-only with no
    * binding, a command that does not match — is informational for everyone.
    *
-   * Created only when nothing is pending on the pane; never supersedes. A
+   * Created only when nothing is pending on the pane, with one exception (see
+   * `staleQuestionFor`): a hook-reported dialog for another tool supersedes a
+   * pending AskUserQuestion record, which it proves is no longer on screen. A
    * detector-found record is also refused for the same dialog the screen check
    * released within the cooldown. Never rejects: failures are logged.
    */
@@ -536,23 +543,45 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   private async noteTerminalPromptInner(note: TerminalPromptNote): Promise<void> {
     const { sessionId } = note;
     if (!isClaudeFamilyAgent(note.agent)) return;
-    if (this.terminalPromptReads.has(sessionId) || this.hasPending(sessionId)) return;
+    if (this.terminalPromptReads.has(sessionId)) return;
+    // Pinned BEFORE any await: only this record may be superseded below. A
+    // question created while the screen is read is a new one, not stale.
+    const staleId = this.staleQuestionFor(note)?.id;
+    if (this.hasPending(sessionId) && !staleId) return;
     this.terminalPromptReads.add(sessionId);
     const seq = this.sweepSeq.get(sessionId) ?? 0;
     try {
       const read = await this.readDialogForCreation(sessionId);
       const binding = this.bindingFor(sessionId, note);
+      // The question must be proven gone from the screen, not just outlived by
+      // a hook: a subagent's permission request can arrive while the lead
+      // turn's question is still up.
+      const staleGone = staleId ? await this.questionGone(sessionId, staleId) : false;
       let created: ApprovalRequest | null = null;
       await this.mutate(() => {
-        if (this.hasPending(sessionId)) return [];
+        const candidate = this.staleQuestionFor(note);
+        const stale = candidate && candidate.id === staleId && staleGone ? candidate : undefined;
+        if (this.hasPending(sessionId) && !stale) return [];
         if ((this.sweepSeq.get(sessionId) ?? 0) !== seq) return [];
         // The pane must still be alive at the moment the record is minted.
         if (this.deps.promptScreenMark && this.deps.promptScreenMark(sessionId) === null) return [];
         const record = this.buildTerminalPrompt(note, read, binding);
         if (note.source !== 'hook' && this.inCooldown(sessionId, record.dialogKey)) return [];
+        const events: ApprovalEvent[] = [];
+        if (stale) {
+          stale.state = 'superseded';
+          stale.resolvedAt = this.now();
+          events.push({ type: 'supersede', request: copyRequest(stale) });
+          this.deps.log?.(
+            'info',
+            `[approvals] superseded stale question ${stale.id} on ${sessionId}: ` +
+              `a ${logText(note.toolName ?? 'permission', 40)} dialog replaced it`,
+          );
+        }
         this.requests.push(record);
         created = record;
-        return [{ type: 'create', request: copyRequest(record) }];
+        events.push({ type: 'create', request: copyRequest(record) });
+        return events;
       });
       const record: ApprovalRequest | null = created;
       if (record && !(record as ApprovalRequest).promptFingerprint && this.deps.readPromptScreen) {
@@ -649,6 +678,58 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     const live = await this.readActiveDialog(sessionId);
     if (!live) return;
     await this.supersedeWithFresh(record, live);
+  }
+
+  /**
+   * The pane's lone pending AskUserQuestion record, as a CANDIDATE for being
+   * retired by another dialog — never retired on this alone.
+   *
+   * Esc on an AskUserQuestion rejects the tool: Claude Code sends no
+   * PostToolUse for it and no Stop for the interrupt, so its `awaiting_input`
+   * record stayed pending for the rest of the session (measured on 2.1.283),
+   * and the next permission dialog found the pane "pending" and got no record.
+   * A candidate is superseded only when a screen read proves its question is
+   * gone (`questionGone`), so a subagent's permission request that lands while
+   * the question is still up changes nothing.
+   *
+   * Only a lone `awaiting_input` qualifies — a gate or another terminal prompt
+   * keeps today's first-record-wins rule — and never for the question's own
+   * PermissionRequest (Claude fires it ~50 ms after the question's PreToolUse).
+   */
+  private staleQuestionFor(note: TerminalPromptNote): ApprovalRequest | undefined {
+    if (note.toolName === 'AskUserQuestion') return undefined;
+    const pending = this.requests.filter((r) => r.state === 'pending' && r.sessionId === note.sessionId);
+    return pending.length === 1 && pending[0].kind === 'awaiting_input' ? pending[0] : undefined;
+  }
+
+  /**
+   * True only when a fresh screen read shows the record's question is NOT on
+   * screen (`questionOnScreen` → `absent`). Unreadable, unprovable, or still
+   * there → false: a live question is never retired on a guess.
+   */
+  private async questionGone(sessionId: string, id: string): Promise<boolean> {
+    const record = this.requests.find((r) => r.id === id);
+    if (!record || record.state !== 'pending') return false;
+    const rows = await this.safeReadScreen(sessionId);
+    return !!rows && rows.length > 0 && questionOnScreen(rows, record) === 'absent';
+  }
+
+  /**
+   * Retire the pane's pending AskUserQuestion record when its question has
+   * left the screen. HookIngest calls this when the agent starts another tool
+   * (the permission gate's PreToolUse): that tool may belong to a subagent
+   * while the question is still up, so the screen decides. Never rejects.
+   */
+  async retireStaleQuestion(sessionId: string): Promise<void> {
+    try {
+      const candidate = this.staleQuestionFor({ sessionId, agent: '', source: 'hook' });
+      if (!candidate) return;
+      const id = candidate.id;
+      if (!(await this.questionGone(sessionId, id))) return;
+      await this.mutate(() => this.expirePendingWhere((r) => r.id === id, 'prompt-gone'));
+    } catch (err) {
+      this.deps.log?.('warn', `[approvals] stale question check failed for ${sessionId}: ${String(err)}`);
+    }
   }
 
   private hasPending(sessionId: string): boolean {
@@ -932,7 +1013,6 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // default first-option mapping. Validate that the key belongs to this
       // request's stored choices — fail closed on any mismatch.
       let choiceDigit: string | null = null;
-      let choiceLabel: string | null = null;
       if (params.choiceKey !== undefined) {
         // Only an affirmative can select an option. Empty is malformed rather
         // than "absent": silently defaulting it would press option 1.
@@ -967,65 +1047,85 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           };
         }
         choiceDigit = match.key;
-        choiceLabel = match.label;
       }
 
-      const rows = await this.safeReadScreen(record.sessionId);
-
-      const pressRefusal = this.refuseOutOfScopePress(params, record,
-        !!rows && rows.length > 0 && looksLikeApprovalPrompt(rows));
-      if (pressRefusal) return { result: pressRefusal };
-
-      if (!rows || rows.length === 0 || !looksLikeApprovalPrompt(rows)) {
-        // Refusal expires the request: whatever the pane is showing now, it is
-        // not the prompt this record was minted for, so leaving it pending would
-        // just invite the same refusal on the next tap.
-        record.state = 'expired';
-        record.resolvedAt = this.now();
-        if (rows && rows.length > 0) record.screenTail = formatScreenTail(rows);
-        this.deps.log?.(
-          'info',
-          `[approvals] refused ${record.id} on ${record.sessionId}: no answerable prompt on screen`,
-        );
-        return {
-          events: [{ type: 'expire' as ApprovalEventType, request: copyRequest(record) }],
-          result: { ok: false, reason: 'prompt-gone', request: copyRequest(record) } as ApprovalResolveResult,
-        };
+      // ── Prove the key lands on THIS question, or write nothing ────────────
+      // A record can outlive its question (Esc sends no hook), and the next
+      // dialog Claude draws starts with `❯ 1.` too. So every press — approve,
+      // choiceKey, deny — first proves the record's own dialog is on screen
+      // (question row and every option row, see questionOnScreen), then proves
+      // the pane has not moved between that read and the write: same PTY, no
+      // key or click, no output, checked synchronously after the last await.
+      // Anything short of that proof refuses. Ambiguity never presses a key.
+      if (!record.question || !record.choices?.length) {
+        return { result: this.answerInTerminal(record, 'unsupported-shape') };
       }
-
-      // ── choiceKey screen re-verify ────────────────────────────────────────
-      // When resolving with a specific choiceKey, verify that the option row
-      // matching that key+label is visible on screen. This prevents stale
-      // choices from typing digits into a prompt that has redrawn with different
-      // options. The check looks for `<digit>. <label-substring>` or
-      // `<digit>) <label-substring>` on a row that also has the selection cursor.
-      if (choiceDigit && choiceLabel) {
-        if (!looksLikeChoiceOnScreen(rows, choiceDigit, choiceLabel)) {
-          // The option is not visible — fail closed without expiring. The prompt
-          // may still be valid for a default approve/deny, just not for this
-          // specific choice (e.g. a re-render reordered options).
-          this.deps.log?.(
-            'info',
-            `[approvals] refused choiceKey '${choiceDigit}' on ${record.id}: option not visible on screen`,
-          );
-          return {
-            result: {
-              ok: false,
-              reason: 'invalid-choice-key',
-              request: copyRequest(record),
-            } as ApprovalResolveResult,
-          };
+      const readQuestion = this.deps.readPromptScreen;
+      const markNow = this.deps.promptScreenMark;
+      if (!readQuestion || !markNow) {
+        return { result: this.answerInTerminal(record, 'screen-unreadable') };
+      }
+      let rows: readonly string[] = [];
+      for (let attempt = 1; ; attempt++) {
+        let read: Awaited<ReturnType<typeof readQuestion>> = null;
+        try {
+          read = await readQuestion(record.sessionId);
+        } catch (err) {
+          this.deps.log?.('warn', `[approvals] screen read failed for ${record.sessionId}: ${String(err)}`);
         }
-      }
+        rows = read?.rows ?? [];
 
-      // Last check before the bytes: the screen re-read above can take seconds.
-      const refusedWrite = await this.reauthorize(params, record);
-      if (refusedWrite) return { result: refusedWrite };
-      // Policy again, after the last await: the operator may have turned
-      // autonomy or approval pressing off while reauthorize ran, and the scope
-      // read above predates that. Same rule the gate branch follows.
-      const lateRefusal = this.refuseOutOfScopePress(params, record, true);
-      if (lateRefusal) return { result: lateRefusal };
+        const pressRefusal = this.refuseOutOfScopePress(params, record,
+          rows.length > 0 && looksLikeApprovalPrompt(rows));
+        if (pressRefusal) return { result: pressRefusal };
+
+        const proof = read && rows.length > 0 ? questionOnScreen(rows, record) : 'absent';
+        if (!read || proof !== 'match' && proof !== 'changed') {
+          // Whatever the pane is showing now, it is not this question: expire,
+          // so the card stops inviting the same refusal.
+          return this.expireUnpressed(record, rows, 'prompt-gone', 'its question is not on screen');
+        }
+        if (proof === 'changed') {
+          // The question is there but its options do not all read back (a
+          // re-render, a wrap). Still live: keep it pending, press nothing.
+          this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: options changed on screen`);
+          return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
+        }
+
+        // One key cannot answer a multi-select or multi-question AskUserQuestion
+        // (measured: a digit toggles one checkbox, or answers the first question
+        // and moves to the next tab). Refuse an approve — with or without a
+        // choiceKey — without expiring: the question is live (proved above), a
+        // human can answer it in the pane, and deny (Esc) still cancels it.
+        if (params.decision === 'approve' && record.questionShape) {
+          return { result: { ok: false, reason: 'needs-v2', request: copyRequest(record) } };
+        }
+
+        // Last check before the bytes: the screen read above can take seconds.
+        const refusedWrite = await this.reauthorize(params, record);
+        if (refusedWrite) return { result: refusedWrite };
+        // Policy again, after the last await: the operator may have turned
+        // autonomy or approval pressing off while reauthorize ran, and the scope
+        // read above predates that. Same rule the gate branch follows.
+        const lateRefusal = this.refuseOutOfScopePress(params, record, true);
+        if (lateRefusal) return { result: lateRefusal };
+
+        // The fence — synchronous from here to the write, nothing can interleave.
+        const now = markNow(record.sessionId);
+        if (!now) return this.expireUnpressed(record, rows, 'prompt-gone', 'the pane is gone');
+        if (now.incarnation !== read.mark.incarnation || now.keyInputRevision !== read.mark.keyInputRevision) {
+          // A key or click reached the pane (or it restarted) since the read: a
+          // human may just have answered, and whatever is up now is unproven.
+          this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: the pane took input since the read`);
+          return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
+        }
+        if (now.bytes !== read.mark.bytes) {
+          if (attempt < TERMINAL_PROMPT_ANSWER_ATTEMPTS) continue;
+          this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: the pane kept drawing`);
+          return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
+        }
+        break;
+      }
 
       // Determine the data to send: choiceKey overrides the default mapping.
       // When choiceKey is set, we send exactly that digit — no CR.
@@ -1043,15 +1143,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         );
       }
       if (!delivered) {
-        // The pane died between the screen read and the write. Same answer as a
+        // The pane died between the fence and the write. Same answer as a
         // vanished prompt — there is nothing to press.
-        record.state = 'expired';
-        record.resolvedAt = this.now();
-        record.screenTail = formatScreenTail(rows);
-        return {
-          events: [{ type: 'expire' as ApprovalEventType, request: copyRequest(record) }],
-          result: { ok: false, reason: 'prompt-gone', request: copyRequest(record) } as ApprovalResolveResult,
-        };
+        return this.expireUnpressed(record, rows, 'prompt-gone', 'the write did not land');
       }
 
       // Bytes are out. The flip is last so a failed write never consumes the
@@ -1129,9 +1223,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           `fp=${(record.promptFingerprint ?? '').slice(0, 8) || '-'}`,
       );
     };
-    const refuse = (reason: ApprovalResolveFailure): ApprovalResolveResult => {
+    const refuse = (reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'>): ApprovalResolveResult => {
       audit(reason);
       return { ok: false, reason, request: copyRequest(record) };
+    };
+    const answerInTerminal = (answerRefusal: AnswerRefusalReason): ApprovalResolveResult => {
+      audit('answer-in-terminal');
+      return { ok: false, reason: 'answer-in-terminal', answerRefusal, request: copyRequest(record) };
     };
 
     if (record.state !== 'pending') {
@@ -1148,10 +1246,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     if (
       (params.resolver ?? 'human') !== 'human'
       || params.terminalPromptAnswer !== TERMINAL_PROMPT_WEB_ANSWER
-      || !record.promptFingerprint
-      || !record.choices?.length
     ) {
-      return refuse('answer-in-terminal');
+      return answerInTerminal('no-capability');
+    }
+    if (!record.promptFingerprint || !record.choices?.length) {
+      return answerInTerminal('unsupported-shape');
     }
     if (!choice || !params.promptFingerprint) return refuse('invalid-choice');
     const expected = decisionForChoiceLabel(choice.label);
@@ -1497,6 +1596,29 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         : verdict === 'timeout' ? 'authorization-unconfirmed'
         : 'unauthorized',
       request: copyRequest(record),
+    };
+  }
+
+  /** A 501 `answer-in-terminal` for a press the daemon cannot make, naming why. */
+  private answerInTerminal(record: ApprovalRequest, why: AnswerRefusalReason): ApprovalResolveResult {
+    this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: answer in terminal (${why})`);
+    return { ok: false, reason: 'answer-in-terminal', answerRefusal: why, request: copyRequest(record) };
+  }
+
+  /** Expire an `awaiting_input` record without writing to its pane (inside the mutation chain). */
+  private expireUnpressed(
+    record: ApprovalRequest,
+    rows: readonly string[],
+    reason: 'prompt-gone',
+    why: string,
+  ): { events: ApprovalEvent[]; result: ApprovalResolveResult } {
+    record.state = 'expired';
+    record.resolvedAt = this.now();
+    if (rows.length > 0) record.screenTail = formatScreenTail(rows);
+    this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: ${why}`);
+    return {
+      events: [{ type: 'expire', request: copyRequest(record) }],
+      result: { ok: false, reason, request: copyRequest(record) },
     };
   }
 

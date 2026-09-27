@@ -871,9 +871,19 @@ request stays pending — no default option is pressed.
 
 ### Agent support — Claude native, others terminal-only
 
-Claude Code's `AskUserQuestion` prompt is natively supported: the daemon
-extracts the question, options, and structured choices from the hook payload and
-maps resolve decisions to precise TUI keystrokes.
+Claude Code's `AskUserQuestion` prompt is natively supported (for `claude` and
+its fork `openclaude`, which draws the same select): the daemon extracts the
+question, options, and structured choices from the hook payload and maps resolve
+decisions to precise TUI keystrokes.
+
+One keystroke answers exactly one shape: a **single single-select question**.
+When the question is multi-select, or the tool call carries more than one
+question, an approve — with or without `choiceKey` — is refused with 501
+`{error:"answer-in-terminal", reason:"needs-v2"}` and nothing is typed (measured
+on Claude Code 2.1.283: a digit only toggles one checkbox of a multi-select, and
+on the first of several questions it answers that one and moves to the next
+tab, so the tool is still waiting). The record stays pending; deny (Esc) still
+cancels the whole question.
 
 Claude Code's own **permission dialog** ("Do you want to proceed?") is recorded
 as a `terminal_prompt` — see the next section for when it can be answered from
@@ -984,7 +994,7 @@ resolves. An SSE `approval` event with `phase: "press"` marks the write.
 | 410 | `{error:"expired", state?}` | The record ended without an answer (turn ended, pane gone, replaced) |
 | 409 | `{error:"prompt-changed"}` | The screen is not the dialog you answered (changed, moved, not the active dialog, or a key or click reached the pane since your read). Nothing typed. When the dialog is still up, the record was superseded by a fresh one — re-read `/api/approvals` and confirm again |
 | 425 | `{error:"answer-too-soon"}` | Within 1.5 s of the record appearing. Ask again |
-| 501 | `{error:"answer-in-terminal"}` | Not answerable remotely: no capability header, or the record is not answerable (checked before the body, so a record without a fingerprint is 501, not 400). Answer on the computer |
+| 501 | `{error:"answer-in-terminal", reason}` | Not answerable remotely: no capability header (`reason:"no-capability"`), or the record is not answerable (`reason:"unsupported-shape"`; checked before the body, so a record without a fingerprint is 501, not 400). Answer on the computer |
 
 Without the capability header every answer is 501 `answer-in-terminal`: show
 "wmux cannot answer this agent remotely. Open the pane on the computer."
@@ -1082,12 +1092,41 @@ there before writing.
 | 200 | `{state, durable}` | Answered. `durable: false` means the keystroke landed but the record did not survive — the answer is real, the history will not show it. Do **not** retry |
 | 400 | `{error: 'invalid-choice-key'}` | A supplied choice key is malformed or was attached to `deny`. Nothing is sent |
 | 409 | `{error: 'already-resolved', resolvedBy}` | Another surface won. `resolvedBy` names it (`operator`, or `device <name> (<id>)`) |
-| 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or the prompt left the screen. Stop showing it |
+| 409 | `{error: 'prompt-changed'}` | The question is on screen but its options do not all read back, or the pane took a key, a click or a new PTY between the daemon's screen read and its write (or kept drawing through two reads). Nothing typed; still pending — ask again |
+| 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or its question left the screen (including a different dialog in its place). Stop showing it |
 | 422 | `{error: 'invalid-choice-key'}` | The `choiceKey` does not belong to this request's choices, or the option is not visible on screen. The request is still pending — retry with a valid key or omit `choiceKey` |
-| 501 | `{error: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
+| 501 | `{error: 'unsupported-agent', reason: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
+| 501 | `{error: 'answer-in-terminal', reason: 'needs-v2'}` | A multi-select or multi-question `AskUserQuestion`: one key cannot answer it, so nothing was typed. Still pending — answer it at the desktop, or deny |
+| 501 | `{error: 'answer-in-terminal', reason: 'unsupported-shape' \| 'screen-unreadable'}` | The request carries no question text or no choices, so its dialog cannot be identified on screen (`unsupported-shape`), or the daemon cannot read the pane together with its state (`screen-unreadable`). Nothing typed; still pending — answer it at the desktop |
 | 404 | `{error: 'not-found'}` | No such request |
 
-Only Claude Code is mapped today. Approve sends `1` (the first offered option),
+#### The 501 `reason`
+
+Every 501 from `POST /api/approvals/:id` carries a one-line `reason` next to
+its `error`. Status codes and `error` values are unchanged, so a client that
+ignores `reason` behaves exactly as before; one that reads it can say why.
+
+| `reason` | Emitted when |
+| --- | --- |
+| `no-capability` | The caller cannot answer this kind remotely: no `terminal-prompt-answer` capability header, or an automated resolver |
+| `unsupported-shape` | The dialog was not bound and parsed whole (no fingerprint or choices), or an `AskUserQuestion` request carries no question text or choices to identify it by |
+| `needs-v2` | The prompt needs more than one keystroke (multi-select, several questions) |
+| `unsupported-agent` | No keystroke map for this agent |
+| `screen-unreadable` | The daemon cannot read the pane together with its state, so it cannot prove where a key would land |
+| `secret-input` | Reserved — no route emits it yet |
+
+Treat an unknown `reason` like a missing one: the set may grow.
+
+Only the Claude Code family (`claude`, `openclaude`) is mapped today.
+
+**Every key is proven first — approve, `choiceKey` and deny alike.** Before
+writing, the daemon reads the pane and requires the request's OWN dialog: the
+question row, each option row in key order, and Claude's `Type something` row
+below them. It reads the pane's state (output, key input, PTY) at that moment
+and checks it again, synchronously, right before the write. A request whose
+question has gone (Esc sends no hook, so a card can outlive its question) is
+never pressed into whatever dialog came next: it answers 410 and expires.
+Anything short of the proof answers 409 or 501 and types nothing. Approve sends `1` (the first offered option),
 deny sends ESC. Neither is followed by a carriage return: on a select, the digit
 both moves and confirms, and a stray CR would press whatever the TUI renders
 next.

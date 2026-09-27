@@ -638,6 +638,12 @@ export class HookIngest {
     const toolName = typeof signal.payload?.tool_name === 'string'
       ? signal.payload.tool_name
       : null;
+    // Another tool is starting on this pane: a question Esc'd away earlier may
+    // still be on record. The registry retires it only if the screen shows it
+    // gone — a subagent's tool can run while the lead's question is up.
+    if (toolName !== null && toolName !== 'AskUserQuestion') {
+      this.deps.approvals?.retireStaleQuestion?.(sessionId);
+    }
     const gatedTools = this.deps.gateConfig?.().gatedTools ?? [];
     // A `bypassPermissions` session has already declared "never ask me" — the
     // user launched it with `--dangerously-skip-permissions` (or set
@@ -869,6 +875,12 @@ export class HookIngest {
       if (signal.kind === 'agent.session_start') {
         this.deps.approvals?.expireForSession(sessionId, 'session-start');
       }
+      // A submitted prompt means the input box is back, so a question still
+      // on record was dismissed (Esc sends no hook of its own). Only the
+      // question kind: a gate or permission dialog has its own lifecycle.
+      if (signal.kind === 'agent.user_prompt_submit') {
+        this.deps.approvals?.expireForSession(sessionId, 'prompt-submitted', 'awaiting_input');
+      }
       return this.broadcast(sessionId, {
         agent: agentSlugToDisplay(signal.agent),
         status: 'running',
@@ -1049,6 +1061,7 @@ export class HookIngest {
       ...(asked.question ? { question: asked.question } : {}),
       ...(asked.options ? { options: asked.options } : {}),
       ...(asked.choices ? { choices: asked.choices } : {}),
+      ...(asked.questionShape ? { questionShape: asked.questionShape } : {}),
     });
   }
 
