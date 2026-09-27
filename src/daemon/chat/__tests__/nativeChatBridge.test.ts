@@ -430,6 +430,24 @@ describe('launch', () => {
     expect(await createChatBridge(g.deps).launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ error: 'agent-runtime-unavailable', effect: 'none' });
   });
 
+  it('starts the shared Codex runtime with no WMUX_* key', async () => {
+    const f = fixture();
+    f.state.pane!.meta.env = { WMUX_WORKSPACE_ID: 'ws-a', WMUX_WORKSPACE_NAME: 'A', WMUX_SURFACE_ID: 'sf-a',
+      WMUX_PTY_ID: 'pty-a', WMUX_MEMBER_ID: 'pty-a', WMUX_BRAIN_PTY: '1', WMUX_DATA_SUFFIX: '-demo', KEEP_ME: 'yes' };
+    let prepared = 0;
+    f.deps.relays.prepare = async () => {
+      if (prepared++ === 0) throw Object.assign(new Error('no socket'), { code: 'ENOENT' });
+      return { url: 'unix:///tmp/relay.sock', commit: () => true, close: async () => undefined };
+    };
+    f.deps.relays.unavailable = () => true;
+    const started: NodeJS.ProcessEnv[] = [];
+    f.deps.startCodexRuntime = async (env) => { started.push(env); };
+    expect(await createChatBridge(f.deps).launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ ok: true });
+    expect(started).toHaveLength(1);
+    expect(Object.keys(started[0]).filter((k) => k.startsWith('WMUX_'))).toEqual([]);
+    expect(started[0]).toMatchObject({ KEEP_ME: 'yes' });
+  });
+
   it('types nothing when the grant is gone, and is uncertain when typing throws', async () => {
     const f = fixture();
     expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go', authorized: async () => false }))
