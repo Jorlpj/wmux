@@ -9,7 +9,7 @@ import {
 import { buildQrPath, type QrPath } from './qrPath';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
-import { IconBrowser, IconLock, IconRemoteDevices, IconWarning } from '../icons';
+import { IconBrowser, IconChevron, IconLock, IconRemoteDevices, IconWarning } from '../icons';
 import Popover, { PopoverSection } from '../ui/Popover';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
@@ -20,6 +20,7 @@ import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
 import {
   webIsExposed,
+  type WebGrantArgs,
   type WebStartArgs,
   type WebTerminalInfo,
 } from '../../../shared/web';
@@ -147,6 +148,18 @@ export interface WebPopoverBodyProps {
   expose: boolean;
   /** Put the server behind a `tailscale serve` HTTPS front. */
   tailscale: boolean;
+  /**
+   * Conversation access (the phone's Chat view) and photo upload for the NEXT
+   * start. While running, the rows show the server's own values from status
+   * instead, and a toggle applies to the running server.
+   */
+  allowTranscript: boolean;
+  allowUpload: boolean;
+  /** Advanced: let a phone launch agents with approvals or the sandbox off. */
+  allowDangerousLaunch: boolean;
+  /** Whether the Advanced disclosure is open. Owned by the parent. */
+  advancedOpen: boolean;
+  onToggleAdvanced: () => void;
   /** What the next paired device will be called. Required before a code shows. */
   deviceName: string;
   /**
@@ -162,6 +175,9 @@ export interface WebPopoverBodyProps {
   onToggleAllowInput: () => void;
   onToggleExpose: () => void;
   onToggleTailscale: () => void;
+  onToggleAllowTranscript: () => void;
+  onToggleAllowUpload: () => void;
+  onToggleAllowDangerousLaunch: () => void;
   onStart: () => void;
   onStop: () => void;
   onCopyUrl: () => void;
@@ -206,11 +222,19 @@ export function WebPopoverBody({
   allowInput,
   expose,
   tailscale,
+  allowTranscript,
+  allowUpload,
+  allowDangerousLaunch,
+  advancedOpen,
+  onToggleAdvanced,
   busy,
   copied,
   onToggleAllowInput,
   onToggleExpose,
   onToggleTailscale,
+  onToggleAllowTranscript,
+  onToggleAllowUpload,
+  onToggleAllowDangerousLaunch,
   onStart,
   onStop,
   onCopyUrl,
@@ -235,6 +259,65 @@ export function WebPopoverBody({
       {t('web.devicesLink')}
     </button>
   );
+  // The phone grants, also declared once. Stopped, they are the choice for the
+  // next start; running, they read the server's effective values from status,
+  // so what the rows say is what a paired phone can actually do.
+  const grantRows = (transcript: boolean, upload: boolean, disabled: boolean) => (
+    <>
+      <Field label={t('web.allowTranscript')} description={t('web.allowTranscriptHint')} className="ui-row">
+        <Checkbox checked={transcript} disabled={disabled} onCheckedChange={() => onToggleAllowTranscript()} />
+      </Field>
+      <Field label={t('web.allowUpload')} description={t('web.allowUploadHint')} className="ui-row">
+        <Checkbox checked={upload} disabled={disabled} onCheckedChange={() => onToggleAllowUpload()} />
+      </Field>
+    </>
+  );
+  // Dangerous launch sits behind a disclosure, off by default: it lets a
+  // paired phone start Claude/Codex with approvals or the sandbox off. The
+  // parent opens the disclosure whenever the grant is on, so an active ceiling
+  // is never hidden.
+  const advanced = (dangerous: boolean, disabled: boolean) => {
+    // Never hidden while on, whatever the disclosure state says.
+    const shown = advancedOpen || dangerous;
+    return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        aria-expanded={shown}
+        onClick={onToggleAdvanced}
+        className={`ui-note flex items-center gap-1 self-start rounded-[6px] ${FOCUS_RING}`}
+      >
+        <span
+          aria-hidden="true"
+          className="inline-flex transition-transform"
+          style={{ transform: shown ? 'rotate(90deg)' : undefined }}
+        >
+          <IconChevron size={11} />
+        </span>
+        {t('web.advanced')}
+      </button>
+      {shown ? (
+        <>
+          <div className="ui-group">
+            <Field label={t('web.allowDangerousLaunch')} className="ui-row">
+              <Checkbox
+                checked={dangerous}
+                disabled={disabled}
+                onCheckedChange={() => onToggleAllowDangerousLaunch()}
+              />
+            </Field>
+          </div>
+          <p className="ui-note flex gap-1.5">
+            <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true">
+              <IconWarning size={11} />
+            </span>
+            <span>{t('web.allowDangerousLaunchWarning')}</span>
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+  };
   if (!info.running) {
     return (
       <>
@@ -244,6 +327,7 @@ export function WebPopoverBody({
             <Field label={t('web.allowInput')} className="ui-row">
               <Checkbox checked={allowInput} onCheckedChange={() => onToggleAllowInput()} />
             </Field>
+            {grantRows(allowTranscript, allowUpload, false)}
             {/* The only transport a phone can actually pair over. Listed FIRST
                 of the transports because it is the one most operators opening
                 this popover want: a device credential never expires, so it is
@@ -256,6 +340,7 @@ export function WebPopoverBody({
               <Checkbox checked={expose} onCheckedChange={() => onToggleExpose()} />
             </Field>
           </div>
+          {advanced(allowDangerousLaunch, false)}
           {/* Say what --expose actually buys now. Since #616 it can serve panes
               to the LAN but cannot pair a phone, and a checkbox that silently
               means "watch only" is how someone ends up stuck at a 403. */}
@@ -478,6 +563,19 @@ export function WebPopoverBody({
         )}
       </PopoverSection>
 
+      {/* Applied to the running server in place (same port, bind, token and
+          paired devices), so turning the Chat view on does not mean
+          Stop → Start — which would revoke every paired phone. */}
+      <PopoverSection title={t('web.phoneAccess')}>
+        <div className="ui-group">
+          <Field label={t('web.allowInput')} className="ui-row">
+            <Checkbox checked={info.allowInput === true} disabled={busy} onCheckedChange={() => onToggleAllowInput()} />
+          </Field>
+          {grantRows(info.allowTranscript === true, info.allowUpload === true, busy)}
+        </div>
+        {advanced(info.allowDangerousLaunch === true, busy)}
+      </PopoverSection>
+
       <PopoverSection>
         {exposed ? <p className="ui-note">{t('web.exposeWarning')}</p> : null}
         {info.error ? <p className="ui-note text-[var(--accent-red)]">{info.error}</p> : null}
@@ -507,6 +605,10 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   const [allowInput, setAllowInput] = useState(false);
   const [expose, setExpose] = useState(false);
   const [tailscale, setTailscale] = useState(false);
+  const [allowTranscript, setAllowTranscript] = useState(false);
+  const [allowUpload, setAllowUpload] = useState(false);
+  const [allowDangerousLaunch, setAllowDangerousLaunch] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [deviceName, setDeviceName] = useState('');
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [pairAllowInput, setPairAllowInput] = useState(false);
@@ -541,21 +643,51 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
    * on deliberate moments — never from the 10s poll, which would spawn a
    * process six times a minute for a fact that changes when a human acts.
    */
+  /**
+   * Grants ticked in the stopped popover since the server was last seen.
+   * Only these are sent by Start; the rest are left to the daemon, which
+   * inherits them from a record that is still enabled and finds nothing after
+   * a stop (a stop clears it: "do not bring this back").
+   */
+  const touchedGrants = useRef(new Set<keyof WebGrantArgs>());
+  const wasRunning = useRef(false);
+
+  /**
+   * Take a status reply. A server that is no longer running — stopped here,
+   * by `wmux web --stop`, or anywhere else — resets every grant checkbox to
+   * off: seeding them from the server that WAS running would let the next
+   * Start send a revoked grant back as an explicit true.
+   */
+  const applyInfo = useCallback((next: WebTerminalInfo) => {
+    setInfo(next);
+    if (next.running) {
+      // Seed the transport checkbox from what is actually running, so a daemon
+      // restart cannot leave the box unchecked over a tailnet server — the
+      // operator's next Stop → Start would silently drop them onto loopback.
+      setTailscale(next.tailscale === true);
+      wasRunning.current = true;
+      touchedGrants.current.clear();
+    } else if (wasRunning.current) {
+      wasRunning.current = false;
+      touchedGrants.current.clear();
+      setAllowInput(false);
+      setAllowTranscript(false);
+      setAllowUpload(false);
+      setAllowDangerousLaunch(false);
+    }
+  }, []);
+
   const refresh = useCallback(async (verifyFront = false) => {
     const a = webApi();
     if (!a) return;
     try {
       const next = await a.status(verifyFront ? { verifyFront: true } : undefined);
-      setInfo(next);
-      // Seed the transport checkbox from what is actually running, so a daemon
-      // restart cannot leave the box unchecked over a tailnet server — the
-      // operator's next Stop → Start would silently drop them onto loopback.
-      if (next.running) setTailscale(next.tailscale === true);
+      applyInfo(next);
     } catch {
       // Handler resolves rather than rejects; a rejection here means the bridge
       // is missing entirely — leave the last known state untouched.
     }
-  }, []);
+  }, [applyInfo]);
 
   // One mount-time fetch keeps the resting amber dot correct without a
   // continuous poll (the popover-open poll below covers live updates).
@@ -625,13 +757,54 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     if (!a) return;
     setBusy(true);
     try {
-      const args: WebStartArgs = { allowInput, expose, tailscale };
-      const next = await a.start(args);
-      setInfo(next);
+      // Look again first: the popover may be up to a poll behind. A server
+      // started (or stopped) elsewhere since then is not ours to restart.
+      const current = await a.status();
+      if (current.running) {
+        applyInfo(current);
+        return;
+      }
+      const values = { allowTranscript, allowUpload, allowDangerousLaunch };
+      const grants: WebGrantArgs = {};
+      for (const key of ['allowTranscript', 'allowUpload', 'allowDangerousLaunch'] as const) {
+        if (touchedGrants.current.has(key)) grants[key] = values[key];
+      }
+      const args: WebStartArgs = { allowInput, expose, tailscale, ...grants };
+      applyInfo(await a.start(args));
     } finally {
       setBusy(false);
     }
-  }, [allowInput, expose, tailscale]);
+  }, [allowInput, expose, tailscale, allowTranscript, allowUpload, allowDangerousLaunch, applyInfo]);
+
+  /**
+   * A grant row was toggled. Stopped, it only changes what the next Start
+   * sends. Running, it is applied to the server in place and the rows then
+   * show whatever the server reports back — never an optimistic value.
+   */
+  const handleToggleGrant = useCallback(
+    async (key: keyof WebGrantArgs) => {
+      if (!info.running) {
+        touchedGrants.current.add(key);
+        if (key === 'allowInput') setAllowInput((v) => !v);
+        else if (key === 'allowTranscript') setAllowTranscript((v) => !v);
+        else if (key === 'allowUpload') setAllowUpload((v) => !v);
+        else setAllowDangerousLaunch((v) => !v);
+        return;
+      }
+      const a = webApi();
+      if (!a?.setGrants) return;
+      const args: WebGrantArgs = { [key]: info[key] !== true };
+      setBusy(true);
+      try {
+        // The running rows read `info`; a stop that overtook this change
+        // comes back as running:false and resets the stopped-body grants.
+        applyInfo(await a.setGrants(args));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [info, applyInfo],
+  );
 
   // The two transports are alternatives, not additions: `tailscale serve`
   // proxies loopback, so a wildcard bind alongside it is a second, weaker way
@@ -656,12 +829,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     if (!a) return;
     setBusy(true);
     try {
-      const next = await a.stop();
-      setInfo(next);
+      applyInfo(await a.stop());
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [applyInfo]);
 
   const copyValue = useCallback(async (target: Exclude<CopyTarget, null>, value: string) => {
     if (!value) return;
@@ -811,11 +983,19 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
             allowInput={allowInput}
             expose={expose}
             tailscale={tailscale}
+            allowTranscript={allowTranscript}
+            allowUpload={allowUpload}
+            allowDangerousLaunch={allowDangerousLaunch}
+            advancedOpen={advancedOpen}
+            onToggleAdvanced={() => setAdvancedOpen((v) => !v)}
             busy={busy}
             copied={copied}
-            onToggleAllowInput={() => setAllowInput((v) => !v)}
+            onToggleAllowInput={() => void handleToggleGrant('allowInput')}
             onToggleExpose={handleToggleExpose}
             onToggleTailscale={handleToggleTailscale}
+            onToggleAllowTranscript={() => void handleToggleGrant('allowTranscript')}
+            onToggleAllowUpload={() => void handleToggleGrant('allowUpload')}
+            onToggleAllowDangerousLaunch={() => void handleToggleGrant('allowDangerousLaunch')}
             onStart={handleStart}
             onStop={handleStop}
             onCopyUrl={handleCopyUrl}

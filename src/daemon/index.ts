@@ -41,7 +41,7 @@ import {
   coerceWebTlsConfig,
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
-import { decideWebStartPolicy } from './web/webStartPolicy';
+import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
@@ -2808,6 +2808,9 @@ function registerRpcHandlers(
   const afterRestore = async (): Promise<void> => {
     if (webRestore) await webRestore;
   };
+  // Bumped by every operator stop. An in-place grant change
+  // (`onlyIfRunning`) that a stop overtook must not bring the server back.
+  let webStopGeneration = 0;
   pipeServer.onRpc('daemon.web.start', async (params) => {
     await afterRestore();
     const p = params as {
@@ -2817,6 +2820,8 @@ function registerRpcHandlers(
       allowUpload?: boolean;
       allowTranscript?: boolean;
       allowDangerousLaunch?: boolean;
+      inheritUnsetGrants?: boolean;
+      onlyIfRunning?: boolean;
       allowedHosts?: unknown;
       newToken?: boolean;
       tailscale?: boolean;
@@ -2827,14 +2832,6 @@ function registerRpcHandlers(
     // Safe default: bind loopback only. Network exposure is an explicit
     // caller decision (the CLI `--expose` flag sends host '0.0.0.0').
     const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
-    const allowInput = p.allowInput === true;
-    // Separate opt-in from `allowInput`, and fail-closed the same way: a caller
-    // that says nothing gets a server that cannot write files.
-    const allowUpload = p.allowUpload === true;
-    // Its own opt-in like upload, fail-closed when the caller says nothing.
-    const allowTranscript = p.allowTranscript === true;
-    // The chat dangerous-launch ceiling (contract §3.4), fail-closed the same way.
-    const allowDangerousLaunch = p.allowDangerousLaunch === true;
     // Extra Host-header names for reverse-proxy fronts (`tailscale serve`
     // forwards the MagicDNS name). Strings only; anything else is dropped.
     const allowedHosts = Array.isArray(p.allowedHosts)
@@ -2842,7 +2839,23 @@ function registerRpcHandlers(
       : [];
     const requestedTls = parseWebTlsConfig(p.tls);
     const tailscale = p.tailscale === true;
+    // The desktop's in-place grant change restarts a RUNNING server. A stop
+    // that landed after it read status wins: nothing is started, and the
+    // record the stop cleared is not written back.
+    const onlyIfRunning = p.onlyIfRunning === true;
+    const stopGeneration = webStopGeneration;
+    if (onlyIfRunning && !webServer.currentStartState) return webServer.status();
     const loadedPrevious = loadWebStateWithDiagnostics(wmuxDir);
+    // Each grant is its own opt-in and fail-closed: a caller that says nothing
+    // gets a read-only server that cannot write files, read transcripts, or
+    // launch agents with approvals off (contract §3.4). The one exception is a
+    // caller that asks to inherit what it does not send (the desktop popover,
+    // which has no control for every grant) — see resolveWebStartGrants.
+    const { allowInput, allowUpload, allowTranscript, allowDangerousLaunch } = resolveWebStartGrants(
+      p,
+      webServer.currentStartState,
+      loadedPrevious.state,
+    );
     const { tls, token, rotateCredentials } = decideWebStartPolicy({
       requestedTls,
       live: webServer.currentStartState,
@@ -2864,6 +2877,10 @@ function registerRpcHandlers(
       ...(tls ? { tls } : {}),
       token,
     });
+    if (onlyIfRunning && stopGeneration !== webStopGeneration) {
+      await webServer.stop();
+      return webServer.status();
+    }
     if (rotateCredentials) {
       // A device authenticates with its own durable `deviceId.secret`, so
       // rotating only the operator token is not a credential rotation. Do
@@ -2902,6 +2919,7 @@ function registerRpcHandlers(
     // a teardown of a server the operator still wants and therefore preserves
     // both the persisted listener and its paired devices.
     await afterRestore();
+    webStopGeneration += 1;
     // #783 — the answering surface is going away, so every gate still holding a
     // bridge open is now unanswerable. Defer them here instead of making each
     // one wait out its own deadline in front of a blocked agent.
