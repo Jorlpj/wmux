@@ -1154,7 +1154,12 @@ longer bound to the pending call is replaced by an informational record.
 
 **Push.** One push per awaiting episode per pane — a record replaced within the
 episode (a late parse, a changed dialog) carries the push over rather than
-sending another or losing it. It is always in-app only (`requiresInAppChoice:
+sending another or losing it. The push is not sent the moment the dialog
+appears: the record must still be pending after a 12 s grace
+(`TERMINAL_PROMPT_PUSH_GRACE_MS`), so a dialog answered at the desk or gone on
+its own never reaches the phone. A record that ends after its push went out is
+followed by a retraction under the same collapse id (§7, "Retraction"). It is
+always in-app only (`requiresInAppChoice:
 true`, no lock-screen buttons, for any client) and carries
 `approvalKind: "terminal_prompt"`. The body names the tool and the command;
 `risk` is `critical` when the command or the permission rule reads as
@@ -1341,6 +1346,74 @@ Reject an envelope older than `PUSH_MAX_AGE_MS` (300 000 ms).
 
 If the extension does not run, the lock screen shows a fixed placeholder
 ("wmux — New activity"). That is the relay's ceiling, not a bug.
+
+### Retraction — an approval that ended after its push
+
+Every approval push goes out with APNs collapse id `ap-<sessionId>` (at most 64
+characters). When a `terminal_prompt` record whose push was delivered then ends
+without the phone answering it — answered in the pane, the dialog cleared, the
+turn ended, expired — the daemon sends ONE more push on the same `POST /push`
+relay route, with the **same collapse id**, so APNs replaces the banner instead
+of leaving "Approval needed" on the lock screen for something nobody is waiting
+on. Its sealed plaintext:
+
+```json
+{
+  "title": "Approval resolved",
+  "body": "No longer waiting — nothing to do.",
+  "sessionId": "<pane session id>",
+  "kind": "approval_retraction",
+  "retractsApprovalId": "<the approvalId of the push being replaced>",
+  "resolution": "expired"
+}
+```
+
+`retractsApprovalId` is the `approvalId` the delivered push carried. It can
+differ from the record that just ended: a record re-parsed within the same
+episode inherits its predecessor's delivered push, and a banner left by a
+record superseded by a different question is retracted by the next record in
+that pane (or, with none taking it over, by itself after 30 s).
+
+`resolution` is `"expired"` (the dialog was answered in the pane, cleared,
+superseded, or the turn ended — an answer typed at the computer lands here) or
+`"resolved"` (the body then reads "Answered — nothing to do."). There is
+**never an `approvalId`** on a retraction:
+an extension that sees one attaches the approval category, its buttons and the
+deep link, which would put Approve back on the lock screen for a record that no
+longer exists. No retraction is sent when the push never left (the record ended
+inside the grace, or while presence still held it, or the held push was
+dropped), when the record was answered through `press` (a phone answer, a
+desktop answer through the pipe, or the one-Esc decline — a press inside the
+grace also cancels the push), or when a later push — a gate or another
+approval — has since replaced the banner under the same collapse id. Gate
+records (`awaiting_input`, `awaiting_permission`) are not retracted.
+
+**Known limit: daemon restart.** Which pushes were delivered is held in memory
+only. A restart expires every pending record without events, so a banner
+delivered before the restart is not retracted; the phone's next
+`/api/approvals` read shows nothing pending.
+
+**Backward compatible by construction.** An extension that does not know
+`kind` renders a retraction as a plain notify-only banner ("Approval resolved")
+that replaces the original under its collapse id. The relay still sends every
+push as an `alert` with `sound: default`, so on such a build the replacement
+also makes a sound.
+
+**What a current extension should do** when the opened payload has
+`kind == "approval_retraction"`:
+
+- clear `sound` and set `interruptionLevel = .passive`, so the replacement is
+  silent;
+- set no category and no deep link (there is no `approvalId` to build one from);
+- optionally remove the replaced notification outright with
+  `UNUserNotificationCenter.removeDeliveredNotifications(withIdentifiers:)` —
+  for a push sent with a collapse id the delivered request's identifier is the
+  collapse id (confirm on a device);
+- in the app, drop any local card for `retractsApprovalId` and re-read
+  `/api/approvals`.
+
+Suppressing the replacement entirely needs Apple's notification-filtering
+entitlement; nothing here depends on it.
 
 ---
 

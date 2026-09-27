@@ -156,3 +156,44 @@ function lockScreenChoiceFields(
 export function approvalPushCollapseId(request: ApprovalRequest): string {
   return `ap-${request.sessionId}`.slice(0, 64);
 }
+
+/** The `kind` marker a retraction carries. See {@link buildApprovalRetractionPayload}. */
+export const APPROVAL_RETRACTION_KIND = 'approval_retraction';
+
+/**
+ * The follow-up push that replaces a delivered approval banner once its record
+ * is over (answered at the computer, the dialog cleared, the turn ended).
+ *
+ * Sent under the SAME collapse id as the original, so APNs replaces the banner
+ * rather than stacking a second one.
+ *
+ * NO `approvalId`, deliberately. Every shipped Notification Service Extension
+ * attaches the approval category, its buttons and the deep link whenever that
+ * field is non-empty — a retraction carrying it would put Approve back on the
+ * lock screen for a record that no longer exists. Without it an existing
+ * extension renders this as a plain notify-only banner, which is the backward-
+ * compatible reading. An extension that knows `kind` can go further (silence
+ * it, or remove the banner outright) — see docs/phone-client-contract.md.
+ */
+export function buildApprovalRetractionPayload(
+  request: ApprovalRequest,
+  /**
+   * The approval id of the push being replaced — the one on the phone. It can
+   * differ from `request.id` when the delivered record was re-parsed and
+   * replaced within the same episode, or superseded by a later question.
+   */
+  deliveredApprovalId: string,
+): PushPayload {
+  // Only a `resolved` record was answered. `expired` covers an answer typed at
+  // the computer too (`answered-locally`), and `superseded` was replaced by a
+  // different question — neither body claims where, or whether, it was answered.
+  const answered = request.state === 'resolved';
+  return {
+    title: 'Approval resolved',
+    body: answered ? 'Answered — nothing to do.' : 'No longer waiting — nothing to do.',
+    sessionId: request.sessionId,
+    kind: APPROVAL_RETRACTION_KIND,
+    retractsApprovalId: deliveredApprovalId,
+    resolution: answered ? 'resolved' : 'expired',
+  };
+}
