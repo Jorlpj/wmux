@@ -11,6 +11,7 @@ import type {
   LanLinkPeersListResult,
 } from './lanlink';
 import type {
+  PairFlow,
   WebDeviceListError,
   WebDeviceRevokeResult,
   WebDeviceSetInputResult,
@@ -180,7 +181,9 @@ declare global {
          * rows cannot be operated — "which of these three do I revoke?" has no
          * answer six months later.
          */
-        pairStart: (name: string, allowInput?: boolean) => Promise<WebTerminalInfo>;
+        pairStart: (name: string, allowInput?: boolean, flow?: PairFlow) => Promise<WebTerminalInfo>;
+        /** End the pairing in progress, whichever card started it. */
+        pairCancel?: () => Promise<WebTerminalInfo>;
         /**
          * The paired-device roster.
          *
@@ -337,6 +340,10 @@ declare global {
       readText: () => Promise<string>;
       readImage: (ptyId?: string) => Promise<string | null>;
       hasImage: () => Promise<boolean>;
+      /** Write text main takes back off after `ttlMs` or on quit, if still there. */
+      writeEphemeral?: (text: string, ttlMs: number) => Promise<void>;
+      /** Clear the ephemeral text now unless it is `stillValid` (`''` = nothing is). */
+      keepEphemeral?: (stillValid: string) => Promise<void>;
     };
   }
 }

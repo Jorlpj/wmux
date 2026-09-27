@@ -361,6 +361,10 @@ export const IPC = {
   CLIPBOARD_READ: 'clipboard:read',
   CLIPBOARD_READ_IMAGE: 'clipboard:read-image',
   CLIPBOARD_HAS_IMAGE: 'clipboard:has-image',
+  /** Write text that main takes back off the clipboard at its expiry or on quit. */
+  CLIPBOARD_WRITE_EPHEMERAL: 'clipboard:write-ephemeral',
+  /** Clear the ephemeral text unless it equals the still-valid value passed. */
+  CLIPBOARD_KEEP_EPHEMERAL: 'clipboard:keep-ephemeral',
   SYSTEM_BUILTIN_DISPLAY: 'system:builtin-display',
   // Fired by main's powerMonitor 'resume' so the renderer can rebuild GPU
   // state that sleep may have invalidated (shared glyph atlas — see
@@ -573,6 +577,8 @@ export const IPC = {
   WEB_PAIR_REFRESH: 'web:pairRefresh',
   /** Name a device, THEN mint its code. The daemon refuses a blank name. */
   WEB_PAIR_START: 'web:pairStart',
+  /** End the pairing in progress (either card), burning its code and name. */
+  WEB_PAIR_CANCEL: 'web:pairCancel',
   /** The operator's paired-device roster. Carries no secret material. */
   WEB_DEVICE_LIST: 'web:deviceList',
   /** Revoke one device permanently and cut its live streams. */

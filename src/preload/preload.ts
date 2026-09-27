@@ -26,6 +26,7 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type {
+  PairFlow,
   WebDeviceListError,
   WebDeviceRevokeResult,
   WebDeviceSetInputResult,
@@ -1509,8 +1510,9 @@ document.addEventListener('DOMContentLoaded', () => {
   status: (args?: { verifyFront?: boolean }) =>
     ipcRenderer.invoke(IPC.WEB_STATUS, args ?? {}) as Promise<WebTerminalInfo>,
   pairRefresh: () => ipcRenderer.invoke(IPC.WEB_PAIR_REFRESH) as Promise<WebTerminalInfo>,
-  pairStart: (name: string, allowInput = false) =>
-    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput }) as Promise<WebTerminalInfo>,
+  pairStart: (name: string, allowInput = false, flow?: PairFlow) =>
+    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput, ...(flow ? { flow } : {}) }) as Promise<WebTerminalInfo>,
+  pairCancel: () => ipcRenderer.invoke(IPC.WEB_PAIR_CANCEL) as Promise<WebTerminalInfo>,
   start: (args: WebStartArgs) =>
     ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,
   setGrants: (args: WebGrantArgs) =>
@@ -1647,6 +1649,12 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
    *  pane needs /mnt/...). Omit it and the host path is returned verbatim. */
   readImage: (ptyId?: string) => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE, ptyId) as Promise<string | null>,
   hasImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_HAS_IMAGE) as Promise<boolean>,
+  /** Write text main takes back off after `ttlMs` or on quit, if still there. */
+  writeEphemeral: (text: string, ttlMs: number) =>
+    ipcRenderer.invoke(IPC.CLIPBOARD_WRITE_EPHEMERAL, text, ttlMs) as Promise<void>,
+  /** Clear the ephemeral text now unless it is `stillValid` (`''` = nothing is). */
+  keepEphemeral: (stillValid: string) =>
+    ipcRenderer.invoke(IPC.CLIPBOARD_KEEP_EPHEMERAL, stillValid) as Promise<void>,
 });
 
 export type ElectronAPI = typeof electronAPI;
