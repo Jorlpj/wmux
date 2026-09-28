@@ -22,6 +22,7 @@ import {
   type ChatSendOutcome,
   type ChatSendReceiptView,
   type ChatSendRequest,
+  type ChatTurn,
 } from '../../chat/chatBridge';
 import type { ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
 
@@ -121,6 +122,7 @@ function makeFakeChat() {
   const box = {
     resolution: fileResolution() as ChatResolution,
     blocked: undefined as ChatBlocked | undefined,
+    turn: undefined as ChatTurn | undefined,
     managedPage: page([{ id: 'm1', kind: 'assistant_text', text: 'managed' }], { headOffset: 3, tailOffset: 3, fileSize: 0, mtimeMs: 0 }) as TranscriptPage | null,
     send: async (req: ChatSendRequest): Promise<ChatSendOutcome> => {
       if (req.authorized && !(await req.authorized())) {
@@ -138,6 +140,7 @@ function makeFakeChat() {
   const bridge = {
     resolve: vi.fn(async (_id: string) => box.resolution),
     managedSnapshot: vi.fn((_id: string) => box.managedPage),
+    turn: vi.fn((_id: string) => box.turn),
     blocked: vi.fn(async (_id: string, _r: ChatResolution) => box.blocked),
     send: vi.fn((req: ChatSendRequest) => box.send(req)),
     receipt: vi.fn((owner: ChatOwner, id: string, cmid: string): ChatSendReceiptView =>
@@ -344,6 +347,30 @@ describe('native chat routes (contract v0.3.1)', () => {
       const { body } = await turns(bearer(info.token as string));
       expect(body.chat.capabilities).toMatchObject({ send: true, cancel: false, queue: true });
       expect(body.chat.capabilities).not.toHaveProperty('images');
+    });
+
+    it('adds chat.turn only for a chat-cancel / chat-queue caller; everyone else gets the old object byte for byte', async () => {
+      const info = await start();
+      const before = await turns(bearer(info.token as string));
+      const turn = { id: 't1:abc.3', state: 'running', startedAt: 1_700_000_000_000 } as const;
+      chatBox.turn = turn;
+      const legacy = await turns(bearer(info.token as string));
+      expect(chat.turn).not.toHaveBeenCalled();
+      expect(JSON.stringify(legacy.body.chat)).toBe(JSON.stringify(before.body.chat));
+      const other = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'terminal-prompt-answer,decision-v2' });
+      expect(JSON.stringify(other.body.chat)).toBe(JSON.stringify(before.body.chat));
+      // Capabilities stay what they were: this PR adds no cancel or queue.
+      for (const cap of ['chat-cancel', 'chat-queue', 'Chat-Queue, terminal-prompt-answer']) {
+        const { body } = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': cap });
+        expect(body.chat.turn).toEqual(turn);
+        const { turn: _turn, ...rest } = body.chat;
+        void _turn;
+        expect(rest).toEqual(before.body.chat);
+      }
+      // No daemon-tracked episode outside a file binding.
+      chatBox.resolution = tuiResolution();
+      const tui = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'chat-cancel' });
+      expect(tui.body.chat).not.toHaveProperty('turn');
     });
 
     it('file forward read with a matching cursor is a delta with reset:false', async () => {

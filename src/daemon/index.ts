@@ -148,7 +148,8 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
-import { chatAgentStatus } from './transcript/chatAgentStatus';
+import { chatAgentStatus, confirmedStopAt, transcriptTurnEnd } from './transcript/chatAgentStatus';
+import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { interruptChatTurn } from './transcript/interruptChatTurn';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
@@ -3257,6 +3258,10 @@ function registerRpcHandlers(
       // authenticated pipe client the whole transcript AND put an oversized
       // payload on sockets that never asked for it.
       emitAppend: (sessionId, data, clientIds) => {
+        // Push side of the running-episode close: an interrupt fires no Stop
+        // hook, so the recorded end is the only signal the turn is over.
+        const ended = transcriptTurnEnd(data.events, 0);
+        if (ended) sessionManager.getSession(sessionId)?.bridge.noteTranscriptTurnEnd(ended.at);
         const event: DaemonEvent = { type: 'transcript.appended', sessionId, data };
         for (const clientId of clientIds) {
           // D6 — `sendTo` refuses once a client's unflushed buffer passes
@@ -3621,6 +3626,15 @@ function registerRpcHandlers(
         // #1463 — SessionStart applies the same edge, then may mark the pane pre-turn.
         if (data.signal.kind === 'agent.session_start') {
           hookBridge?.noteSessionStart(data.signal.ts, data.signal.payload?.['source']);
+        } else if (hookBridge && data.signal.agent === 'codex' && data.signal.kind === 'agent.stop' && data.status !== 'running') {
+          // A Codex stop arrives through the notify chain, and a wrapper in it
+          // can fire one between tool calls. The status settles as always, but
+          // the running episode ends only once the rollout records that turn's
+          // end (matching the hook's turn id when it names one); otherwise the
+          // next running edge resumes the same episode.
+          hookBridge.noteAgentStatus(data.status, true, questionAt, true);
+          const endedAt = confirmedStopAt(projector.snapshot(sessionId)?.events, data.signal.payload?.['turn-id']);
+          if (endedAt !== undefined) hookBridge.noteTranscriptTurnEnd(endedAt);
         } else {
           hookBridge?.noteAgentStatus(data.status, true, questionAt);
         }
@@ -3973,11 +3987,23 @@ function registerRpcHandlers(
     const live = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
-      const last = projector.snapshot(id)?.events.at(-1);
-      return { ...live, agentStatus: chatAgentStatus(live.agentStatus, last, bridge.getLastTurnStartedAt()) };
+      const events = projector.snapshot(id)?.events;
+      // Backstop for the append push: an interrupt fires no Stop hook, so a
+      // recorded end also closes the running episode (the bridge ignores an end
+      // older than the episode).
+      const ended = transcriptTurnEnd(events, 0);
+      if (ended) bridge.noteTranscriptTurnEnd(ended.at);
+      const agentStatus = chatAgentStatus(live.agentStatus, events, bridge.getTurnEvidenceStartedAt());
+      return { ...live, agentStatus, turn: bridge.getTurn(agentStatus) };
     }
-    return live;
+    return bridge ? { ...live, turn: bridge.getTurn(live.agentStatus) } : live;
   };
+  // A submit into an open episode checks the transcript first: nobody may be
+  // subscribed to push its interrupt record, and none of it reaches a hook.
+  DaemonPTYBridge.transcriptTurnEndProbe = (id) =>
+    ['Claude Code', 'Codex CLI'].includes(readDaemonAgentState(id).agentName ?? '')
+      ? transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at
+      : undefined;
   // Versioned method name is a rolling-upgrade safety boundary. An older
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.
@@ -6924,6 +6950,10 @@ async function main(): Promise<void> {
     }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
+    // A death edge, or a launch edge for a different agent than the last one
+    // seen here, ends the previous agent's running episode.
+    const previousSlug = managed.meta.lastDetectedAgent;
+    if (!state.alive || (state.slug && previousSlug && state.slug !== previousSlug)) managed.bridge.noteAgentEnded();
     const screenSlug = managed.bridge.getLastAgent();
     const canonical = canonicalIdentityFor(
       agentProcessTracker,

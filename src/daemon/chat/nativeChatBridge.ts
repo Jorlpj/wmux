@@ -18,7 +18,7 @@ import {
   checkChatId, fileHistoryEpoch, openCodeSendBytes, tuiHistoryEpoch,
   type ChatBlocked, type ChatBridge, type ChatEffect, type ChatLaunchOutcome, type ChatLaunchPreview, type ChatLaunchReason,
   type ChatLaunchRequest, type ChatLaunchTag, type ChatOwner, type ChatResolution, type ChatSendOutcome, type ChatSendRequest,
-  type ChatSendTag, type DangerousLaunchTrace,
+  type ChatSendTag, type ChatTurn, type DangerousLaunchTrace,
 } from './chatBridge';
 
 /** Synthetic TerminalChatService client key for the phone's OpenCode watch. */
@@ -42,6 +42,8 @@ export interface ChatAgentState {
   inputQuiet: boolean;
   inputRevision: number;
   incarnationId: string | null;
+  /** The pane's running episode; absent when the pane has no PTY bridge. */
+  turn?: ChatTurn;
 }
 
 export interface LaunchRelay { url: string; commit(): boolean; close(): Promise<void> }
@@ -553,6 +555,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     route,
     resolve,
     managedSnapshot: (id) => deps.managed()?.snapshot(id) ?? null,
+    turn: (id) => deps.chatAgentState(id).turn,
     blocked,
     send: (req) => sendWith(req, true),
     receipt: (owner: ChatOwner, id: string, clientMessageId: string) =>
