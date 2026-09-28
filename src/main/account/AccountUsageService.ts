@@ -37,6 +37,7 @@
 import { loadClaudeCredential, type LoadResult } from '../claude/claudeCredential';
 import { fetchUsage, rateLimitBackoffMs, UsageApiException, type UsageSnapshot } from '../claude/UsageApi';
 import { getAccountStore } from './accountStore';
+import { mergeLive, type UsageUpdate } from '../claude/usageMerge';
 
 export type AccountUsageStatus =
   /** Last probe succeeded — `snapshot` is fresh. */
@@ -67,6 +68,8 @@ export interface AccountUsageEntry {
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
 /** Refresh-all cadence while the feature is on. */
 const DEFAULT_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+/** With a fresh live sample, HTTP still runs every this-many refresh intervals. */
+const LIVE_HTTP_EVERY_PASSES = 3;
 /** Gap between consecutive accounts within one refresh-all pass. */
 const DEFAULT_STAGGER_MS = 10 * 1000;
 
@@ -99,6 +102,14 @@ export class AccountUsageService {
   private readonly rateLimited = new Map<string, { untilMs: number; count: number }>();
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private readonly staggerTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** Per-account time of the last accepted live statusline sample. While
+   *  younger than the refresh interval, automatic probes slow down. */
+  private readonly liveAtMs = new Map<string, number>();
+  /** Per-account time of the last probe (credential read + HTTP request);
+   *  drives the cooldown. Even with a fresh live
+   *  sample, one goes out every LIVE_HTTP_EVERY_PASSES refresh intervals so
+   *  scoped limits and the credential status stay current. */
+  private readonly httpAtMs = new Map<string, number>();
 
   private readonly now: () => number;
   private readonly cooldownMs: number;
@@ -203,6 +214,32 @@ export class AccountUsageService {
   drop(accountId: string): void {
     this.cache.delete(accountId);
     this.rateLimited.delete(accountId);
+    this.liveAtMs.delete(accountId);
+    this.httpAtMs.delete(accountId);
+  }
+
+  /**
+   * Live `rate_limits` from a Claude Code statusline running on this account
+   * (`usage.rateLimits`, account resolved from the pane's CLAUDE_CONFIG_DIR).
+   * Merged by reset time, so a stale sample never overwrites a newer window.
+   * Stored even while the feature is off; listeners hear about it only while
+   * it is on (the Settings list still pulls it via getAll()).
+   */
+  ingestLive(accountId: string, update: UsageUpdate): boolean {
+    const prev = this.cache.get(accountId);
+    const merged = mergeLive(prev?.snapshot ?? null, update, this.now());
+    if (!merged) return false;
+    this.liveAtMs.set(accountId, this.now());
+    if (merged === prev?.snapshot) return true;
+    // A credential verdict (token missing / refused) is HTTP's to clear; the
+    // live numbers still show underneath it.
+    const keepStatus = prev?.status === 'unauthorized' || prev?.status === 'token-missing';
+    this.set(accountId, {
+      status: keepStatus && prev ? prev.status : 'ok',
+      snapshot: merged,
+      lastError: keepStatus && prev ? prev.lastError : null,
+    }, this.enabled);
+    return true;
   }
 
   /**
@@ -216,9 +253,18 @@ export class AccountUsageService {
     if (this.inflight.has(accountId)) return;  // coalesce a burst → one probe
     const backoff = this.rateLimited.get(accountId);
     if (backoff && this.now() < backoff.untilMs) return; // 429 backoff
-    const prev = this.cache.get(accountId);
-    if (prev?.fetchedAtMs != null && this.now() - prev.fetchedAtMs < this.cooldownMs) {
+    // Keyed on the last probe, not the entry's fetchedAtMs: a live sample
+    // stamps the entry too, and must not hold HTTP off indefinitely.
+    const lastProbe = this.httpAtMs.get(accountId);
+    if (lastProbe !== undefined && this.now() - lastProbe < this.cooldownMs) {
       return;                                  // still fresh — don't re-spend
+    }
+    const liveAt = this.liveAtMs.get(accountId);
+    if (
+      liveAt !== undefined && this.now() - liveAt < this.refreshIntervalMs
+      && this.now() - (this.httpAtMs.get(accountId) ?? 0) < LIVE_HTTP_EVERY_PASSES * this.refreshIntervalMs
+    ) {
+      return;                                  // a live statusline is feeding it
     }
     await this.probe(accountId, true);
   }
@@ -238,7 +284,6 @@ export class AccountUsageService {
   private async probe(accountId: string, automatic: boolean): Promise<void> {
     const configDir = this.getConfigDir(accountId);
     if (!configDir) return; // unknown / non-claude account — nothing to probe
-    const prev = this.cache.get(accountId);
     this.inflight.add(accountId);
     try {
       const cred = await this.loadCredential(configDir);
@@ -248,15 +293,17 @@ export class AccountUsageService {
       // fault: an automatic pass leaves the entry as it was instead of
       // painting it red. A manual refresh still surfaces the reason.
       if (automatic && !cred.ok && cred.reason === 'unsupported-platform') return;
+      this.httpAtMs.set(accountId, this.now());
       if (!cred.ok) {
         this.set(accountId, {
           status: cred.reason === 'not-found' ? 'token-missing' : 'error',
-          snapshot: prev?.snapshot ?? null,
+          snapshot: this.currentSnapshot(accountId),
           lastError: cred.reason === 'not-found' ? null : (cred.detail ?? cred.reason),
         });
         return;
       }
       try {
+        // HTTP is authoritative: it replaces whatever live samples built up.
         const snapshot = await fetchUsage(cred.credential.accessToken, this.fetchImpl);
         this.rateLimited.delete(accountId);
         this.set(accountId, { status: 'ok', snapshot, lastError: null });
@@ -268,7 +315,7 @@ export class AccountUsageService {
           // refresh pass past the cooldown.
           this.set(accountId, {
             status: 'unauthorized',
-            snapshot: prev?.snapshot ?? null,
+            snapshot: this.currentSnapshot(accountId),
             lastError: 'HTTP 401/403',
           });
         } else if (err instanceof UsageApiException && err.detail.kind === 'rate-limited') {
@@ -279,14 +326,14 @@ export class AccountUsageService {
           });
           this.set(accountId, {
             status: 'error',
-            snapshot: prev?.snapshot ?? null,
+            snapshot: this.currentSnapshot(accountId),
             lastError: 'HTTP 429 rate limited',
           });
         } else {
           const msg = err instanceof Error ? err.message : 'unknown';
           this.set(accountId, {
             status: 'error',
-            snapshot: prev?.snapshot ?? null,
+            snapshot: this.currentSnapshot(accountId),
             lastError: msg,
           });
         }
@@ -296,9 +343,20 @@ export class AccountUsageService {
     }
   }
 
-  private set(accountId: string, patch: Omit<AccountUsageEntry, 'accountId' | 'fetchedAtMs'>): void {
+  /** The cached snapshot as of NOW. Failure paths use this rather than the
+   *  entry read before the awaits: a live sample may have landed meanwhile. */
+  private currentSnapshot(accountId: string): UsageSnapshot | null {
+    return this.cache.get(accountId)?.snapshot ?? null;
+  }
+
+  private set(
+    accountId: string,
+    patch: Omit<AccountUsageEntry, 'accountId' | 'fetchedAtMs'>,
+    notify = true,
+  ): void {
     const entry: AccountUsageEntry = { accountId, fetchedAtMs: this.now(), ...patch };
     this.cache.set(accountId, entry);
+    if (!notify) return;
     for (const cb of this.listeners) {
       try { cb(entry); } catch { /* one bad subscriber must not block siblings */ }
     }
