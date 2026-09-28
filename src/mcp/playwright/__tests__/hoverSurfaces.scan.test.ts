@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
-import { buildHoverTriggerScanExpression, hoverProbeStep } from '../hoverSurfaces';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  HOVER_SCAN_LIMITS,
+  buildHoverTriggerScanExpression,
+  hoverProbeStep,
+} from '../hoverSurfaces';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../dom-intelligence';
 
 // The scan runs in the page, so the only honest test of it runs it in a DOM.
@@ -221,6 +225,80 @@ describe('the phase-1 scan in a DOM', () => {
   it('survives a page with no stylesheets and no candidates at all', () => {
     mount('<p>text</p>');
     expect(scan()).toEqual([]);
+  });
+});
+
+// A walk that stops early must still score what it found. Both ways it can stop
+// used to leave the shared predicate true, so scoring broke before its first
+// candidate and the scan reported nothing at all (#1597).
+describe('the phase-1 scan when the rule walk stops early', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('[fix] still marks every trigger on a page with more rules than the cap', () => {
+    // A frozen clock, so it is the rule cap and nothing else that stops the walk.
+    vi.spyOn(Date, 'now').mockReturnValue(0);
+    mount(
+      '<nav><ul><li id="products"><a href="#p" id="lnk">Products</a>' +
+        '<ul class="sub" data-zero-box><li><a href="#s" data-zero-box>Shoes</a></li></ul></li></ul></nav>' +
+        '<button id="account" aria-haspopup="menu">Account</button>',
+    );
+    const pad: string[] = [];
+    for (let i = 0; i < HOVER_SCAN_LIMITS.MAX_CSS_RULES + 50; i++) pad.push(`.pad-${i} { color: red }`);
+    style('nav li:hover > ul.sub { display: block }\n' + pad.join('\n'));
+
+    expect(scan().map((el) => el.id).sort()).toEqual(['account', 'lnk']);
+  });
+
+  it('[fix] still marks the declared triggers when the walk ran out of time', () => {
+    // The first reading starts the walk; every later one is far past its budget,
+    // as when the renderer was descheduled or paid a whole-page layout mid-walk.
+    let calls = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => (calls++ === 0 ? 0 : 1_000));
+    mount('<button id="account" aria-haspopup="menu">Account</button>');
+    style('.a { color: red }\n.b { color: blue }');
+
+    expect(scan().map((el) => el.id)).toEqual(['account']);
+  });
+
+  it('[fix] forces no layout on a page with no hover rule and no candidate', () => {
+    mount('<p>text</p>');
+    style('.a { color: red }');
+    const settle = vi.fn(() => ({ left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 }));
+    Object.defineProperty(document.documentElement, 'getBoundingClientRect', { configurable: true, value: settle });
+    try {
+      expect(scan()).toEqual([]);
+      expect(settle).not.toHaveBeenCalled();
+    } finally {
+      delete (document.documentElement as { getBoundingClientRect?: unknown }).getBoundingClientRect;
+    }
+  });
+
+  it('[fix] keeps the page\'s pending layout off the walk\'s clock', () => {
+    // The first box read (for the first :hover rule) settles a second of render
+    // debt; the walk must not count it, or every rule after it — the second
+    // menu here — is never read.
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    mount(
+      '<nav><ul><li><a href="#p" id="lnk">Products</a>' +
+        '<ul class="sub" data-zero-box><li><a href="#s" data-zero-box>Shoes</a></li></ul></li></ul></nav>' +
+        '<aside><ul><li><a href="#h" id="help">Help</a>' +
+        '<ol class="more" data-zero-box><li><a href="#f" data-zero-box>FAQ</a></li></ol></li></ul></aside>',
+    );
+    style('nav li:hover > ul.sub { display: block }\naside li:hover > ol.more { display: block }');
+    const settle = vi.fn(() => {
+      now += 1_000;
+      return { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 };
+    });
+    Object.defineProperty(document.documentElement, 'getBoundingClientRect', { configurable: true, value: settle });
+    try {
+      expect(scan().map((el) => el.id).sort()).toEqual(['help', 'lnk']);
+      expect(settle).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (document.documentElement as { getBoundingClientRect?: unknown }).getBoundingClientRect;
+    }
   });
 });
 

@@ -58,7 +58,12 @@ import {
 export const HOVER_SCAN_LIMITS = {
   /** Style rules examined per scan, across all sheets and nested groups. */
   MAX_CSS_RULES: 4000,
-  /** Wall-clock budget for the in-page scan. */
+  /**
+   * Wall-clock budget for each of the in-page scan's two passes — the rule walk,
+   * then the scoring of what it found (scoreBudgetExhausted) — so the in-page
+   * ceiling is twice this, plus one settle of the page's own pending layout
+   * when the scan reads a box at all.
+   */
   SCAN_BUDGET_MS: 60,
   /** Triggers whose handles are kept for phase 2 / marked in the tree. */
   MAX_TRACKED_TRIGGERS: 24,
@@ -196,6 +201,23 @@ export const HAS_SUBMENU_DOM_MARKER = ' [has-submenu]';
  */
 export function scanBudgetExhausted(rulesSeen: number, elapsedMs: number): boolean {
   return rulesSeen >= 4000 || elapsedMs >= 60;
+}
+
+/**
+ * Has the SCORING pass used up its budget?
+ *
+ * Separate from scanBudgetExhausted on purpose, and measured from the start of
+ * scoring rather than the start of the scan. Whatever stopped the rule walk —
+ * the rule cap, or a wall clock the renderer spent being descheduled or paying
+ * its own layout debt — left that predicate true, so a scoring loop gated on it
+ * broke before its first candidate and threw away every trigger the walk had
+ * already found, `aria-haspopup` ones included. Every page with MAX_CSS_RULES
+ * rules or more lost all its markers that way, and a loaded CI runner lost them
+ * intermittently (#1597). The rule count is not a scoring cost, so it is not
+ * part of this bound.
+ */
+export function scoreBudgetExhausted(elapsedMs: number): boolean {
+  return elapsedMs >= 60;
 }
 
 /** One `:hover` rule, split into who is hovered and what that reveals. */
@@ -572,7 +594,23 @@ export function buildHoverTriggerScanExpression(opts?: { elementsOnly?: boolean 
   const elementsOnly = opts?.elementsOnly === true;
   return `(() => {
   const started = Date.now();
+  // A page that has not produced a frame since its last DOM change makes the
+  // scan's FIRST box read pay for laying out the whole document, and that one
+  // read spent the entire budget on a loaded runner (#1597). That is the page's
+  // render debt, not the scan's cost, so the first box read settles it once and
+  // its time is kept off both clocks. Nothing is forced up front: a page with
+  // no hover rule and no candidate never has a box read at all.
+  let settled = false;
+  let layoutDebtMs = 0;
+  const settleLayout = () => {
+    if (settled) return;
+    settled = true;
+    const t0 = Date.now();
+    try { document.documentElement.getBoundingClientRect(); } catch (e) { /* no layout */ }
+    layoutDebtMs = Date.now() - t0;
+  };
   const exhausted = ${String(scanBudgetExhausted)};
+  const scoreExhausted = ${String(scoreBudgetExhausted)};
   const classify = ${String(classifyHoverRule)};
   const eligible = ${String(isHoverTriggerEligible)};
   const score = ${String(scoreHoverTrigger)};
@@ -596,6 +634,7 @@ export function buildHoverTriggerScanExpression(opts?: { elementsOnly?: boolean 
 
   /** Not on screen right now: no box, or nothing painted. */
   const isHiddenNow = (el) => {
+    settleLayout();
     try {
       if (typeof el.checkVisibility === 'function'
           && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return true;
@@ -640,7 +679,7 @@ export function buildHoverTriggerScanExpression(opts?: { elementsOnly?: boolean 
       // A scan that ran out reports the triggers it already found and says
       // nothing about having stopped: a missing marker leaves the agent exactly
       // where it is today, so there is no verdict here worth qualifying.
-      if (exhausted(rules, Date.now() - started)) { queue.length = 0; break; }
+      if (exhausted(rules, Date.now() - started - layoutDebtMs)) { queue.length = 0; break; }
       const rule = list[i];
       let nested = null;
       try { nested = rule.cssRules; } catch (e) { nested = null; }
@@ -709,12 +748,14 @@ export function buildHoverTriggerScanExpression(opts?: { elementsOnly?: boolean 
 
   // --- score ---------------------------------------------------------------
   const scored = [];
+  // Its OWN clock and its own predicate: a walk that stopped on the rule cap or
+  // its wall clock must still score what it found (scoreBudgetExhausted).
+  if (candidates.length > 0) settleLayout();
+  const scoringStarted = Date.now();
   for (let i = 0; i < candidates.length; i++) {
-    // The same budget as the rule walk, because this pass is the expensive one:
-    // getComputedStyle + getBoundingClientRect per candidate forces a style
-    // recalc and a layout. The rule count no longer moves here, so it is the
-    // wall clock that stops this loop.
-    if (exhausted(rules, Date.now() - started)) break;
+    // Bounded because getComputedStyle + getBoundingClientRect per candidate can
+    // each force a style recalc and a layout; the wall clock is what stops it.
+    if (scoreExhausted(Date.now() - scoringStarted)) break;
     const el = candidates[i];
     const tag = String(el.tagName || '').toLowerCase();
     let inert = false;
