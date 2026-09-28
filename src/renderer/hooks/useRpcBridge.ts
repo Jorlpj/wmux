@@ -685,12 +685,17 @@ function applySenderReopen(taskId: string, params: RpcParams): boolean {
   return false;
 }
 
-function buildA2aNudge(taskId: string, senderName: string): string {
+// `kind` says whether the line announces a new task or a reply/update on an
+// existing one (#1573). Both parties of a same-workspace task share the
+// workspace name, so a reply labeled "new task" reads, in the sender's pane,
+// exactly like its own send's nudge landing there too.
+function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 'reply'): string {
   const id8 = taskId.replace(/^task[-_]?/, '').slice(0, 8);
+  const what = kind === 'new' ? 'new A2A task' : 'reply on A2A task';
   // Sanitize the user-editable workspace name: a CR/LF in it would otherwise
   // split this "single line" into a multi-line bracketed paste (submitted with
   // `\r\r`) and inject text into the very live-agent prompt this path protects.
-  return `[wmux] new A2A task ${id8} from ${sanitizeA2aName(senderName)} — a2a_task_query`;
+  return `[wmux] ${what} ${id8} from ${sanitizeA2aName(senderName)} — a2a_task_query`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2728,16 +2733,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // evidenced only at workspace level still gets its nudge, and a
             // pinned anchor or silent:false no longer reaches a shell (#1489).
             const replyNoAgentTarget = !a2aTargetHasAgent(targetWs, replyPty);
-            if (decision.sameWs) {
-              // Same-ws sibling: pointer-only nudge (no full-body injection).
-              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty, operator);
-            } else if (replyNoAgentTarget) {
+            // The no-agent check comes first for a same-ws sibling too: a
+            // sender pane back at its shell would run the nudge line (#1573).
+            if (replyNoAgentTarget) {
               // Nothing written — see NO_AGENT_PANE_HINT.
               mode = 'no-agent-pane';
+            } else if (decision.sameWs) {
+              // Same-ws sibling: pointer-only nudge (no full-body injection).
+              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply'), replyPty, operator);
             } else {
               const liveMeta = deliveryLiveMeta(store.surfaceAgent, replyPty, targetWs.metadata);
               if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-                write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty, operator);
+                write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply'), replyPty, operator);
               } else {
                 write = await deliverPtyNotification(targetWs, senderName, message, replyPty, operator);
                 mode = 'notification';
@@ -2997,7 +3004,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // onto the EventBus below, so the receiver can still poll it.
         mode = 'no-agent-pane';
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-        write = await deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName), explicitPty, operator);
+        write = await deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName, 'new'), explicitPty, operator);
       } else {
         write = await deliverPtyNotification(target, fromName, message, explicitPty, operator);
         mode = 'notification';
@@ -3245,7 +3252,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         const sameWsUnverified = sameWsTask && !callerPtyIdUpdate;
         if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop && !sameWsUnverified) {
           if (sameWsTask) {
-            updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), explicitPty, operator);
+            // #1573 — the same #1489 gate as below: a sibling pane back at its
+            // shell would run the nudge line as a command. Write nothing then.
+            if (a2aTargetHasAgent(targetWs, explicitPty)) {
+              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), explicitPty, operator);
+            }
           } else {
             // #1336 — the same unaddressed rule as send/reply. Without it the
             // status-update message on a pin-less task still pasted its body
@@ -3269,7 +3280,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             if (!a2aTargetHasAgent(targetWs, updatePty)) {
               // Write nothing; the receiver follows the EventBus pointer.
             } else if (isLiveTuiAgent(liveMeta)) {
-              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), updatePty, operator);
+              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), updatePty, operator);
             } else {
               updateWrite = await deliverPtyNotification(targetWs, callerName, message, updatePty, operator);
             }
