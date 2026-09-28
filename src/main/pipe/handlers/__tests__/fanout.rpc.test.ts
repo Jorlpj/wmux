@@ -534,9 +534,7 @@ describe('the caller is answered without waiting for the fan-out', () => {
 // fell through as a NEW request, and the caller got a second approval prompt
 // and a full re-execution of tasks that had already spawned. Terminal states
 // now live in a body-free tombstone map with a much larger cap.
-// 1100 sequential fan-outs per test: well past the 5 s default on slow CI
-// runners, so the budget is raised for this block only.
-describe('an evicted key can never restart a fan-out that already spawned', { timeout: 30_000 }, () => {
+describe('an evicted key can never restart a fan-out that already spawned', () => {
   /** Push `n` unrelated fan-outs through, each of which terminates. */
   async function flood(h: Harness, n: number): Promise<void> {
     for (let k = 0; k < n; k += 1) {
@@ -545,8 +543,50 @@ describe('an evicted key can never restart a fan-out that already spawned', { ti
     }
   }
 
+  /**
+   * The runaway brakes are not what this block tests, and the real store
+   * persists every fan-out (caps stamp, refund, audit line) to disk: 1100 of
+   * them meant thousands of file writes and renames, which timed out on
+   * Windows runners. This double admits every fan-out and touches no disk, so
+   * the flood exercises only the gate map and the result LRU.
+   */
+  function permissiveGuards(): FanOutGuards {
+    return {
+      fanoutOwnerOf: () => null,
+      reserve: () => ({ ok: true }),
+      release: () => undefined,
+      commitStart: () => undefined,
+      refundStart: () => undefined,
+      settleStarted: () => undefined,
+      appendAudit: () => undefined,
+    } as unknown as FanOutGuards;
+  }
+
+  it('keeps the same guarantees on the real guard store (small flood)', async () => {
+    // The flood below uses a permissive double, so this case runs a short one
+    // through the REAL store (temp dir): 13 two-task fan-outs are 26 tasks,
+    // past the 24-task hourly cap unless each unspawned task is refunded on
+    // disk, and the forgotten key answers expired instead of running again.
+    const guards = new FanOutGuards({
+      dir: fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-rpc-')),
+      countLiveTasks: () => 0,
+      ledgerTaskOwner: () => null,
+    });
+    const h = setup({ guards });
+    await h.call(goodParams({ idempotencyKey: 'the-real-one' }));
+    await h.flush();
+    h.forgetResult('the-real-one');
+    await flood(h, 13);
+    expect(h.start).toHaveBeenCalledTimes(14);
+
+    const res = await h.call(goodParams({ idempotencyKey: 'the-real-one' }));
+    await h.flush();
+    expect(res).toMatchObject({ ok: false, status: 'expired' });
+    expect(h.start.mock.calls.filter((c) => (c[0] as FanOutRequest).idempotencyKey.endsWith('the-real-one'))).toHaveLength(1);
+  });
+
   it('answers expired — not a fresh request — after eviction pressure on both stores', async () => {
-    const h = setup();
+    const h = setup({ guards: permissiveGuards() });
     await h.call(goodParams({ idempotencyKey: 'the-real-one' }));
     await h.flush();
     expect(h.start).toHaveBeenCalledTimes(1);
@@ -564,7 +604,7 @@ describe('an evicted key can never restart a fan-out that already spawned', { ti
   });
 
   it('keeps a denial terminal under the same pressure, instead of re-prompting', async () => {
-    const h = setup({ approval: { approved: false, outcome: 'declined' } });
+    const h = setup({ approval: { approved: false, outcome: 'declined' }, guards: permissiveGuards() });
     await h.call(goodParams({ idempotencyKey: 'denied-one' }));
     await h.flush();
     const before = h.approvalCount();

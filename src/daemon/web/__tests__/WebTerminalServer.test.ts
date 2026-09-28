@@ -3889,17 +3889,26 @@ describe('WebTerminalServer', () => {
     expect((await fetch(`${base()}/api/history?offset=-1`, {headers})).status).toBe(400);
   });
 
-  it('stages and commits through the authenticated Git API using spawnCwd', async () => {
-    const info = await startRW();
-    const auth = bearer(info.token as string);
-    const root = path.join(uploadsDir, 'repo');
+  // Stage and commit are two cases on purpose: every git process costs 100ms+
+  // on the Windows runner and the route spawns ~13 per snapshot, so one case
+  // doing both sat right at the 5s limit. Test-side spawns are kept minimal too:
+  // identity is appended to the config `init` wrote instead of `git config` calls.
+  const gitRepo = (name: string) => {
+    const root = path.join(uploadsDir, name);
     fs.mkdirSync(root);
     const git = (...args: string[]) => execFileSync('git', args, {cwd:root,encoding:'utf8'}).trim();
     git('init', '-b', 'main');
-    git('config', 'user.name', 'HTTP Test'); git('config', 'user.email', 'http@example.invalid');
+    fs.appendFileSync(path.join(root, '.git', 'config'), '[user]\n\tname = HTTP Test\n\temail = http@example.invalid\n');
     fs.writeFileSync(path.join(root, 'phone.txt'), 'reviewed');
     managed.meta.spawnCwd = root;
     managed.meta.cwd = '/untrusted-osc-path';
+    return git;
+  };
+
+  it('stages through the authenticated Git API using spawnCwd', async () => {
+    const info = await startRW();
+    const auth = bearer(info.token as string);
+    const git = gitRepo('repo');
     const endpoint = `${base()}/api/sessions/s1/git`;
     const beforeResponse = await fetch(endpoint, {headers:auth});
     expect(beforeResponse.headers.get('cache-control')).toBe('no-store');
@@ -3907,13 +3916,30 @@ describe('WebTerminalServer', () => {
     expect(before).toMatchObject({branch:'main',ref:'refs/heads/main',head:null,files:[{path:'phone.txt',status:'??'}]});
     const stage = await fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify({requestId:crypto.randomUUID(),action:'stage',paths:['phone.txt'],expectedHead:before.head,expectedTree:before.tree,expectedRef:before.ref})});
     expect(await stage.json()).toEqual({applied:true});
+    expect(git('ls-files')).toBe('phone.txt');
+  });
+
+  it('commits through the authenticated Git API using spawnCwd', async () => {
+    const info = await startRW();
+    const auth = bearer(info.token as string);
+    const git = gitRepo('repo');
+    // A base commit, then a staged edit on top of it: the phone's real flow is
+    // snapshot GET → commit with the head/tree/ref that snapshot reported.
+    git('add', 'phone.txt');
+    git('commit', '-q', '-m', 'base');
+    fs.writeFileSync(path.join(uploadsDir, 'repo', 'phone.txt'), 'reviewed again');
+    git('add', 'phone.txt');
+    const endpoint = `${base()}/api/sessions/s1/git`;
     const staged = await (await fetch(endpoint, {headers:auth})).json();
+    expect(staged).toMatchObject({branch:'main',ref:'refs/heads/main',head:expect.stringMatching(/^[0-9a-f]{40}$/)});
     const mutation = {requestId:crypto.randomUUID(),action:'commit',message:'From phone',expectedHead:staged.head,expectedTree:staged.tree,expectedRef:staged.ref};
     const send = () => fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify(mutation)});
     const result = await (await send()).json();
-    expect(result).toEqual({applied:true,commit:git('rev-parse','HEAD')});
+    expect(result).toMatchObject({applied:true});
     expect(await (await send()).json()).toEqual(result);
-    expect(git('rev-list','--count','HEAD')).toBe('1');
+    // One `rev-list` pins it all: HEAD is the returned commit, its parent is
+    // the head the snapshot reported, and the replay did not commit twice.
+    expect(git('rev-list','HEAD')).toBe(`${result.commit}\n${staged.head}`);
   });
 
   it('gates Git control on authentication, input grants and session visibility', async () => {
