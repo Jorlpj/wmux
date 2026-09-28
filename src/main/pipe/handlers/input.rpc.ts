@@ -50,8 +50,112 @@ type GetWindow = () => BrowserWindow | null;
  * receipt below), instead of silently stranding the prompt in the composer.
  * The number to raise, if a host is found where the retry keeps firing, is
  * this one.
+ *
+ * A submit into a detected agent waits the agent's submit profile instead
+ * (100 ms, 500 ms for Codex) — the gap every other wmux paste-then-Enter
+ * delivery uses — plus, for a pasted body, time for the paste to drain
+ * (`pasteSubmitDelayMs`).
+ * Live, Codex 0.157.1 absorbed an Enter written 20 ms after even a short typed
+ * prompt into its paste burst, leaving the prompt unsent (#1594).
  */
 const SUBMIT_ENTER_DELAY_MS = 20;
+
+/**
+ * Longer than this, even a single-line body is pasted: Claude Code classifies a
+ * large unbracketed read as a paste of its own and splits the text into a
+ * placeholder plus typed characters (#1594). Same bar the renderer uses to
+ * recognise a paste that leaked through keystroke input.
+ */
+const PASTE_BODY_MIN_CHARS = 1024;
+
+/**
+ * Extra wait before Enter per KB of pasted body, capped. The Enter timer starts
+ * when the paste is handed to the pty, not when the app has read it, so a large
+ * paste needs longer before a lone CR is safely its own read.
+ */
+const PASTE_DRAIN_MS_PER_KB = 30;
+const PASTE_DRAIN_MAX_MS = 1_500;
+
+/** What main needs to know about a pty to paste and submit into it. From the
+ *  daemon's live streams, so a hidden pane answers as truly as a visible one. */
+export interface SendTarget {
+  /** DECSET 2004 as the app last set it; null when the daemon cannot say. */
+  bracketedPaste: boolean | null;
+  /** Detected agent (display name or slug), for the submit profile. */
+  agent: string | null;
+}
+
+/** One trailing line break is the Enter at the end of the text, not a second
+ *  line: a shell command ending in `\n` is still a one-line command. */
+export function stripTrailingEnter(text: string): string {
+  return text.replace(/(\r\n|\r|\n)$/, '');
+}
+
+/** Could `body` need a bracketed paste at all? */
+function isPasteCandidate(body: string, raw: boolean): boolean {
+  // ESC means the caller is sending terminal bytes; a paste would neuter them.
+  if (raw || body.includes('\x1b')) return false;
+  return isMultilinePtyPayload(stripTrailingEnter(body)) || body.length > PASTE_BODY_MIN_CHARS;
+}
+
+/**
+ * Deliver `body` to an agent as one bracketed paste instead of raw keystrokes
+ * (#1594).
+ *
+ * Raw, a multi-line message is typed into the pane byte by byte: each newline
+ * is a keystroke, and a TUI splits the stream by read size. Reproduced against
+ * Claude Code 2.1.283 and Codex 0.157.1 with a 1.7 KB, four-item message
+ * written raw: Claude turned the first read into a `[Pasted text]` placeholder
+ * and typed the rest after it, and an Enter 20 ms later was absorbed; Codex's
+ * paste-burst logic absorbed the text AND the Enter, so nothing was submitted.
+ * The same bytes wrapped in ESC[200~ … ESC[201~ were one paste in both, and a
+ * single Enter submitted them.
+ *
+ * Only for a detected agent whose app enabled bracketed paste. A shell's line
+ * editor enables it too, but there a newline in a typed script IS the Enter
+ * that runs each line — pasted, the lines would sit unexecuted.
+ */
+export function shouldPasteBody(body: string, raw: boolean, target: SendTarget | null): boolean {
+  return !!target?.agent && target.bracketedPaste === true && isPasteCandidate(body, raw);
+}
+
+/** LF is the line separator inside a bracketed body; a CR there is an Enter to
+ *  some line editors (see renderer/utils/clipboardChunk.ts). */
+export function bracketedPasteBody(body: string): string {
+  return formatBracketedPastePayload(body.replace(/\r\n?/g, '\n'));
+}
+
+/** Gap before the Enter that submits a pasted body of `chars` characters. */
+export function pasteSubmitDelayMs(agent: string | null, chars: number): number {
+  const drain = Math.min(PASTE_DRAIN_MAX_MS, Math.ceil((chars / 1024) * PASTE_DRAIN_MS_PER_KB));
+  return submitProfileForAgent(agent).submitDelayMs + drain;
+}
+
+const PASTE_UNCONFIRMED_NOTE =
+  'The text was pasted as one block and Enter was pressed once; no receipt was observed, ' +
+  'but it may have been submitted. Do not re-send it: read the pane to check.';
+
+/**
+ * A collapsed paste in an agent composer: Claude Code shows
+ * `[Pasted text #1 +4 lines]`, Codex `[Pasted Content 2048 chars]`. The body
+ * itself is not on screen, so the placeholder is what leaves the composer.
+ */
+const PASTE_PLACEHOLDER = /\[Pasted (?:text|Content)[^\]]*\]/gi;
+
+/**
+ * What to watch leave the composer after a pasted submit: the text's own tail
+ * when the composer shows it, else the last paste placeholder in the composer
+ * area, else the tail anyway (which then simply cannot be observed).
+ */
+export function composerMarker(screen: string, needle: string): string {
+  if (needleInComposer(screen, needle)) return needle;
+  const placeholders = screen.match(PASTE_PLACEHOLDER) ?? [];
+  for (let i = placeholders.length - 1; i >= 0; i--) {
+    const placeholder = placeholders[i]!;
+    if (needleInComposer(screen, placeholder)) return placeholder;
+  }
+  return needle;
+}
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,33 +223,60 @@ const SUBMIT_RECEIPT_TAIL_LINES = 10;
 export const COMPOSER_AREA_ROWS = 6;
 
 /** Length of the trailing slice of the submitted text used to locate the
- *  composer line. Long enough to be unique in a viewport, short enough that a
- *  wrapped prompt still has the whole needle on its LAST visual row. */
+ *  composer line. Long enough to be unique in a viewport; it may wrap across
+ *  visual rows, which `rowFromBottom` matches through (#1596). */
 const SUBMIT_NEEDLE_CHARS = 24;
 
 /**
  * The fragment of the submitted text we look for on screen. The TAIL, not the
- * head: a prompt long enough to wrap puts its head on an earlier visual row,
- * and only the tail is guaranteed to sit on the composer's last row. Collapsed
- * whitespace, because a TUI re-flows the line it renders.
+ * head: the tail is what ends on the composer's last row, however the prompt
+ * wrapped. Collapsed whitespace, because a TUI re-flows the line it renders.
  */
 export function submitNeedle(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > SUBMIT_NEEDLE_CHARS ? flat.slice(-SUBMIT_NEEDLE_CHARS) : flat;
 }
 
+/** Drop what a wrap or a composer frame inserts between two halves of the
+ *  typed text: whitespace (continuation indent) and box-drawing borders. */
+const squashForMatch = (s: string): string => s.replace(/[\s─-╿]/g, '');
+
 /**
  * How many lines up from the last non-empty line of the screen the needle last
- * appears; -1 when it is not on screen at all. This is the whole trick behind
+ * ENDS; -1 when it is not on screen at all. This is the whole trick behind
  * "did the composer clear": the input line is the bottom-most place the text
  * can be, so a submitted prompt can only move UP.
+ *
+ * The screen is visual rows, so in a narrow pane the needle wraps across two or
+ * more of them (#1596: at ~25 columns it never fit on one row, the composer was
+ * never "seen", and every real submit read as `accepted:false`). Each run of
+ * non-blank rows is matched as one squashed string and the match is placed on
+ * the row where it ends — the same row a wide pane would report. A blank row
+ * ends a run, so the submitted echo cannot borrow characters from a composer
+ * drawn below it.
  */
 export function rowFromBottom(screen: string, needle: string): number {
-  if (!needle) return -1;
+  const target = squashForMatch(needle);
+  if (!target) return -1;
   const lines = screen.replace(/\r/g, '').split('\n');
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.replace(/\s+/g, ' ').includes(needle)) return lines.length - 1 - i;
+  let end = lines.length;
+  while (end > 0) {
+    let start = end;
+    while (start > 0 && lines[start - 1]!.trim() !== '') start--;
+    let joined = '';
+    const rowEnds: number[] = [];
+    for (let i = start; i < end; i++) {
+      joined += squashForMatch(lines[i]!);
+      rowEnds.push(joined.length);
+    }
+    const at = joined.lastIndexOf(target);
+    if (at >= 0) {
+      const endChar = at + target.length - 1;
+      const row = start + rowEnds.findIndex((e) => e > endChar);
+      return lines.length - 1 - row;
+    }
+    end = start - 1;
   }
   return -1;
 }
@@ -213,8 +344,16 @@ export interface SubmitReceipt {
   retried: boolean;
   /** 'running_unconfirmed' means running was observed without submit evidence.
    *  Otherwise why we accepted; 'none' when nothing moved, 'unobservable'
-   *  when neither signal was available to watch in the first place. */
-  signal: 'turn_start' | 'composer_cleared' | 'running_unconfirmed' | 'none' | 'unobservable';
+   *  when neither signal was available to watch in the first place.
+   *  'paste_unconfirmed' replaces both for a body delivered as one paste: it
+   *  may have been submitted, and must not be re-sent. */
+  signal:
+    | 'turn_start'
+    | 'composer_cleared'
+    | 'running_unconfirmed'
+    | 'paste_unconfirmed'
+    | 'none'
+    | 'unobservable';
   /** Present only when `accepted` is false. */
   screenTail?: string;
 }
@@ -921,9 +1060,30 @@ export function registerInputRpc(
     // the very false receipt this handler exists to remove, wearing a
     // different hat. The trailing \r IS the submit, so it is stripped and the
     // normal path runs: one text write, one Enter, one receipt.
+    // A trailing \n (or \r\n) is the same Enter: writing it AND the submit's \r
+    // ran a shell command and then an empty line.
     const submitRequested = params['submit'] === true;
-    const bodyText = submitRequested && safeText.endsWith('\r') ? safeText.slice(0, -1) : safeText;
+    const bodyText = submitRequested ? stripTrailingEnter(safeText) : safeText;
+    // Multi-line or long text for an agent goes in as one bracketed paste, and
+    // a submit into an agent waits its submit profile (#1594). The daemon
+    // answers from its live streams; asked before the first write, like the
+    // receipt workspace below, so the round-trip never lands between the text
+    // and its Enter. A local (pre-adoption) pty has no daemon state: typed, as
+    // before.
+    const rawWrite = params['raw'] === true;
+    const daemon = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+    let sendTarget: SendTarget | null = null;
+    if (daemon?.isConnected && (submitRequested || isPasteCandidate(bodyText, rawWrite))) {
+      try {
+        sendTarget = await daemon.getSendTarget(ptyId);
+      } catch {
+        sendTarget = null; // fail soft: typed, as before
+      }
+    }
+    const pasted = shouldPasteBody(bodyText, rawWrite, sendTarget);
+    const payload = pasted ? bracketedPasteBody(bodyText) : bodyText;
     let receipt: SubmitReceipt | undefined;
+    let pasteNote: string | undefined;
     if (submitRequested) {
       // Resolve the receipt workspace BEFORE the first write so its round-trip
       // never lands inside the text→Enter gap the delay above protects.
@@ -937,8 +1097,14 @@ export function registerInputRpc(
             undefined);
       const probe = makeSubmitProbe(getWindow, ptyId, receiptWs, deps.readTurnStartedAt);
 
-      if (bodyText) writeChunk(bodyText);
-      await delay(SUBMIT_ENTER_DELAY_MS);
+      if (bodyText) writeChunk(payload);
+      await delay(
+        pasted
+          ? pasteSubmitDelayMs(sendTarget?.agent ?? null, bodyText.length)
+          : sendTarget?.agent
+            ? submitProfileForAgent(sendTarget.agent).submitDelayMs
+            : SUBMIT_ENTER_DELAY_MS,
+      );
       // Snapshot the pane while the text sits UNCOMMITTED on the input line —
       // this is the "before" the composer diff is measured against.
       const beforeReading = await probe.readAgentStatus();
@@ -949,15 +1115,26 @@ export function registerInputRpc(
       };
       writeChunk('\r');
       const enterAt = Date.now();
+      // A collapsed paste shows a placeholder, not the text: watch that leave.
+      const needle = submitNeedle(bodyText);
       receipt = await awaitSubmitReceipt(
         probe,
-        submitNeedle(bodyText),
+        pasted ? composerMarker(before.screen, needle) : needle,
         before,
         () => writeChunk('\r'),
         { enterAt },
       );
+      // A pasted body may well have been submitted with no receipt seen; a
+      // caller that re-sends it on `accepted:false` delivers it twice.
+      if (pasted && !receipt.accepted) {
+        receipt = {
+          ...receipt,
+          signal: receipt.signal === 'running_unconfirmed' ? receipt.signal : 'paste_unconfirmed',
+        };
+        pasteNote = PASTE_UNCONFIRMED_NOTE;
+      }
     } else {
-      writeChunk(safeText);
+      writeChunk(payload);
     }
 
     return {
@@ -982,7 +1159,9 @@ export function registerInputRpc(
       // tool result, so the orchestrator sees which model was pinned). The pane
       // also shows the rewritten command directly — the primary indication.
       ...(enforcedModel ? { enforcedModel } : {}),
-      ...(enforcementNote ? { note: enforcementNote } : {}),
+      ...(enforcementNote || pasteNote
+        ? { note: [enforcementNote, pasteNote].filter(Boolean).join(' ') }
+        : {}),
     };
   });
 
