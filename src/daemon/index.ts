@@ -13,6 +13,9 @@ import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
 import { InputReceiptStore } from './web/InputReceiptStore';
+import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
+import { coercePhoneDecisions } from './approvals/decisionConfig';
+import { isNativeDecision } from './approvals/types';
 import { SCROLLBACK_ROWS } from './web/hostSearch';
 import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
 import fs from 'node:fs';
@@ -169,6 +172,10 @@ let runHistory: RunHistoryStore | null = null;
 let inputReceipts: InputReceiptStore | null = null;
 function getInputReceipts(): InputReceiptStore {
   return inputReceipts ??= new InputReceiptStore(getWmuxDir());
+}
+let answerReceipts: AnswerReceiptStore | null = null;
+function getAnswerReceipts(): AnswerReceiptStore {
+  return answerReceipts ??= new AnswerReceiptStore(getWmuxDir());
 }
 function getRunHistory(): RunHistoryStore {
   return runHistory ??= new RunHistoryStore(getWmuxDir());
@@ -392,6 +399,10 @@ function sessionTextReader(sessionManager: DaemonSessionManager) {
 function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalRegistry {
   return new ApprovalRegistry({
     wmuxDir,
+    // The `phoneDecisions` kill switch, read on every use like `gate`. No
+    // native adapter is wired yet (`answerNative`), so a native record could
+    // not be answered from a phone even with the switch on.
+    phoneDecisions: () => coercePhoneDecisions(loadConfig().phoneDecisions),
     readScreenTail: async (sessionId) => {
       const managed = sessionManager.getSession(sessionId);
       if (!managed) return null;
@@ -577,6 +588,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         devices: getDeviceStore(),
         runHistory: getRunHistory,
         inputReceipts: getInputReceipts,
+        answerReceipts: getAnswerReceipts,
         desktop: () => desktopPhoneBridge,
         agentLaunchOptions: installedAgentLaunchOptions,
         agentSettings: (id,authorized,choice)=>paneCodexSettings({
@@ -2810,6 +2822,7 @@ function registerRpcHandlers(
       devices: getDeviceStore(),
       runHistory: getRunHistory,
       inputReceipts: getInputReceipts,
+      answerReceipts: getAnswerReceipts,
         desktop: () => desktopPhoneBridge,
         agentLaunchOptions: installedAgentLaunchOptions,
         agentSettings: (id,authorized,choice)=>paneCodexSettings({
@@ -5113,7 +5126,8 @@ function wireEvents(
     render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
     clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
     holdsPrompt: (id) => approvalRegistry?.list().pending
-      .some((request) => request.sessionId === id && request.kind === 'terminal_prompt') === true,
+      // An agent-held (native) decision is not a dialog on this screen.
+      .some((request) => request.sessionId === id && request.kind === 'terminal_prompt' && !isNativeDecision(request)) === true,
     log: (level, message) => log(level, message),
   });
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);

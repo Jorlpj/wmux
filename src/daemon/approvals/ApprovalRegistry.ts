@@ -61,6 +61,7 @@ import {
   isClaudeFamilyAgent,
   TERMINAL_PROMPT_COOLDOWN_MS,
   TERMINAL_PROMPT_SUMMARY_MAX,
+  TERMINAL_PROMPT_TOOL_NAME_MAX,
 } from './terminalPrompt';
 import {
   decisionForChoiceLabel,
@@ -88,6 +89,7 @@ import {
   type ApprovalPersistedState,
 } from './approvalStore';
 import type {
+  ApprovalDecision,
   ApprovalEvent,
   ApprovalEventType,
   ApprovalExpiryReason,
@@ -99,11 +101,24 @@ import type {
   ApprovalResolveParams,
   ApprovalResolveResult,
   AnswerRefusalReason,
+  DecisionForm,
+  NativeDecisionOutcome,
+  NativeDecisionRef,
+  NativeDecisionReply,
   TerminalPromptDetail,
   TerminalPromptNote,
 } from './types';
-import { TERMINAL_PROMPT_DETAIL_MAX_BYTES, TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE } from './types';
+import {
+  DECISION_V2_WEB_ANSWER,
+  NATIVE_ANSWER_TIMEOUT_MS,
+  isNativeDecision,
+  TERMINAL_PROMPT_DETAIL_MAX_BYTES,
+  TERMINAL_PROMPT_WEB_ANSWER,
+  TERMINAL_PROMPT_WEB_DECLINE,
+} from './types';
 import type { QuestionShape } from './askUserQuestion';
+import type { PhoneDecisionsConfig } from './decisionConfig';
+import { boundDecisionForm } from './decisionForm';
 
 /** The pane's state at one instant: output bytes, key-carrying input, the PTY incarnation. */
 export interface PromptScreenMark {
@@ -127,6 +142,25 @@ export const TERMINAL_PROMPT_CREATE_READ_GAP_MS = 400;
  */
 export const TERMINAL_PROMPT_UPGRADE_READS = 2;
 export const TERMINAL_PROMPT_UPGRADE_GAP_MS = 1_500;
+/** Most pending native decisions one pane may hold at once. */
+export const NATIVE_DECISIONS_PER_SESSION_MAX = 16;
+/**
+ * Expiry reasons inferred from the pane's SCREEN or keys. A `native-rpc`
+ * record is settled by the agent's own server, so none of these may touch it:
+ * a key in an OpenCode pane or a cleared Claude-style dialog says nothing
+ * about a request the agent is still holding.
+ */
+const SCREEN_INFERRED_EXPIRY: ReadonlySet<ApprovalExpiryReason> = new Set<ApprovalExpiryReason>([
+  'answered-locally',
+  'screen-cleared',
+  'prompt-submitted',
+  'prompt-gone',
+]);
+const isNative = (r: ApprovalRequest): boolean => isNativeDecision(r);
+/** How long a settled native request is remembered, so a late re-notify cannot resurrect its card. */
+const NATIVE_SETTLED_MEMORY_MS = 10 * 60_000;
+const NATIVE_SETTLED_MEMORY_MAX = 1024;
+const nativeKey = (native: NativeDecisionRef): string => `${native.adapter}|${native.requestId}`;
 /** Quiet time after a key/click before an overtaken record is refreshed. */
 export const TERMINAL_PROMPT_REFRESH_SETTLE_MS = 600;
 /** At most one refresh per record this often: key auto-repeat must not flood SSE. */
@@ -249,6 +283,10 @@ function copyRequest(r: ApprovalRequest): ApprovalRequest {
     ...r,
     ...(r.options ? { options: [...r.options] } : {}),
     ...(r.choices ? { choices: r.choices.map((c) => ({ ...c })) } : {}),
+    ...(r.native ? { native: { ...r.native } } : {}),
+    ...(r.form ? { form: structuredClone(r.form) } : {}),
+    ...(r.step ? { step: { ...r.step } } : {}),
+    ...(r.answerDigest ? { answerDigest: { ...r.answerDigest } } : {}),
   };
 }
 
@@ -337,6 +375,16 @@ export interface ApprovalRegistryDeps {
   /** Injected for tests: the wait between creation-time screen reads. */
   promptReadDelay?: (ms: number) => Promise<void>;
   /**
+   * `native-rpc` — hand one answer to the agent's own server (the OpenCode TUI
+   * plugin, the Codex relay). Must return `unavailable` only when nothing was
+   * delivered. Absent ⇒ a native record cannot be answered from here.
+   */
+  answerNative?: (native: NativeDecisionRef, reply: NativeDecisionReply) => Promise<NativeDecisionOutcome>;
+  /** The `phoneDecisions` kill switch, read on every use. Absent ⇒ both on. */
+  phoneDecisions?: () => PhoneDecisionsConfig;
+  /** Upper bound on one `answerNative` call. Default NATIVE_ANSWER_TIMEOUT_MS. */
+  nativeAnswerTimeoutMs?: number;
+  /**
    * Injected for tests: the timer behind the refresh after a key/click. `fn`
    * settles once that refresh has fully landed (read, persist, events), so a
    * fake timer can await it instead of guessing how long the disk write takes.
@@ -379,6 +427,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * Set by a hook note, dropped by every sweep of the pane's records.
    */
   private readonly permissionEvidence = new Map<string, PermissionEvidence[]>();
+  /**
+   * Native requests (`adapter|requestId`) whose answer is on its way to the
+   * agent's server. Keyed by the agent's request, not the record, so two
+   * records for one request can never both reply. In memory only.
+   */
+  private readonly nativeClaims = new Set<string>();
+  /** Native requests that left `pending` recently (`adapter|requestId` → when). */
+  private readonly nativeSettled = new Map<string, number>();
 
   constructor(deps: ApprovalRegistryDeps) {
     this.deps = deps;
@@ -440,7 +496,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    */
   terminalPromptDetail(id: string): TerminalPromptDetail | null {
     const record = this.requests.find((r) => r.id === id);
-    if (!record || record.kind !== 'terminal_prompt' || record.state !== 'pending') return null;
+    if (!record || record.kind !== 'terminal_prompt' || record.state !== 'pending' || isNative(record)) return null;
     const call = record.promptFingerprint ? identityOf(record)?.call : undefined;
     if (!call) return null;
     const full = Buffer.from(call.command, 'utf8');
@@ -516,8 +572,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       questionShape: input.questionShape,
     };
     return this.mutate(() => {
+      // A native decision is the agent's own request, settled by its server:
+      // a screen-backed question on the same pane never replaces it.
       const superseded = this.requests.find(
-        (r) => r.state === 'pending' && r.sessionId === snapshot.sessionId,
+        (r) => r.state === 'pending' && r.sessionId === snapshot.sessionId && !isNative(r),
       );
       const events: ApprovalEvent[] = [];
       if (superseded) {
@@ -590,7 +648,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       const superseded = this.requests.find(
         (r) => r.state === 'pending'
           && r.sessionId === snapshot.sessionId
-          && r.kind !== 'awaiting_permission',
+          && r.kind !== 'awaiting_permission'
+          && !isNative(r),
       );
       const events: ApprovalEvent[] = [];
       if (superseded) {
@@ -619,6 +678,132 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       return events;
     });
     return id;
+  }
+
+  /**
+   * Record a decision the agent's OWN server holds (an OpenCode permission or
+   * question, a Codex approval) as a `native-rpc` record. Its answer goes back
+   * to that server through `answerNative`, never into the pane.
+   *
+   * Idempotent per `(sessionId, adapter, requestId)`: the same request again
+   * with the same form is a no-op, with a changed form it replaces the record
+   * (`create` carries `replaces`). It never supersedes a screen-backed record
+   * and is never superseded by one. At most NATIVE_DECISIONS_PER_SESSION_MAX
+   * pending per pane. With the `native` kill switch off the record is created
+   * on the `none` channel: an informational card, answered at the terminal.
+   *
+   * v1 projection (a client without `decision-v2`): a permission is a
+   * `terminal_prompt` whose choices are exactly Yes/No and whose
+   * `promptFingerprint` is the form's, so a shipped phone can answer it; a
+   * question is an `awaiting_input` (one single-select question keeps its
+   * choices, anything else carries `questionShape`). A `plan` form is never
+   * native. Resolves to the record id, or null when nothing was recorded.
+   *
+   * No producer calls this yet (the OpenCode plugin and the Codex relay wire
+   * it up); it exists so the isolation rules above are pinned by tests.
+   */
+  noteNativeDecision(input: {
+    sessionId: string;
+    agent: string;
+    workspaceId?: string;
+    native: NativeDecisionRef;
+    form: DecisionForm;
+    /** The permission's own question line (a permission form needs one). */
+    question?: string;
+    toolName?: string;
+    summary?: string;
+  }): Promise<string | null> {
+    const bounded = boundDecisionForm(input.form);
+    const snapshot = {
+      ...input,
+      native: { ...input.native },
+      question: boundRecordText(input.question, TERMINAL_PROMPT_SUMMARY_MAX),
+      toolName: boundRecordText(input.toolName, TERMINAL_PROMPT_TOOL_NAME_MAX),
+      summary: boundRecordText(input.summary, TERMINAL_PROMPT_SUMMARY_MAX),
+    };
+    return this.mutate<string | null>(() => {
+      const { native } = snapshot;
+      const form = bounded;
+      if (!form) {
+        this.deps.log?.('warn', `[approvals] native decision form out of bounds on ${snapshot.sessionId}`);
+        return { result: null };
+      }
+      if (form.kind === 'plan') return { result: null };
+      const question = form.kind === 'permission' ? snapshot.question : form.questions?.[0]?.text;
+      if (!question) return { result: null };
+      // Answered or gone a moment ago: a late re-notify (a reconcile racing
+      // the answer) must not bring the card back.
+      const settledAt = this.nativeSettled.get(nativeKey(native));
+      if (settledAt !== undefined && this.now() - settledAt < NATIVE_SETTLED_MEMORY_MS) return { result: null };
+      const formFingerprint = crypto.createHash('sha256')
+        .update(`${native.adapter}|${native.requestId}|${canonicalJson(form)}`)
+        .digest('hex')
+        .slice(0, 32);
+      const existing = this.requests.find((r) => r.state === 'pending' && r.sessionId === snapshot.sessionId
+        && r.native?.adapter === native.adapter && r.native.requestId === native.requestId);
+      if (existing && existing.formFingerprint === formFingerprint) return { result: existing.id };
+      const enabled = this.decisionChannels().native;
+      if (!existing && this.requests.filter(
+        (r) => r.state === 'pending' && r.sessionId === snapshot.sessionId && r.native !== undefined,
+      ).length >= NATIVE_DECISIONS_PER_SESSION_MAX) {
+        this.deps.log?.('warn', `[approvals] native decision cap reached on ${snapshot.sessionId}`);
+        return { result: null };
+      }
+      const single = form.kind === 'questions' && form.questions?.length === 1 && !form.questions[0]!.multiSelect;
+      // A shipped phone sends a 1–2 digit `choiceKey`; options keyed otherwise
+      // are offered to a `decision-v2` client only.
+      const digitKeys = single && form.questions![0]!.options.length > 0
+        && form.questions![0]!.options.every((o) => /^\d{1,2}$/.test(o.key));
+      const shape: QuestionShape | undefined = form.kind !== 'questions' || single
+        ? undefined
+        : (form.questions?.length ?? 0) > 1 ? 'multi-question' : 'multi-select';
+      const created: ApprovalRequest = {
+        id: this.newId(),
+        sessionId: snapshot.sessionId,
+        ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
+        agent: snapshot.agent,
+        kind: form.kind === 'permission' ? 'terminal_prompt' : 'awaiting_input',
+        ...(snapshot.toolName ? { toolName: snapshot.toolName } : {}),
+        ...(snapshot.summary ? { summary: snapshot.summary } : {}),
+        ...(hasCriticalRisk(question, snapshot.summary) ? { risk: 'critical' as const } : {}),
+        native,
+        // Kept on every native record, switch on or off: it is what makes a
+        // re-notify of the same request a no-op instead of a new card.
+        formFingerprint,
+        ...(enabled
+          ? {
+              channel: 'native-rpc' as const,
+              form,
+              question,
+              ...(form.kind === 'permission'
+                ? { choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }], promptFingerprint: formFingerprint }
+                : digitKeys
+                  ? { choices: form.questions![0]!.options.map((o) => ({ ...o })) }
+                  : { ...(shape ? { questionShape: shape } : {}) }),
+            }
+          : { channel: 'none' as const }),
+        createdAt: this.now(),
+        state: 'pending',
+      };
+      const events: ApprovalEvent[] = [];
+      if (existing) {
+        existing.state = 'superseded';
+        existing.resolvedAt = this.now();
+        events.push({ type: 'supersede', request: copyRequest(existing) });
+      }
+      this.requests.push(created);
+      events.push({ type: 'create', request: copyRequest(created), ...(existing ? { replaces: existing.id } : {}) });
+      return { events, result: created.id };
+    });
+  }
+
+  private decisionChannels(): PhoneDecisionsConfig {
+    try {
+      return this.deps.phoneDecisions?.() ?? { native: true, stepwise: true };
+    } catch {
+      // An unreadable config must not turn on a channel the operator turned off.
+      return { native: false, stepwise: false };
+    }
   }
 
   /**
@@ -656,7 +841,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // A record already up for this dialog (the detector saw it first, or the
       // transcript lagged) gets another look now that the hook's proof is in.
       const stale = this.requests.find((r) => r.state === 'pending' && r.sessionId === sessionId
-        && r.kind === 'terminal_prompt' && !r.promptFingerprint && r.pressedAt === undefined);
+        && r.kind === 'terminal_prompt' && !r.promptFingerprint && r.pressedAt === undefined && !isNative(r));
       if (stale && this.deps.readPromptScreen) {
         this.upgradeTerminalPromptLater(note, stale.id).catch((err: unknown) => {
           this.deps.log?.('warn', `[approvals] terminal prompt upgrade failed for ${sessionId}: ${String(err)}`);
@@ -820,7 +1005,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
   private answerablePrompt(sessionId: string): ApprovalRequest | undefined {
     return this.requests.find((r) => r.state === 'pending' && r.sessionId === sessionId
-      && r.kind === 'terminal_prompt' && !!r.promptFingerprint && r.pressedAt === undefined);
+      && r.kind === 'terminal_prompt' && !!r.promptFingerprint && r.pressedAt === undefined && !isNative(r));
   }
 
   private scheduleRefresh(sessionId: string, delayMs: number): void {
@@ -873,7 +1058,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    */
   private staleQuestionFor(note: TerminalPromptNote): ApprovalRequest | undefined {
     if (note.toolName === 'AskUserQuestion') return undefined;
-    const pending = this.requests.filter((r) => r.state === 'pending' && r.sessionId === note.sessionId);
+    const pending = this.requests.filter((r) => r.state === 'pending' && r.sessionId === note.sessionId && !isNative(r));
     return pending.length === 1 && pending[0].kind === 'awaiting_input' ? pending[0] : undefined;
   }
 
@@ -907,8 +1092,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
   }
 
+  /** Screen-backed records only: a native decision does not hold the pane's screen. */
   private hasPending(sessionId: string): boolean {
-    return this.requests.some((r) => r.state === 'pending' && r.sessionId === sessionId);
+    return this.requests.some((r) => r.state === 'pending' && r.sessionId === sessionId && !isNative(r));
   }
 
   private inCooldown(sessionId: string, dialogKey: string | undefined): boolean {
@@ -1105,7 +1291,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
     if (reason === 'screen-cleared') {
       const released = this.requests.find(
-        (r) => r.state === 'pending' && r.sessionId === sessionId && r.kind === 'terminal_prompt',
+        (r) => r.state === 'pending' && r.sessionId === sessionId && r.kind === 'terminal_prompt' && !isNative(r),
       );
       const previous = this.terminalPromptQuiet.get(sessionId);
       const stillQuiet = previous && this.now() < previous.until ? previous.dialogKey : undefined;
@@ -1166,6 +1352,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // mutation chain (a render can take seconds and would hold every other
     // resolve, hook and expiry); only the CAS, the fence and the write run in it.
     const peek = this.requests.find((r) => r.id === params.id);
+    // A native decision is answered by the agent's own server — before the
+    // kind is even looked at, so it can never reach a screen read, a fence or
+    // a keystroke.
+    if (peek && isNative(peek)) return this.resolveNative(params, peek);
+    // A v2 answer: no form producer exists yet, so every record refuses it.
+    if (params.decisionAnswer !== undefined || params.decisionV2Answer !== undefined) {
+      return this.refuseDecisionAnswer(params, peek);
+    }
     if (peek?.kind === 'terminal_prompt') return this.resolveTerminalPrompt(params, peek);
     // The WHOLE decision runs inside one link of the chain — CAS, screen
     // re-read, PTY write and the state flip. A concurrent resolver waits for
@@ -1492,6 +1686,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     params: ApprovalResolveParams,
     record: ApprovalRequest,
   ): Promise<ApprovalResolveResult> {
+    // Defence in depth: `resolve` routes native records away before this.
+    if (isNative(record)) return this.answerInTerminal(record, 'unsupported-shape');
     if (params.terminalPromptDecline !== undefined) return this.declineTerminalPrompt(params, record);
     const choice = record.choices?.find((c) => c.key === params.choiceKey);
     const audit = (outcome: string): void => {
@@ -1661,6 +1857,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     params: ApprovalResolveParams,
     record: ApprovalRequest,
   ): Promise<ApprovalResolveResult> {
+    // Never an Esc for a native decision: the agent's server declines it.
+    if (isNative(record)) return this.answerInTerminal(record, 'unsupported-shape');
     const audit = (outcome: string): void => {
       this.deps.log?.(
         'info',
@@ -1770,6 +1968,208 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
+   * Answer a `native-rpc` record through the agent's own server. Nothing is
+   * read off the screen, nothing is fenced and no key is typed: the agent's
+   * server is the judge of whether its request is still open.
+   *
+   *   1. settled → `already-resolved` / `expired`; an answer in flight →
+   *      `already-answered`
+   *   2. who: a human through a web route carrying one of the three web
+   *      markers (the pipe RPC and MCP `approval_press` cannot carry any) →
+   *      else `answer-in-terminal` / `no-capability`; the `native` kill switch
+   *      off or no adapter wired → `answer-in-terminal`
+   *   3. what: a decline is a deny; a v1 answer names Yes or No of a
+   *      permission and echoes the form's fingerprint; a v2 answer waits for
+   *      the form producers (`unsupported-shape`)
+   *   4. when: not within TERMINAL_PROMPT_MIN_ANSWER_AGE_MS of creation
+   * Then the claim (one answer in flight per record), the re-check of the
+   * caller, the adapter call OUTSIDE the chain (it is I/O), and the settle:
+   * `ok` resolves, `not-found` expires (410), `unavailable` releases the claim.
+   */
+  private async resolveNative(params: ApprovalResolveParams, record: ApprovalRequest): Promise<ApprovalResolveResult> {
+    const via = params.terminalPromptDecline !== undefined ? 'decline' : params.decisionV2Answer !== undefined ? 'v2' : 'v1';
+    const audit = (outcome: string): void => {
+      this.deps.log?.(
+        'info',
+        `[approvals] native answer outcome=${outcome} record=${record.id} session=${record.sessionId} ` +
+          `adapter=${record.native?.adapter ?? '-'} via=${via} by="${logText(sanitizeResolvedBy(params.resolvedBy))}" ` +
+          `fp=${(record.formFingerprint ?? '').slice(0, 8) || '-'}`,
+      );
+    };
+    const refuse = (reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'>): ApprovalResolveResult => {
+      audit(reason);
+      return { ok: false, reason, request: copyRequest(record) };
+    };
+    const inTerminal = (why: AnswerRefusalReason): ApprovalResolveResult => {
+      audit(`answer-in-terminal:${why}`);
+      return { ok: false, reason: 'answer-in-terminal', answerRefusal: why, request: copyRequest(record) };
+    };
+    const settled = (): ApprovalResolveResult => {
+      const reason = record.state === 'resolved' ? 'already-resolved' : 'expired';
+      audit(reason);
+      return {
+        ok: false,
+        reason,
+        ...(record.resolvedBy !== undefined ? { resolvedBy: record.resolvedBy } : {}),
+        request: copyRequest(record),
+      };
+    };
+
+    if (record.state !== 'pending') return settled();
+    const claimKey = record.native ? nativeKey(record.native) : record.id;
+    if (this.nativeClaims.has(claimKey)) return refuse('already-answered');
+    const marked = params.decisionV2Answer === DECISION_V2_WEB_ANSWER
+      || params.terminalPromptAnswer === TERMINAL_PROMPT_WEB_ANSWER
+      || params.terminalPromptDecline === TERMINAL_PROMPT_WEB_DECLINE;
+    if ((params.resolver ?? 'human') !== 'human' || !marked) return inTerminal('no-capability');
+    const native = record.native;
+    const answerNative = this.deps.answerNative;
+    // `none`: made while the switch was off — informational for good.
+    const form = record.form;
+    if (!native || !form || record.channel !== 'native-rpc' || !this.decisionChannels().native) {
+      return inTerminal('unsupported-shape');
+    }
+    if (!answerNative) return inTerminal('unsupported-agent');
+    if (this.now() - record.createdAt < TERMINAL_PROMPT_MIN_ANSWER_AGE_MS) return refuse('answer-too-soon');
+
+    let decision: ApprovalDecision;
+    let choiceKey: string | undefined;
+    if (via === 'decline') {
+      if (params.decision !== 'deny' || params.choiceKey !== undefined) return refuse('invalid-choice');
+      if (params.promptFingerprint !== undefined && params.promptFingerprint !== record.formFingerprint) {
+        return refuse('prompt-changed');
+      }
+      decision = 'deny';
+    } else if (via === 'v2') {
+      return inTerminal('unsupported-shape');
+    } else if (form.kind === 'permission') {
+      // The shipped phone's answer to a permission: its plain Yes or No.
+      const choice = record.choices?.find((c) => c.key === params.choiceKey);
+      if (!choice || !params.promptFingerprint) return refuse('invalid-choice');
+      const expected = decisionForChoiceLabel(choice.label);
+      if (expected === null || params.decision !== expected) return refuse('invalid-choice');
+      if (params.promptFingerprint !== record.formFingerprint) return refuse('prompt-changed');
+      decision = expected;
+      choiceKey = choice.key;
+    } else if (params.decision === 'deny') {
+      // A question's v1 deny: reject it (no key names an option to deny).
+      if (params.choiceKey !== undefined) return refuse('invalid-choice');
+      decision = 'deny';
+    } else {
+      // A question's v1 approve: one single-select option by its key.
+      if (record.questionShape) return refuse('needs-v2');
+      const choice = record.choices?.find((c) => c.key === params.choiceKey);
+      if (!record.choices?.length) return inTerminal('unsupported-shape');
+      if (!choice) return refuse('invalid-choice');
+      decision = 'approve';
+      choiceKey = choice.key;
+    }
+
+    const refusedEarly = await this.reauthorize(params, record);
+    if (refusedEarly) {
+      audit(refusedEarly.ok ? 'ok' : refusedEarly.reason);
+      return refusedEarly;
+    }
+    // The CAS: at most one answer on its way to the agent per record.
+    const lost = await this.mutate<ApprovalResolveResult | null>(() => {
+      if (record.state !== 'pending') return { result: settled() };
+      if (this.nativeClaims.has(claimKey)) return { result: refuse('already-answered') };
+      this.nativeClaims.add(claimKey);
+      return { result: null };
+    });
+    if (lost) return lost;
+    try {
+      const refusedLate = await this.reauthorize(params, record);
+      if (refusedLate) {
+        audit(refusedLate.ok ? 'ok' : refusedLate.reason);
+        return refusedLate;
+      }
+      let outcome: NativeDecisionOutcome | 'timeout';
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        outcome = await Promise.race([
+          answerNative({ ...native }, {
+            decision,
+            formKind: form.kind,
+            // A permission's Yes/No is the decision itself; a question names its option.
+            ...(choiceKey && form.kind === 'questions' ? { choiceKey } : {}),
+          }),
+          new Promise<'timeout'>((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), this.deps.nativeAnswerTimeoutMs ?? NATIVE_ANSWER_TIMEOUT_MS);
+            timer.unref?.();
+          }),
+        ]);
+      } catch (err) {
+        this.deps.log?.('warn', `[approvals] native answer failed for ${record.id}: ${String(err)}`);
+        outcome = 'unavailable';
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      // Nothing delivered: the caller may retry.
+      if (outcome === 'unavailable') return refuse('agent-unavailable');
+      // Sent, never confirmed: it may have landed. The card stays up; the
+      // agent's own event (or a later not-found) settles it.
+      if (outcome === 'timeout') return refuse('answer-uncertain');
+      const result = await this.mutate<ApprovalResolveResult>(() => {
+        if (outcome === 'not-found') {
+          // The agent no longer holds the request (answered at the terminal,
+          // or gone): the card is dead.
+          const events: ApprovalEvent[] = [];
+          if (record.state === 'pending') {
+            record.state = 'expired';
+            record.resolvedAt = this.now();
+            events.push({ type: 'expire', request: copyRequest(record) });
+          }
+          return { events, result: { ok: false, reason: 'prompt-gone', request: copyRequest(record) } };
+        }
+        // Delivered. A record a sweep settled meanwhile (the pane went away)
+        // keeps its state; the answer still reached the agent.
+        if (record.state !== 'pending') return { result: { ok: true, request: copyRequest(record), durable: true } };
+        record.state = 'resolved';
+        record.decision = decision;
+        record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
+        record.resolvedAt = this.now();
+        if (choiceKey) record.selectedChoiceKey = choiceKey;
+        return {
+          events: [{ type: 'resolve', request: copyRequest(record) }],
+          result: { ok: true, request: copyRequest(record), durable: true },
+        };
+      }, (r, durable) => (r.ok ? { ...r, durable } : r));
+      audit(result.ok ? 'answered' : result.reason);
+      return result;
+    } finally {
+      this.nativeClaims.delete(claimKey);
+    }
+  }
+
+  /**
+   * A `decision-v2` answer (`POST /api/approvals/:id/answer`) for a record
+   * that is not native. The wire and its rails exist; the form producers do
+   * not yet, so after the lifecycle checks every record refuses it as
+   * `unsupported-shape`.
+   */
+  private refuseDecisionAnswer(params: ApprovalResolveParams, record: ApprovalRequest | undefined): ApprovalResolveResult {
+    if (!record) return { ok: false, reason: 'not-found' };
+    if (record.state !== 'pending') {
+      return {
+        ok: false,
+        reason: record.state === 'resolved' ? 'already-resolved' : 'expired',
+        ...(record.resolvedBy !== undefined ? { resolvedBy: record.resolvedBy } : {}),
+        request: copyRequest(record),
+      };
+    }
+    if ((params.resolver ?? 'human') !== 'human' || params.decisionV2Answer !== DECISION_V2_WEB_ANSWER) {
+      return this.answerInTerminal(record, 'no-capability');
+    }
+    // The reflex guard every remote answer takes, in place before any form
+    // producer can make this path answer something.
+    if (this.now() - record.createdAt < TERMINAL_PROMPT_MIN_ANSWER_AGE_MS) {
+      return { ok: false, reason: 'answer-too-soon', request: copyRequest(record) };
+    }
+    return this.answerInTerminal(record, 'unsupported-shape');
+  }
+
+  /**
    * The dialog on screen changed under an answer: replace the record with one
    * built from what is there now (a new id and fingerprint), so the phone
    * re-reads and can answer the dialog that is actually up. `create` carries
@@ -1826,6 +2226,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       let durable = true;
       if (events.length > 0) {
         for (const event of events) {
+          if (event.request.native && event.request.state !== 'pending' && event.type !== 'supersede') {
+            this.rememberNativeSettled(event.request.native);
+          }
           if (event.request.kind !== 'terminal_prompt') continue;
           if (event.request.state !== 'resolved' && event.request.state !== 'expired') continue;
           const settled = this.requests.find((r) => r.id === event.request.id);
@@ -1843,6 +2246,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     return run;
   }
 
+  private rememberNativeSettled(native: NativeDecisionRef): void {
+    const now = this.now();
+    this.nativeSettled.set(nativeKey(native), now);
+    if (this.nativeSettled.size <= NATIVE_SETTLED_MEMORY_MAX) return;
+    for (const [key, at] of this.nativeSettled) {
+      if (now - at >= NATIVE_SETTLED_MEMORY_MS || this.nativeSettled.size > NATIVE_SETTLED_MEMORY_MAX) {
+        this.nativeSettled.delete(key);
+      }
+    }
+  }
+
   /** Flip every pending record matching `match`. Returns the events to fan out. */
   private expirePendingWhere(
     match: (r: ApprovalRequest) => boolean,
@@ -1851,6 +2265,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     const events: ApprovalEvent[] = [];
     for (const r of this.requests) {
       if (r.state !== 'pending' || !match(r)) continue;
+      // Only the agent's own events, the pane's end, the turn's end and a
+      // restart settle a native decision — never what the screen suggests.
+      if (isNative(r) && SCREEN_INFERRED_EXPIRY.has(reason)) continue;
       // A terminal_prompt whose remote answer was written RESOLVES when its
       // dialog is gone (the answered path, the screen check, the turn's end).
       if (r.pressedAt !== undefined) {
