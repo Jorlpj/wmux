@@ -1,5 +1,6 @@
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
+import { OpenCodeIdleSettler } from './transcript/openCodeIdleSettle';
 import type { ChatBridge, ChatLaunchRequest } from './chat/chatBridge';
 import { ChatSendReceiptStore } from './chat/ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from './chat/ChatCancelReceiptStore';
@@ -3444,6 +3445,9 @@ function registerRpcHandlers(
         if (!pid || !await ProcessMonitor.isRunning(pid) || sessionManager.getSession(id) !== pane) return undefined;
         return { pid, incarnation: pane.meta.incarnationId };
       },
+      // #1621 — a phone or desktop chat send starts a turn the PTY's stdin never
+      // saw: mark it like a submit so the episode and the idle settle know.
+      onSent: id => { sessionManager.getSession(id)?.bridge.noteInput('', true); },
       emit: (id, data, clients) => {
         // An OpenCode phase change may be the turn end the phone chat queue waits for.
         nativeChatBridge?.nudgeQueue(id);
@@ -5452,11 +5456,34 @@ function wireEvents(
     });
   });
 
+  // #1621 — plugin-less OpenCode turn ends, read from the terminal chat plugin.
+  const openCodeIdleSettler = new OpenCodeIdleSettler({
+    bridge: id => sessionManager.getSession(id)?.bridge,
+    agentSlug: id => {
+      const screenAgent = sessionManager.getSession(id)?.bridge.getLastAgent();
+      return canonicalIdentityFor(agentProcessTracker, id, screenAgent ? agentDisplayToSlug(screenAgent) : undefined)?.slug;
+    },
+    read: async id => {
+      const inspected = await terminalChat?.inspect(id);
+      if (!inspected) return null;
+      if ('read' in inspected) return inspected.read;
+      // No chat plugin on this pane backs off; an owner check that has not caught up does not.
+      return ['no-record', 'transport-refused', 'invalid-record'].includes(inspected.failure) ? null : undefined;
+    },
+    sendCount: id => terminalChat?.sendCount(id) ?? 0,
+    emit: (id, data) => {
+      pipeServer.broadcast({ type: 'agent.event', sessionId: id, data });
+      webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(id, data, Date.now()));
+      nativeChatBridge?.nudgeQueue(id);
+    },
+  });
+
   // A pane the user closes while a reclassification is pending must not get a
   // ghost died event 15s later.
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     void codexPaneRelays.retire(payload.id);
     nativeChatBridge?.paneClosed(payload.id);
+    openCodeIdleSettler.drop(payload.id);
     recordHistory(store => store.interrupted(payload.id));
     const t = interruptedTimers.get(payload.id);
     if (t) {
@@ -5488,9 +5515,20 @@ function wireEvents(
       data: payload.preTurn ? { preTurn: true } : null,
     };
     pipeServer.broadcast(event);
+    // #1621 — an OpenCode turn with no lifecycle `agent.stop` ends here, on
+    // silence. The chat plugin's phase says whether the turn is really over.
+    if (payload.preTurn) return;
+    openCodeIdleSettler.onIdle(payload.sessionId).then(settled => {
+      if (settled) log('info', `[opencode] ${payload.sessionId} turn ${settled} without a lifecycle stop; settled from the chat plugin phase`);
+    }, (err: unknown) => log('warn', `[opencode] idle settle failed for ${payload.sessionId}: ${String(err)}`));
   });
 
   sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string; likelyRepaint?: boolean }) => {
+    // #1621 — let the OpenCode chat plugin see the busy session and mint its turn.
+    if (!payload.likelyRepaint) {
+      openCodeIdleSettler.onActive(payload.sessionId)
+        .catch((err: unknown) => log('warn', `[opencode] running probe failed for ${payload.sessionId}: ${String(err)}`));
+    }
     // An output burst on an awaiting pane may be its dialog closing. A no-op
     // for every pane that is not awaiting.
     awaitingVerifier.trigger(payload.sessionId, 'output');
