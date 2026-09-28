@@ -67,10 +67,17 @@ export class ToastManager {
    * an agent with approvals off): the host user must see those even with
    * toasts turned off in Settings.
    */
-  showDirect(title: string, body: string, context?: ToastFocusContext, options?: { ignoreToastSetting?: boolean }): void {
-    if (!this.enabled && !options?.ignoreToastSetting) return;
+  showDirect(
+    title: string,
+    body: string,
+    context?: ToastFocusContext,
+    // `onClick` runs after the window is restored and focused — for toasts
+    // whose target is not a pane yet (a scheduled run's detached session).
+    options?: { ignoreToastSetting?: boolean; onClick?: () => void },
+  ): boolean {
+    if (!this.enabled && !options?.ignoreToastSetting) return false;
 
-    if (!Notification.isSupported()) return;
+    if (!Notification.isSupported()) return false;
 
     const notification = new Notification({
       title,
@@ -96,6 +103,7 @@ export class ToastManager {
             workspaceId: context.workspaceId ?? null,
           });
         }
+        options?.onClick?.();
       }
     });
 
@@ -128,6 +136,7 @@ export class ToastManager {
       }
       // Linux: intentionally no-op beyond the Notification.show() above.
     }
+    return true;
   }
 }
 

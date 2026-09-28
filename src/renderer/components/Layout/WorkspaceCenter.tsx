@@ -12,6 +12,7 @@ import {
   isRemoteMirrorVisible,
   selectAttachedRemoteWorkspaces,
 } from '../../stores/slices/remoteWorkspacesSlice';
+import SchedulesHost from '../Schedules/SchedulesHost';
 
 export function WorkspaceCenter() {
   // #1329 — the ephemeral rows behind remote-terminal PANES are poll inputs,
@@ -25,6 +26,9 @@ export function WorkspaceCenter() {
   // drops activeRemoteKey in the store (activateLocalWorkspace), so the local
   // tree comes back on the FIRST click.
   const remoteVisible = useStore(isRemoteMirrorVisible);
+  // Scheduled runs open over the pane grid; the grid and every remote mirror
+  // stay mounted (no PTY resize) but are unreachable while covered.
+  const schedulesOpen = useStore((s) => s.schedulesViewOpen);
 
   return (
     <div className="wmux-workspace-frame flex-1 min-h-0 relative">
@@ -35,6 +39,7 @@ export function WorkspaceCenter() {
         className="absolute inset-0 flex flex-col"
         data-pane-grid-wrapper
         style={{ display: remoteVisible ? 'none' : 'flex' }}
+        inert={schedulesOpen}
       >
         <WorkspaceViewport />
       </div>
@@ -47,10 +52,12 @@ export function WorkspaceCenter() {
           key={rw.key}
           className="absolute inset-0 flex flex-col"
           style={{ display: remoteVisible && rw.key === activeRemoteKey ? 'flex' : 'none' }}
+          inert={schedulesOpen}
         >
           <RemoteWorkspaceView workspace={rw} />
         </div>
       ))}
+      <SchedulesHost />
     </div>
   );
 }
