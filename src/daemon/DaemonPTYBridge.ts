@@ -4,7 +4,7 @@ import type { IPty } from 'node-pty';
 import type { AgentStatus } from '../shared/types';
 import { OscParser } from '../main/pty/OscParser';
 import { TerminalNotificationParser } from '../main/pty/oscNotification';
-import { AgentDetector, type AgentEventStatus } from '../main/pty/AgentDetector';
+import { AgentDetector, drawsCodexBanner, type AgentEventStatus } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
 import { sanitizeTitle } from '../main/pty/titleDetect';
@@ -161,6 +161,10 @@ export class DaemonPTYBridge extends EventEmitter {
    *  answer, or any hook other than SessionStart. A SessionStart that FIRED
    *  before it (a late or retried delivery) says nothing about now. */
   private turnEvidenceAt = 0;
+  /** #1610 — a program launched and no turn evidence since (see noteCodexOutput). */
+  private codexBootWindow = false;
+  private codexBannerTail = '';
+  private static readonly CODEX_BANNER_TAIL = 512;
 
   /**
    * Which terminal status settled the pane, while one has. Read only to keep
@@ -382,6 +386,7 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
+    this.codexBootWindow = false;
     this.turnEvidenceAt = this.lastTurnStartedAt;
 
     this.explicitTerminalStatus = false;
@@ -435,6 +440,7 @@ export class DaemonPTYBridge extends EventEmitter {
     // its own edge (noteSessionStart); detector statuses are not evidence.
     if (authoritative) {
       this.preTurn = false;
+      this.codexBootWindow = false;
       this.turnEvidenceAt = Date.now();
     }
     if (status === 'running') {
@@ -616,8 +622,9 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed, codexBootWindow } = this;
     this.noteAgentStatus('running', true);
+    this.codexBootWindow = codexBootWindow;
     // The session start is not turn evidence itself: a duplicate delivery of
     // it must neither clear nor re-set the state the first one left. Nor does
     // it touch the running episode: Codex fires its SessionStart inside the
@@ -635,6 +642,31 @@ export class DaemonPTYBridge extends EventEmitter {
     if (signalTs < turnEvidenceAt) return;
     this.preTurn = true;
     if (atIdlePrompt && this.sessionId) this.emit('idle', { sessionId: this.sessionId, preTurn: true });
+  }
+
+  /**
+   * #1610 — Codex fires no SessionStart before its first turn, so the banner
+   * row it draws at boot stands in for one: the pane is pre-turn until the
+   * next turn evidence. The row is also redrawn mid-turn (a resize, an
+   * overlay) and can appear in a reply or in a later shell command's output,
+   * so it counts only while all of these hold:
+   *   - the boot window is open: a program was launched (OSC 133 C, or the
+   *     pane spawned) and no submit, answer or hook has arrived since;
+   *   - no dialog is up;
+   *   - the pane's agent is Codex and a program owns the input: zsh and bash
+   *     turn bracketed paste off before running a command, and Codex turns it
+   *     back on before it paints, so plain command output does not qualify.
+   * Only `preTurn` moves; the episode and `hookSeen` are left as they were.
+   * `turnOpen` is not a guard: before any turn evidence it can only be the
+   * boot burst's own byte promotion.
+   */
+  private noteCodexOutput(data: string): void {
+    const text = this.codexBannerTail + data;
+    // A row can straddle two PTY chunks; keep enough of the tail to rejoin it.
+    this.codexBannerTail = text.slice(-DaemonPTYBridge.CODEX_BANNER_TAIL);
+    if (!this.codexBootWindow || this.awaitingHuman) return;
+    if (this.agentDetector?.getLastAgent() !== 'Codex CLI' || !this.modeTracker?.isSet(2004)) return;
+    if (drawsCodexBanner(text)) this.preTurn = true;
   }
 
   /**
@@ -720,6 +752,9 @@ export class DaemonPTYBridge extends EventEmitter {
     this.settledStatus = null;
     this.settledAtMs = 0;
     this.awaitingHuman = false;
+    // A pane spawned straight into a program (a chat launch) boots it with no OSC 133 C.
+    this.codexBootWindow = true;
+    this.codexBannerTail = '';
 
     const activityMonitor = new ActivityMonitor();
     this.activityMonitor = activityMonitor;
@@ -872,6 +907,7 @@ export class DaemonPTYBridge extends EventEmitter {
           // The shell's foreground program changed hands: whatever episode was
           // open (an agent's, or the Enter that launched the next one) is over.
           if (parsed.type === 'command_start' || parsed.type === 'command_end') this.noteAgentEnded();
+          this.codexBootWindow = parsed.type === 'command_start' || (parsed.type !== 'command_end' && this.codexBootWindow);
           if (parsed.type === 'prompt_end') {
             this.emptyShellPrompt = this.inputRevision === 0 || this.completedShellCommand;
             this.completedShellCommand = false;
@@ -914,6 +950,8 @@ export class DaemonPTYBridge extends EventEmitter {
         // coordinate system, so it needs the counter this chunk already moved.
         modeTracker.feed(data, ringBuffer.totalBytesWritten);
         oscParser.process(data);
+        // After the mode tracker and OSC 133 have seen this chunk (see noteCodexOutput).
+        this.noteCodexOutput(data);
 
         // Prompt-based CWD detection — fallback for shells WITHOUT the
         // integration hook only. Once OSC 7 has been seen (oscCwdSeen), the
@@ -1137,6 +1175,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.settledAtMs = 0;
     this.preTurn = false;
     this.turnEvidenceAt = 0;
+    this.codexBootWindow = false;
+    this.codexBannerTail = '';
     this.turnOpen = false;
     this.turnSoftClosed = false;
     this.hookSeen = false;
