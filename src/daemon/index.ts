@@ -3,6 +3,7 @@ import { TerminalChatService } from './transcript/TerminalChatService';
 import type { ChatBridge, ChatLaunchRequest } from './chat/chatBridge';
 import { ChatSendReceiptStore } from './chat/ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from './chat/ChatCancelReceiptStore';
+import { ChatQueueStore } from './chat/ChatQueue';
 import { createChatBridge, type NativeChatBridge } from './chat/nativeChatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
 import { recoverCodexPane } from './web/recoverCodexPane';
@@ -196,9 +197,12 @@ let transcriptProjector: TranscriptProjector | null = null;
 // Phone native chat bridge (contract v0.3.1). Built in registerRpcHandlers next
 // to the services it wraps; the web server reads it lazily per request.
 let chatBridge: ChatBridge | null = null;
+// The same bridge with its daemon-only hooks (queue kicks, pane close).
+let nativeChatBridge: NativeChatBridge | null = null;
 // One writer per daemon, even if registerRpcHandlers runs twice. `undefined` = not loaded yet.
 let chatSendReceipts: ChatSendReceiptStore | null | undefined;
 let chatCancelReceipts: ChatCancelReceiptStore | null | undefined;
+let chatQueue: ChatQueueStore | null | undefined;
 let chatSessions: ChatSessionService | null = null;
 let terminalChat: TerminalChatService | null = null;
 const chatSubscribers = new Map<string, Set<string>>();
@@ -3435,6 +3439,8 @@ function registerRpcHandlers(
         return { pid, incarnation: pane.meta.incarnationId };
       },
       emit: (id, data, clients) => {
+        // An OpenCode phase change may be the turn end the phone chat queue waits for.
+        nativeChatBridge?.nudgeQueue(id);
         for (const client of clients) {
           // The phone bridge's watch carries no content: a live-only nudge makes
           // watching phones re-read /turns, and it is never dropped for backpressure.
@@ -3460,6 +3466,14 @@ function registerRpcHandlers(
       // Same rule as sends: a cancel id that may have pressed ESC must not be forgotten.
       chatCancelReceipts = null;
       log('error', `[chat] cancel receipts unreadable; phone chat cancel disabled: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (chatQueue === undefined) {
+    try { chatQueue = new ChatQueueStore(wmuxDir); }
+    catch (error) {
+      // Without the store a `chat-queue` send takes today's path (not advertised).
+      chatQueue = null;
+      log('error', `[chat] queue unreadable; phone chat queue disabled: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   // Phone native chat bridge (contract v0.3.1). The desktop RPCs below call the
@@ -3515,6 +3529,8 @@ function registerRpcHandlers(
     },
     receipts: chatSendReceipts,
     cancelReceipts: chatCancelReceipts,
+    queue: chatQueue,
+    onQueueEvent: (event) => webTerminalServer?.emitChatQueue(event),
     idleShell: (pid, env) => agentProcessTracker.idleShellState(pid, env),
     installedAgents: (env) => installedAgentLaunchOptions(env),
     relays: {
@@ -3538,6 +3554,7 @@ function registerRpcHandlers(
       data: { source: 'security', title, body, ts: Date.now() } }),
   });
   chatBridge = bridge;
+  nativeChatBridge = bridge;
   broadcastCodexNotice = (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event',
     ...(paneId ? { sessionId: paneId } : {}), data: { source: 'security', title, body, ts: Date.now() } });
   notifyCodexIdentityRefused = (paneId, reason) => pipeServer.broadcast({ type: 'notification.event', sessionId: paneId,
@@ -3656,6 +3673,8 @@ function registerRpcHandlers(
         // WebTerminalServer.emitAgentLiveness). Harmless when the web server is
         // off or nobody opened the pane's turn view.
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+        // A turn may have ended: the phone chat queue delivers its next item.
+        nativeChatBridge?.nudgeQueue(sessionId);
         // Outbound notification sinks: the END of a turn, and only the real one.
         // `agent.subagent_stop` also reports `status:'complete'`, and a run with
         // a dozen subagents would fire a dozen pings for one turn — so this keys
@@ -3691,6 +3710,7 @@ function registerRpcHandlers(
         // replay (CRITICAL 3). Delivered only to devices watching this pane; a
         // no-op until one opens it, and harmless when the web server is off.
         webTerminalServer?.emitTranscriptNudge(sessionId);
+        nativeChatBridge?.nudgeQueue(sessionId);
       },
       // CompletionAlarm — a held detector candidate confirms its window LATER,
       // after the `session:agent` handler that would have broadcast it has
@@ -5430,6 +5450,7 @@ function wireEvents(
   // ghost died event 15s later.
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     void codexPaneRelays.retire(payload.id);
+    nativeChatBridge?.paneClosed(payload.id);
     recordHistory(store => store.interrupted(payload.id));
     const t = interruptedTimers.get(payload.id);
     if (t) {
@@ -5950,7 +5971,8 @@ async function shutdown(
       // listener up that nothing owns. Never rejects, and the bind is local, so
       // this cannot outlast the hard shutdown timeout below.
       if (webRestore) await webRestore;
-      await webTerminalServer.stop();
+      // A shutdown: queued phone chat messages read `daemon-restart`, not revoked.
+      await webTerminalServer.stop({ shutdown: true });
     } catch {
       /* ignore — never block shutdown on the optional web server */
     }

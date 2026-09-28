@@ -6,10 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TranscriptPage, TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { ChatSendReceiptStore } from '../ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from '../ChatCancelReceiptStore';
-import { createChatBridge, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
-import { OPENCODE_MAX_SEND_BYTES, fileHistoryEpoch, projectChatBlocked, tuiHistoryEpoch } from '../chatBridge';
+import { ChatQueueStore } from '../ChatQueue';
+import { createChatBridge, QUEUE_WATCH_CLIENT, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
 import type { TerminalChatAbortOutcome } from '../../transcript/TerminalChatService';
 import { cancelResponse } from '../../web/chatWire';
+import { OPENCODE_MAX_SEND_BYTES, fileHistoryEpoch, projectChatBlocked, tuiHistoryEpoch, type ChatQueueEvent } from '../chatBridge';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -921,6 +922,405 @@ describe('cancel (OpenCode plugin abort)', () => {
     expect(await f.bridge.desktopInterrupt('pane', 'ses_one')).toBe('not_running');
     f.answer.mockResolvedValueOnce({ result: 'unconfirmed' });
     expect(await f.bridge.desktopInterrupt('pane', 'ses_one')).toBe('error');
+    expect(f.written).toEqual([]);
+  });
+});
+
+describe('daemon queue (chat-queue)', () => {
+  const RULE = '─'.repeat(40);
+  const IDLE = ['● done', RULE, '❯ ', RULE];
+  const allow = async () => true;
+  const queued = (f: ReturnType<typeof fixture>, opts: { authorized?: (stage?: string) => Promise<boolean>; ttl?: number; now?: () => number } = {}) => {
+    const events: ChatQueueEvent[] = [];
+    const bridge = createChatBridge({ ...f.deps, queue: new ChatQueueStore(f.dir), onQueueEvent: (e) => events.push(e),
+      queueTickMs: 3_600_000, ...(opts.ttl !== undefined ? { queueTtlMs: opts.ttl } : {}), ...(opts.now ? { now: opts.now } : {}) });
+    const send = (text: string, extra: Record<string, unknown> = {}) =>
+      bridge.send(phoneSend(text, { queue: { authorized: opts.authorized ?? allow }, ...extra }));
+    return { bridge, events, send };
+  };
+  const runningTurn = (f: ReturnType<typeof fixture>, n: number) => {
+    f.state.agent = { ...f.state.agent, agentStatus: 'running', turn: { id: `t1:n.${n}`, state: 'running', startedAt: n } };
+  };
+  const idleTurn = (f: ReturnType<typeof fixture>, n: number) => {
+    f.state.agent = { ...f.state.agent, agentStatus: 'complete', turn: { id: `t1:n.${n}`, state: 'idle', startedAt: n } };
+    f.state.screen = IDLE;
+  };
+  const pastes = (f: ReturnType<typeof fixture>) => f.written.filter((w) => w.startsWith('\x1b[200~'));
+
+  it('holds three sends made during a turn and delivers them in order, one per ended turn', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const answers = [await q.send('one'), await q.send('two'), await q.send('three')];
+    for (const answer of answers) expect(answer).toMatchObject({ replayed: false, queueState: 'queued' });
+    expect(answers[0]).not.toHaveProperty('effect');
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual([]);
+
+    idleTurn(f, 1);
+    await q.bridge.kickQueue('pane');
+    expect(pastes(f)).toEqual(['\x1b[200~one\x1b[201~']);
+    // A stale `complete` of the same turn delivers nothing more.
+    await q.bridge.kickQueue('pane');
+    expect(pastes(f)).toHaveLength(1);
+    runningTurn(f, 2); await q.bridge.kickQueue('pane');
+    expect(pastes(f)).toHaveLength(1);
+    idleTurn(f, 2); await q.bridge.kickQueue('pane');
+    idleTurn(f, 3); await q.bridge.kickQueue('pane');
+    expect(pastes(f)).toEqual(['\x1b[200~one\x1b[201~', '\x1b[200~two\x1b[201~', '\x1b[200~three\x1b[201~']);
+    expect(q.bridge.queue('device:a', 'pane').map((item) => [item.preview, item.state]))
+      .toEqual([['one', 'delivered'], ['two', 'delivered'], ['three', 'delivered']]);
+    const first = answers[0].clientMessageId;
+    expect(q.events.filter((e) => e.clientMessageId === first).map((e) => e.state)).toEqual(['queued', 'delivering', 'delivered']);
+    // The delivered message has a v1 send receipt; a re-post replays the queue's state.
+    expect(q.bridge.receipt('device:a', 'pane', first)).toMatchObject({ state: 'submitted', result: 'sent', queue: { state: 'delivered' } });
+    expect(await q.bridge.send(phoneSend('one', { clientMessageId: first }))).toMatchObject({ replayed: true, queueState: 'delivered' });
+    expect(await q.bridge.send(phoneSend('other', { clientMessageId: first }))).toMatchObject({ error: 'message-id-conflict' });
+    expect(q.bridge.delivered('device:a', 'pane').map((m) => m.clientMessageId)).toEqual(answers.map((a) => a.clientMessageId));
+    expect(q.bridge.delivered('device:b', 'pane')).toEqual([]);
+  });
+
+  it('the episode a delivery opens must be seen running before the next item goes', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    // As in the daemon: the Enter opens the next episode at once, while the
+    // status still reads idle until the agent's first bytes or hook.
+    const bridge = createChatBridge({ ...f.deps, queue: new ChatQueueStore(f.dir), queueTickMs: 3_600_000,
+      write: (id, data) => {
+        const ok = f.deps.write(id, data);
+        if (data === '\r') f.state.agent = { ...f.state.agent, turn: { id: 't1:n.2', state: 'idle', startedAt: 2 } };
+        return ok;
+      } });
+    const send = (text: string) => bridge.send(phoneSend(text, { queue: { authorized: allow } }));
+    await send('one'); await send('two');
+    idleTurn(f, 1);
+    await bridge.kickQueue('pane');
+    expect(f.state.agent.turn?.id).toBe('t1:n.2');
+    await bridge.kickQueue('pane');
+    expect(pastes(f)).toEqual(['\x1b[200~one\x1b[201~']);
+    runningTurn(f, 2); await bridge.kickQueue('pane');
+    idleTurn(f, 2); await bridge.kickQueue('pane');
+    expect(pastes(f)).toEqual(['\x1b[200~one\x1b[201~', '\x1b[200~two\x1b[201~']);
+  });
+
+  it('a queued re-post replays the queue state and a different body conflicts', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const req = phoneSend('one', { queue: { authorized: allow } });
+    await q.bridge.send(req);
+    expect(await q.bridge.send(req)).toMatchObject({ replayed: true, queueState: 'queued' });
+    expect(await q.bridge.send({ ...req, text: 'other' })).toMatchObject({ error: 'message-id-conflict' });
+    expect(q.bridge.receipt('device:a', 'pane', req.clientMessageId)).toMatchObject({ state: 'queued', queue: { state: 'queued' } });
+  });
+
+  it('fails a queued message on a draft left in the composer, and never retries it', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const { clientMessageId } = await q.send('one');
+    f.state.agent = { ...f.state.agent, agentStatus: 'idle', turn: { id: 't1:n.1', state: 'idle' } };
+    f.state.screen = [RULE, '❯ half-typed', RULE];
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual([]);
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'failed', reason: 'draft-present' });
+    expect(q.bridge.receipt('device:a', 'pane', clientMessageId))
+      .toMatchObject({ state: 'refused', queue: { state: 'failed', reason: 'draft-present' } });
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual([]);
+  });
+
+  it('holds on a dialog until the TTL, then fails it as blocked', async () => {
+    let clock = Date.now();
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f, { ttl: 60_000, now: () => clock });
+    const { clientMessageId } = await q.send('one');
+    idleTurn(f, 1);
+    f.state.screen = ['Select model', '❯ 1. Sonnet', '  2. Opus', 'Esc to cancel'];
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'queued' });
+    clock += 61_000;
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'failed', reason: 'blocked' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('without the cap a Claude send mid-turn still takes the native queue', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    f.state.screen = ['✢ Effecting… (9s · thinking)', RULE, '❯ ', RULE];
+    const q = queued(f);
+    expect(await q.bridge.send(phoneSend('now'))).toMatchObject({ result: 'sent', effect: 'submitted', queued: true });
+    expect(q.bridge.queue('device:a', 'pane')).toEqual([]);
+  });
+
+  it('a non-empty pane queue holds even an idle send; the desktop never enqueues', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    await q.send('one', { owner: 'device:b' });
+    idleTurn(f, 1);
+    f.state.pendingApproval = 'apr_1';
+    expect(await q.send('two')).toMatchObject({ queueState: 'queued' });
+    f.state.pendingApproval = undefined;
+    expect(await q.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'desk', requestId: msgId() })).toMatchObject({ result: 'sent' });
+  });
+
+  it('re-authorizes at delivery: an unpaired or read-only owner, or a restarted pane, cancels without a write', async () => {
+    for (const change of ['revoked', 'restart'] as const) {
+      const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+      let ok = true;
+      const q = queued(f, { authorized: async () => ok });
+      const { clientMessageId } = await q.send('one');
+      if (change === 'revoked') ok = false; else f.state.pane!.meta.incarnationId = 'inc-2';
+      idleTurn(f, 1);
+      await q.bridge.kickQueue('pane');
+      expect(f.written).toEqual([]);
+      expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'canceled', reason: 'authorization-revoked' });
+    }
+  });
+
+  it('a grant withdrawn between paste and Enter leaves the item uncertain, never resendable', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const stages: string[] = [];
+    const q = queued(f, { authorized: async (stage) => { stages.push(String(stage)); return stage !== 'submit'; } });
+    await q.send('one');
+    idleTurn(f, 1);
+    await q.bridge.kickQueue('pane');
+    expect(stages).toEqual(['first-write', 'first-write', 'submit']);
+    const [{ clientMessageId }] = q.bridge.queue('device:a', 'pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'uncertain', reason: 'delivery-unconfirmed' });
+    expect(q.bridge.receipt('device:a', 'pane', clientMessageId)).toMatchObject({ state: 'uncertain', queue: { state: 'uncertain' } });
+    expect(await q.bridge.send(phoneSend('one', { clientMessageId }))).toMatchObject({ replayed: true, queueState: 'uncertain' });
+  });
+
+  it('two concurrent sends with one id make one record, and a DELETE during a pass writes nothing', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const req = phoneSend('one', { queue: { authorized: allow } });
+    const [a, b] = await Promise.all([q.bridge.send(req), q.bridge.send(req)]);
+    expect([a.queueState, b.queueState]).toEqual(['queued', 'queued']);
+    expect([a.replayed, b.replayed].sort()).toEqual([false, true]);
+    expect(q.bridge.queue('device:a', 'pane')).toHaveLength(1);
+    const other = await Promise.all([q.bridge.send({ ...req, text: 'two' })]);
+    expect(other[0]).toMatchObject({ error: 'message-id-conflict' });
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slow = createChatBridge({ ...f.deps, queue: new ChatQueueStore(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-q-'))),
+      queueTickMs: 3_600_000 });
+    const held = await slow.send(phoneSend('late', { queue: { authorized: async () => { await gate; return true; } } }));
+    idleTurn(f, 1);
+    const pass = slow.kickQueue('pane');
+    expect(slow.dequeue('device:a', 'pane', held.clientMessageId)).toEqual({ ok: true });
+    release();
+    await pass;
+    expect(f.written).toEqual([]);
+    expect(slow.queue('device:a', 'pane')[0]).toMatchObject({ state: 'canceled', reason: 'user' });
+  });
+
+  it('a screen with no composer (a usage view) holds the item, then fails it as blocked, never draft-present', async () => {
+    let clock = Date.now();
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f, { ttl: 60_000, now: () => clock });
+    const { clientMessageId } = await q.send('one');
+    idleTurn(f, 1);
+    f.state.screen = ['  Total cost: $0.12', '  Total duration: 3m', '', '  Press any key to continue'];
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'queued' });
+    clock += 61_000;
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'failed', reason: 'blocked' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('a hold never shows as delivering then queued on the live events', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const { clientMessageId } = await q.send('one');
+    idleTurn(f, 1);
+    f.state.agent = { ...f.state.agent, inputQuiet: false };
+    await q.bridge.kickQueue('pane');
+    const states = () => q.events.filter((e) => e.clientMessageId === clientMessageId).map((e) => e.state);
+    expect(states()).toEqual(['queued']);
+    f.state.agent = { ...f.state.agent, inputQuiet: true };
+    await q.bridge.kickQueue('pane');
+    expect(states()).toEqual(['queued', 'delivering', 'delivered']);
+  });
+
+  it('OpenCode: the queue watches the plugin while an item waits, and ignores the daemon detector', async () => {
+    const f = fixture();
+    f.state.native = { status: { ...TUI_STATUS, agentStatus: 'running' }, page: page('raw:ses_one') };
+    const q = queued(f);
+    await q.bridge.send({ owner: 'device:a', id: 'pane', agentSessionId: 'ses_one', historyEpoch: tuiHistoryEpoch('raw:ses_one'),
+      clientMessageId: msgId(), text: 'tui', managedReadOnly: true, queue: { authorized: allow } });
+    expect(f.subscribe).toHaveBeenCalledWith(QUEUE_WATCH_CLIENT, 'pane');
+    // The pane's detector may still read running; the plugin says the turn ended.
+    f.state.agent = { ...f.state.agent, agentName: 'OpenCode', agentStatus: 'running' };
+    f.state.native = { status: TUI_STATUS, page: page('raw:ses_one') };
+    await q.bridge.kickQueue('pane');
+    expect(f.tuiSend).toHaveBeenCalledTimes(1);
+    expect(f.unsubscribe).toHaveBeenCalledWith(QUEUE_WATCH_CLIENT, 'pane');
+  });
+
+  it('a draft in a complete (not idle) Claude composer still fails the item', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    await q.send('one');
+    f.state.agent = { ...f.state.agent, agentStatus: 'complete', turn: { id: 't1:n.1', state: 'idle' } };
+    f.state.screen = ['● done', RULE, '❯ half-typed', RULE];
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual([]);
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'failed', reason: 'draft-present' });
+  });
+
+  it('OpenCode: one item per turn, even while the plugin still reads complete after a delivery', async () => {
+    const f = fixture();
+    f.state.native = { status: { ...TUI_STATUS, agentStatus: 'running' }, page: page('raw:ses_one') };
+    const q = queued(f);
+    const tui = (text: string) => q.bridge.send({ owner: 'device:a', id: 'pane', agentSessionId: 'ses_one',
+      historyEpoch: tuiHistoryEpoch('raw:ses_one'), clientMessageId: msgId(), text, managedReadOnly: true, queue: { authorized: allow } });
+    await tui('one'); await tui('two');
+    f.state.native = { status: TUI_STATUS, page: page('raw:ses_one') };
+    await q.bridge.kickQueue('pane');
+    await q.bridge.kickQueue('pane');
+    expect(f.tuiSend).toHaveBeenCalledTimes(1);
+    f.state.native = { status: { ...TUI_STATUS, agentStatus: 'running' }, page: page('raw:ses_one') };
+    await q.bridge.kickQueue('pane');
+    f.state.native = { status: TUI_STATUS, page: page('raw:ses_one') };
+    await q.bridge.kickQueue('pane');
+    expect(f.tuiSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('an OpenCode answer lost after the plugin took the request is uncertain', async () => {
+    const f = fixture();
+    f.state.native = { status: { ...TUI_STATUS, agentStatus: 'running' }, page: page('raw:ses_one') };
+    f.tuiSend.mockResolvedValueOnce({ result: 'unconfirmed' });
+    const q = queued(f);
+    const { clientMessageId } = await q.bridge.send({ owner: 'device:a', id: 'pane', agentSessionId: 'ses_one',
+      historyEpoch: tuiHistoryEpoch('raw:ses_one'), clientMessageId: msgId(), text: 'x', managedReadOnly: true, queue: { authorized: allow } });
+    f.state.native = { status: TUI_STATUS, page: page('raw:ses_one') };
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'uncertain', reason: 'delivery-unconfirmed' });
+    expect(q.bridge.receipt('device:a', 'pane', clientMessageId).state).toBe('uncertain');
+  });
+
+  it('while the agent works, a pass reads neither the roster nor the binding; a long turn never expires the item', async () => {
+    let clock = Date.now();
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const authorized = vi.fn(async () => true);
+    const q = queued(f, { authorized, ttl: 60_000, now: () => clock });
+    const status = vi.spyOn(f.deps.projector, 'status');
+    await q.send('one');
+    status.mockClear();
+    clock += 30 * 60_000;
+    await q.bridge.kickQueue('pane');
+    expect(authorized).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+    idleTurn(f, 1);
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'delivered' });
+  });
+
+  it('gives up after repeated failures to persist delivering, with backoff between tries', async () => {
+    let clock = Date.now();
+    let failing = false;
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const store = new ChatQueueStore(f.dir, { write: (file, data) => {
+      if (failing && JSON.stringify(data).includes('"delivering"')) throw new Error('disk full');
+      fs.writeFileSync(file, JSON.stringify(data));
+    } });
+    const bridge = createChatBridge({ ...f.deps, now: () => clock, queue: store, queueTickMs: 3_600_000 });
+    await bridge.send(phoneSend('one', { queue: { authorized: allow } }));
+    idleTurn(f, 1);
+    failing = true;
+    await bridge.kickQueue('pane');
+    await bridge.kickQueue('pane');
+    expect(bridge.queue('device:a', 'pane')[0].state).toBe('queued');
+    for (let i = 0; i < 3; i++) { clock += 10_000; await bridge.kickQueue('pane'); }
+    expect(bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'failed', reason: 'delivery-unconfirmed' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('a restarted daemon never replays another pane\'s record for the same id', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const { clientMessageId } = await q.send('one');
+    const after = createChatBridge({ ...f.deps, queue: new ChatQueueStore(f.dir), queueTickMs: 3_600_000 });
+    expect(await after.send(phoneSend('one', { clientMessageId, id: 'elsewhere' }))).toMatchObject({ error: 'message-id-conflict' });
+    expect(await after.send(phoneSend('one', { clientMessageId }))).toMatchObject({ replayed: true, queueState: 'canceled' });
+  });
+
+  it('drops the memory half when the store prunes a record', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const first = (await q.send('first')).clientMessageId;
+    q.bridge.dequeue('device:a', 'pane', first);
+    for (let i = 0; i < 16; i++) { const { clientMessageId } = await q.send(`m${i}`); q.bridge.dequeue('device:a', 'pane', clientMessageId); }
+    expect(q.bridge.queue('device:a', 'pane').some((item) => item.clientMessageId === first)).toBe(false);
+    // A re-post of the pruned id is new again: no stale memo makes it conflict.
+    expect(await q.send('different', { clientMessageId: first })).toMatchObject({ queueState: 'queued', replayed: false });
+  });
+
+  it('dropQueue cancels one owner immediately; paneClosed and a new session cancel the rest', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    await q.send('a1'); await q.send('b1', { owner: 'device:b' });
+    q.bridge.dropQueue((owner) => owner === 'device:a', 'authorization-revoked');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'canceled', reason: 'authorization-revoked' });
+    expect(q.bridge.queue('device:b', 'pane')[0]).toMatchObject({ state: 'queued' });
+    q.bridge.paneClosed('pane');
+    expect(q.bridge.queue('device:b', 'pane')[0]).toMatchObject({ state: 'canceled', reason: 'pane-closed' });
+
+    await q.send('a2');
+    f.state.projector = { ...FILE, agentSessionId: 'conv-2', terminal: { ...FILE.terminal!, nativeSessionId: 'conv-2' } };
+    idleTurn(f, 1);
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane').at(-1)).toMatchObject({ state: 'canceled', reason: 'session-changed' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('dequeue answers per state and is owner-bound', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const a = (await q.send('one')).clientMessageId;
+    const b = (await q.send('two')).clientMessageId;
+    expect(q.bridge.dequeue('device:b', 'pane', a)).toEqual({ ok: false, error: 'queue-item-not-found' });
+    expect(q.bridge.dequeue('device:a', 'other', a)).toEqual({ ok: false, error: 'queue-item-not-found' });
+    expect(q.bridge.dequeue('device:a', 'pane', b)).toEqual({ ok: true });
+    expect(q.bridge.dequeue('device:a', 'pane', b)).toEqual({ ok: true });
+    expect(q.events.at(-1)).toMatchObject({ clientMessageId: b, state: 'canceled', reason: 'user', owner: 'device:a', sessionId: 'pane' });
+    idleTurn(f, 1);
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.dequeue('device:a', 'pane', a)).toMatchObject({ ok: false, error: 'already-delivered' });
+    expect(pastes(f)).toEqual(['\x1b[200~one\x1b[201~']);
+  });
+
+  it('caps active items at eight per pane and owner', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    for (let i = 0; i < 8; i++) expect(await q.send(`m${i}`)).toMatchObject({ queueState: 'queued' });
+    expect(await q.send('m8')).toMatchObject({ error: 'queue-full', effect: 'none' });
+  });
+
+  it('OpenCode: a running TUI queues, and delivers through the plugin when it is complete again', async () => {
+    const f = fixture();
+    f.state.native = { status: { ...TUI_STATUS, agentStatus: 'running' }, page: page('raw:ses_one') };
+    const q = queued(f);
+    const { clientMessageId } = await q.bridge.send({ owner: 'device:a', id: 'pane', agentSessionId: 'ses_one',
+      historyEpoch: tuiHistoryEpoch('raw:ses_one'), clientMessageId: msgId(), text: 'tui', managedReadOnly: true, queue: { authorized: allow } });
+    await q.bridge.kickQueue('pane');
+    expect(f.tuiSend).not.toHaveBeenCalled();
+    f.state.native = { status: TUI_STATUS, page: page('raw:ses_one') };
+    await q.bridge.kickQueue('pane');
+    expect(f.tuiSend).toHaveBeenCalledTimes(1);
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'delivered' });
+  });
+
+  it('a restart cancels what was queued, and the text is gone', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const { clientMessageId } = await q.send('secret words');
+    expect(fs.readFileSync(path.join(f.dir, 'chat-queue.json'), 'utf8')).not.toContain('secret words');
+    const after = createChatBridge({ ...f.deps, queue: new ChatQueueStore(f.dir), queueTickMs: 3_600_000 });
+    expect(after.queue('device:a', 'pane')).toEqual([expect.objectContaining({ clientMessageId, state: 'canceled', reason: 'daemon-restart' })]);
+    expect(after.queue('device:a', 'pane')[0]).not.toHaveProperty('preview');
+    idleTurn(f, 1);
+    await after.kickQueue('pane');
     expect(f.written).toEqual([]);
   });
 });
