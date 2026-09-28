@@ -44,7 +44,7 @@ import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManag
 // headless-terminal dependency chain stay out of this module. The web server is
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
 // constructs a request, and it never decides what bytes a decision means.
-import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest, ApprovalResolveResult } from '../approvals/types';
+import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest, ApprovalResolveResult, DecisionFormKind } from '../approvals/types';
 import {
   DECISION_V2_WEB_ANSWER,
   TERMINAL_PROMPT_WEB_ANSWER,
@@ -576,6 +576,8 @@ interface WebTerminalServerDeps {
   inputReceipts?: () => InputReceiptStore;
   /** Receipts for `POST /api/approvals/:id/answer`. Absent ⇒ that route is 503. */
   answerReceipts?: () => AnswerReceiptStore;
+  /** The `decision-v2` form kinds this daemon produces now (`/api/config` `decisionForms`). Absent ⇒ none. */
+  decisionForms?: () => DecisionFormKind[];
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /**
@@ -2363,9 +2365,9 @@ export class WebTerminalServer {
               terminalPromptDetail: this.opts?.allowTranscript === true,
               terminalPromptDecline: this.mayInput(principal),
               // decision-v2 (docs/phone-client-contract.md): the form kinds
-              // this daemon produces — none yet, so a client offers no v2
-              // answer — and whether this caller may use `/chat/cancel`.
-              decisionForms: [],
+              // this daemon produces, and whether this caller may use
+              // `/chat/cancel`.
+              decisionForms: this.decisionForms(),
               chatCancel: this.mayInput(principal),
               // Whether this caller's `chat-queue` sends are held by the daemon.
               chatQueue: this.mayInput(principal) && this.deps.chat?.()?.queueEnabled?.() === true,
@@ -6236,7 +6238,9 @@ export class WebTerminalServer {
     // A native decision is answered through the agent's server, with no
     // `pressedAt`: resolved is the answer.
     const answeredHere = (r: ApprovalRequest): boolean => r.kind !== 'terminal_prompt' || r.pressedAt !== undefined
-      || (r.channel === 'native-rpc' && r.state === 'resolved');
+      || (r.channel === 'native-rpc' && r.state === 'resolved')
+      // A plan answered with feedback (stepwise keys, no `pressedAt`).
+      || (r.step?.status === 'done' && r.state === 'resolved');
     return this.json(res, 200, {
       pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps)),
       recentlyResolved: listed.recentlyResolved.filter(visible).filter(answeredHere).map((r) => approvalWire(r, caps)),
@@ -6570,7 +6574,8 @@ export class WebTerminalServer {
     const approvals = this.deps.approvals;
     if (!approvals?.terminalPromptDetail) return this.json(res, 503, { error: 'approvals unavailable' });
     if (this.opts?.allowTranscript !== true) return this.json(res, 403, { error: 'transcript-disabled' });
-    if (!clientCaps(req).terminalPromptAnswer) return this.json(res, 501, { error: 'answer-in-terminal' });
+    const caps = clientCaps(req);
+    if (!caps.terminalPromptAnswer && !caps.decisionV2) return this.json(res, 501, { error: 'answer-in-terminal' });
     let id: string;
     try {
       id = decodeURIComponent(rawId);
@@ -6584,6 +6589,10 @@ export class WebTerminalServer {
     }
     if (principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
+    }
+    // `decision-v2` alone opens the plan dialog's detail (its record says `hasDetail`).
+    if (!caps.terminalPromptAnswer && record.form?.kind !== 'plan') {
+      return this.json(res, 501, { error: 'answer-in-terminal' });
     }
     const detail = approvals.terminalPromptDetail(id);
     if (!detail) return this.json(res, 404, { error: 'not-found' });
@@ -6741,6 +6750,15 @@ export class WebTerminalServer {
     });
   }
 
+  /** The `decision-v2` form kinds this daemon produces now; none when unknown. */
+  private decisionForms(): DecisionFormKind[] {
+    try {
+      return [...(this.deps.decisionForms?.() ?? [])];
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * `POST /api/approvals/:id/answer` — a `decision-v2` answer: the form's
    * fingerprint, the client's own `clientAnswerId`, and an action, answers or
@@ -6754,8 +6772,8 @@ export class WebTerminalServer {
    * different body under the same id 409 `answer-id-reused`, and one that was
    * running when the daemon stopped 409 `answer-uncertain` — never re-run.
    *
-   * No form producer exists yet, so the registry refuses every answer with
-   * 501 `answer-in-terminal` / `unsupported-shape` after its lifecycle checks.
+   * Only the forms `decisionForms` lists are answered; the registry refuses
+   * every other record with 501 `answer-in-terminal` / `unsupported-shape`.
    */
   private handleApprovalAnswer(
     req: http.IncomingMessage,
@@ -6868,17 +6886,18 @@ export class WebTerminalServer {
           response = { status: 500, body: { error: 'internal-error' } };
         }
         // Only a final outcome is kept; one the caller may retry past is released.
-        if (answerIsRetryable(response)) {
+        const partial = response.body['effect'] === 'partial';
+        if (answerIsRetryable(response) && !partial) {
           await receipts.release(owner, answer.clientAnswerId);
         } else {
           await receipts.finish(
             owner,
             answer.clientAnswerId,
-            response.status === 200 ? 'done' : response.body['effect'] === 'partial' ? 'partial' : 'refused',
+            response.status === 200 ? 'done' : partial ? 'partial' : 'refused',
             response,
           );
         }
-        if (response.status === 403) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        if (response.status === 403 && !partial) return this.refuseInput(res, fresh.principal, 'Input permission changed');
         return this.json(res, response.status, response.body);
       })().catch((err: unknown) => {
         this.deps.log('warn', `[web] decision answer failed: ${errMsg(err)}`);
@@ -8288,14 +8307,25 @@ function answerIsRetryable(response: AnswerReceiptResponse): boolean {
 
 /** A v2 answer's registry result as the HTTP response it is journaled and replayed as. */
 function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptResponse {
+  const response = decisionAnswerOutcome(result);
+  // A stepwise answer that typed some of its keys before it stopped says so,
+  // whatever stopped it.
+  if (!result.ok && result.effect === 'partial' && result.request?.step) {
+    const { index, total, status } = result.request.step;
+    return { status: response.status, body: { ...response.body, effect: 'partial', step: { index, total, status } } };
+  }
+  return response;
+}
+
+function decisionAnswerOutcome(result: ApprovalResolveResult): AnswerReceiptResponse {
   if (result.ok) {
     return { status: 200, body: { state: result.request.state, effect: 'complete', durable: result.durable } };
   }
   switch (result.reason) {
     case 'already-resolved':
       return { status: 409, body: { error: 'already-resolved', ...(result.resolvedBy ? { resolvedBy: result.resolvedBy } : {}), effect: 'none' } };
-    case 'already-answered':
     case 'prompt-changed':
+    case 'already-answered':
     case 'prompt-unverified':
       return { status: 409, body: { error: result.reason, effect: 'none' } };
     case 'expired':
@@ -8315,6 +8345,8 @@ function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptRes
     case 'invalid-choice':
     case 'invalid-choice-key':
       return { status: 400, body: { error: 'invalid-choice' } };
+    case 'invalid-text':
+      return { status: 400, body: { error: 'invalid-text' } };
     case 'not-found':
       return { status: 404, body: { error: 'not-found' } };
     case 'unauthorized':
@@ -8338,9 +8370,14 @@ function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptRes
  */
 function decisionV2Wire(r: ApprovalRequest, caps: ClientCaps): Record<string, unknown> {
   if (!caps.decisionV2) return {};
-  const open = r.state === 'pending' && r.pressedAt === undefined && !!r.form && !!r.formFingerprint;
+  // A stepwise answer that started (running, partial or done) leaves nothing to answer.
+  const open = r.state === 'pending' && r.pressedAt === undefined && !r.step && !!r.form && !!r.formFingerprint;
+  // The plan dialog: its question, and the whole plan at `/detail`.
+  const plan = open && r.kind === 'terminal_prompt' && r.form?.kind === 'plan' && !isNativeDecision(r);
   return {
     ...(open ? { form: r.form, formFingerprint: r.formFingerprint } : {}),
+    ...(plan && r.question ? { question: r.question } : {}),
+    ...(plan && caps.terminalPromptDetail ? { hasDetail: true } : {}),
     ...(r.step ? { step: { index: r.step.index, total: r.step.total, status: r.step.status } } : {}),
   };
 }
