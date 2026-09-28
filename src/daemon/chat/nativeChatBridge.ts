@@ -63,7 +63,7 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   /** Chat-refined agent state (reads the transcript tail for Claude/Codex). */
   chatAgentState(id: string): ChatAgentState;
   projector: { status(id: string): TranscriptStatus; snapshot(id: string, opts?: { before: number }): TranscriptPage | null };
-  terminalChat(): Pick<TerminalChatService, 'read' | 'send' | 'subscribe' | 'unsubscribe'> & Partial<Pick<TerminalChatService, 'inspect'>> | null;
+  terminalChat(): Pick<TerminalChatService, 'read' | 'send' | 'subscribe' | 'unsubscribe'> & Partial<Pick<TerminalChatService, 'inspect' | 'abort'>> | null;
   managed(): Pick<ChatSessionService, 'has' | 'status' | 'snapshot' | 'send' | 'conversationEpoch'> | null;
   /**
    * Null while the approval registry is not wired: treated as "may be pending".
@@ -132,6 +132,8 @@ const UNAVAILABLE_SKILLS: ChatSkillCatalog = { skills: [], state: 'unavailable' 
 const RELAY_URL = /^unix:\/\/\/[A-Za-z0-9_./-]+$/;
 /** A send waits this long after any lone ESC, so a paste cannot extend it into an escape sequence. */
 export const ESC_QUIET_MS = 300;
+/** `cancel-cooldown` retry hint while OpenCode admits a just-sent prompt. */
+export const OPENCODE_FENCE_RETRY_MS = 500;
 const slugOf = (state: ChatAgentState) => agentDisplayToSlug(state.agentName ?? '');
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const liveState = (pane: ChatPane) => ['attached', 'detached'].includes(pane.meta.state);
@@ -219,7 +221,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       const { status, page } = found.read;
       if (!status.available) return { source: 'none', status, launch: await preview(id, true) };
       const rawEpoch = page.cursor.historyEpoch ?? '';
-      return { source: 'tui', status, page, epoch: tuiHistoryEpoch(rawEpoch), rawEpoch };
+      const { turn } = found.read;
+      return { source: 'tui', status, page, epoch: tuiHistoryEpoch(rawEpoch), rawEpoch, ...(turn ? { turn } : {}) };
     }
     if (found.kind === 'opencode') {
       const cause = found.failure === 'no-record' ? 'opencode-plugin-missing' as const
@@ -518,6 +521,90 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     } finally { sending.delete(id); }
   };
 
+  /** `prompt-active`: who answers the dialog in the way, and its record when there is one. */
+  const promptActive = (id: string): Pick<ChatCancelOutcome, 'by' | 'approvalId'> => {
+    const pending = deps.approvals()?.pendingFor(id);
+    return pending ? { by: pending.kind === 'terminal_prompt' ? 'terminal' : 'approval', approvalId: pending.id } : { by: 'terminal' };
+  };
+
+  /**
+   * OpenCode: the plugin inside the TUI aborts the selected session, and
+   * repeats the session, generation, turn and phase checks beside it. No ESC,
+   * so no latch or cooldown; a second abort of an ended turn is `not_running`.
+   * Like the ESC path, a refusal stores no receipt.
+   */
+  const cancelTui = async (req: ChatCancelRequest, resolution: Extract<ChatResolution, { source: 'tui' }>,
+    store: ChatCancelReceiptStore, fingerprint: string,
+    refuse: (error: ChatCancelTag, extra?: Partial<ChatCancelOutcome>) => ChatCancelOutcome, early: () => ChatCancelOutcome | undefined,
+  ): Promise<ChatCancelOutcome> => {
+    const { owner, id, clientCancelId } = req;
+    const service = deps.terminalChat();
+    // A plugin that does not advertise abort cannot stop a turn.
+    if (!resolution.status.terminal?.capabilities.cancel || !service?.abort) return refuse('cancel-unsupported');
+    if (resolution.status.agentSessionId !== req.agentSessionId ||
+        req.historyEpoch !== undefined && req.historyEpoch !== resolution.epoch) {
+      return refuse('session-changed', identityOf(resolution));
+    }
+    const notRunning = (turn = resolution.turn) => refuse('turn-not-running', turn ? { turn: { ...turn } } : {});
+    if (req.turnId !== undefined && req.turnId !== resolution.turn?.id) return notRunning();
+    if (sending.has(id)) return refuse('chat-busy');
+    // The receipt is written as the last step before the abort request
+    // leaves: after the owner, descriptor and write-time authorization
+    // checks, inside the final authorization callback (no await follows it).
+    let inserted: ReturnType<ChatCancelReceiptStore['insertPending']> | undefined;
+    const authorized = async (): Promise<boolean> => {
+      if (req.authorized && !await req.authorized()) return false;
+      inserted = store.insertPending(owner, clientCancelId, { paneId: id, fingerprint });
+      return inserted === 'inserted';
+    };
+    sending.add(id);
+    let aborted: Awaited<ReturnType<NonNullable<typeof service.abort>>>;
+    try {
+      aborted = await service.abort(id, req.agentSessionId, {
+        // The resolution's own read: no second round trip under the lock.
+        read: { status: resolution.status, page: resolution.page },
+        // Only the read whose hash the phone matched may reach the plugin (N15).
+        ...(req.historyEpoch !== undefined ? { expectedRawEpoch: resolution.rawEpoch } : {}),
+        ...(req.turnId !== undefined ? { turnId: req.turnId } : {}),
+        authorized,
+      });
+    } catch (error) {
+      // Every path below settles an inserted receipt, so none is left pending
+      // (a daemon crash in between reads as uncertain after the restart).
+      aborted = { result: 'unconfirmed' };
+      deps.log('warn', `[chat] cancel for ${id} threw: ${error instanceof Error ? error.message : String(error)}`);
+    } finally { sending.delete(id); }
+    if (inserted !== undefined && inserted !== 'inserted') {
+      if (inserted === 'exists') return early() ?? refuse('cancel-id-conflict');
+      return refuse(inserted === 'full' ? 'message-history-full' : 'chat-persist-failed');
+    }
+    if (aborted.result === 'sent' || aborted.result === 'unconfirmed') {
+      const turnId = aborted.turn?.id ?? req.turnId ?? resolution.turn?.id;
+      const outcome = { effect: aborted.result === 'sent' ? 'interrupt-requested' as const : 'uncertain' as const, ...(turnId ? { turnId } : {}) };
+      if (inserted === 'inserted' && !store.complete(owner, clientCancelId, outcome)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
+      return { clientCancelId, replayed: false, ...outcome, ...(aborted.result === 'unconfirmed' ? { error: 'cancel-failed' as const } : {}) };
+    }
+    if (inserted === 'inserted') store.discard(owner, clientCancelId);
+    switch (aborted.result) {
+      case 'not_running': return notRunning(aborted.turn ?? resolution.turn);
+      case 'prompt_active': return refuse('prompt-active', promptActive(id));
+      // The admission fence: the turn is about to run; try again shortly.
+      case 'pending': return refuse('cancel-cooldown', { retryAfterMs: OPENCODE_FENCE_RETRY_MS });
+      case 'session_changed': {
+        const fresh = await resolve(id);
+        const identity = identityOf(fresh);
+        // The same identity again: a plugin-side generation the phone cannot
+        // see changed. Re-reading would not help, so this is not session-changed.
+        if (identity.agentSessionId === req.agentSessionId && (req.historyEpoch === undefined || identity.historyEpoch === req.historyEpoch)) {
+          return refuse('chat-unavailable');
+        }
+        return refuse('session-changed', identity);
+      }
+      case 'error': return aborted.reason === 'unauthorized' ? refuse('authorization-expired') : refuse('chat-unavailable');
+      default: return refuse('chat-unavailable');
+    }
+  };
+
   const cancel = async (req: ChatCancelRequest): Promise<ChatCancelOutcome> => {
     const { owner, id, clientCancelId } = req;
     const refuse = (error: ChatCancelTag, extra: Partial<ChatCancelOutcome> = {}): ChatCancelOutcome =>
@@ -542,6 +629,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (!req.agentSessionId) return refuse('invalid-chat-request', { detail: 'agentSessionId' });
 
     const resolution = await resolve(id);
+    if (resolution.source === 'tui') return cancelTui(req, resolution, store, fingerprint, refuse, early);
     const agent = resolution.source === 'file' ? resolution.status.terminal?.agent : undefined;
     if (agent !== 'claude' && agent !== 'codex') return refuse('cancel-unsupported');
     if (resolution.status.agentSessionId !== req.agentSessionId ||
@@ -593,12 +681,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     switch (verdict) {
       case 'busy': return refuse('chat-busy');
       case 'session_changed': return refuse('session-changed', identityOf(await resolve(id)));
-      case 'blocked': {
-        const pending = deps.approvals()?.pendingFor(id);
-        return refuse('prompt-active', pending
-          ? { by: pending.kind === 'terminal_prompt' ? 'terminal' : 'approval', approvalId: pending.id }
-          : { by: 'terminal' });
-      }
+      case 'blocked': return refuse('prompt-active', promptActive(id));
       case 'already_interrupted': return refuse('turn-already-interrupted', turn ? { turnId: turn.id } : {});
       case 'cooldown':
         return refuse('cancel-cooldown', { retryAfterMs: Math.max(1, INTERRUPT_COOLDOWN_MS - (now() - lastEscAt(id))) });
@@ -623,9 +706,25 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     cooldown: 'not_running', unauthorized: 'unavailable', write_refused: 'unavailable', busy: 'blocked',
   };
 
+  const DESKTOP_ABORT: Partial<Record<string, ChatInterruptResult>> = {
+    sent: 'sent', not_running: 'not_running', pending: 'not_running', prompt_active: 'blocked', session_changed: 'session_changed', unconfirmed: 'error',
+  };
+
   const desktopInterrupt = async (id: string, agentSessionId: string): Promise<ChatInterruptResult> => {
-    // A native TUI binding has no ESC path here; no registry = "may be pending".
-    if (!id || !deps.approvals() || (await route(id)).kind === 'native') return 'unavailable';
+    if (!id) return 'unavailable';
+    const found = await route(id);
+    if (found.kind === 'native') {
+      // OpenCode stops through its plugin's abort, only when the plugin offers it.
+      const service = deps.terminalChat();
+      if (!found.read.status.terminal?.capabilities.cancel || !service?.abort) return 'unavailable';
+      // Another Stop is under way (as a cooldown reads).
+      if (sending.has(id)) return 'not_running';
+      sending.add(id);
+      try { return DESKTOP_ABORT[(await service.abort(id, agentSessionId, { read: found.read })).result] ?? 'unavailable'; }
+      catch { return 'error'; } finally { sending.delete(id); }
+    }
+    // No registry = "may be pending".
+    if (!deps.approvals()) return 'unavailable';
     return DESKTOP_INTERRUPT[await interruptLocked(id, agentSessionId)];
   };
 

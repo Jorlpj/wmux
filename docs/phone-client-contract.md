@@ -1286,8 +1286,9 @@ change: it is negotiated with a capability, and a client that declares none of
 the new tokens reads exactly the bytes it read before.
 
 **Capabilities.** `X-Wmux-Client-Caps` gains `decision-v2` (understands `form`
-records and answers them through `/answer`) and `chat-cancel` (reserved for
-`POST /api/sessions/<id>/chat/cancel`, which does not exist yet). Keep sending
+records and answers them through `/answer`) and `chat-cancel` (shows
+`capabilities.cancel` and `chat.turn` for `POST /api/sessions/<id>/chat/cancel`;
+see Chat cancel). Keep sending
 `terminal-prompt-answer` and `terminal-prompt-decline`; they still govern the
 v1 paths.
 
@@ -1411,7 +1412,7 @@ where `status` / `result` are the stored final response.
 ### Chat cancel
 
 `POST /api/sessions/<id>/chat/cancel` writes one Esc into a running Claude or
-Codex turn. The chat object's `capabilities.cancel` is passed through only to
+Codex turn, or asks the OpenCode plugin to abort one (see OpenCode below). The chat object's `capabilities.cancel` is passed through only to
 a caller that sends the `chat-cancel` capability; every other client keeps
 `cancel: false`. The route itself does not require the capability.
 
@@ -1438,6 +1439,29 @@ row is still drawn. That covers a recorded end or interrupt in the
 transcript, an idle title the agent set during the turn (Claude `✳`, Codex
 without a spinner), and Claude's Stop-hook row. A refused cancel stores no
 receipt, so the same `clientCancelId` may be retried.
+
+**OpenCode.** An OpenCode chat has no Esc: the cancel asks the wmux plugin
+inside the running TUI to abort the selected session. `capabilities.cancel`
+is true only when the plugin advertises `abort` and answers reads; an older
+plugin keeps `cancel:false` and the route answers 422 `cancel-unsupported`.
+The plugin repeats the session and history checks a send makes, so a
+switched session is 409 `session-changed`. `chat.turn` comes from the plugin:
+its `id` is fixed when the session goes from idle to running (a prompt
+accepted, or the TUI seen busy) and is kept until the session is complete;
+messages arriving mid-turn do not change it. `startedAt` is when the plugin
+saw the turn start, and is absent before the first turn. The plugin aborts
+only while the TUI is busy. The agent's own permission or question request
+is 409 `prompt-active` (`by:"terminal"`, or `by:"approval"` with its
+`approvalId` when the daemon holds a record for it). Any other dialog the
+user opened in the TUI (a picker or palette) does not hold the abort and
+changes neither `agentStatus`, `blocked` nor `chat.turn`; only a send made
+while it is open is refused as `chat-blocked`. Between an accepted send and
+the TUI going busy there is nothing to abort yet: that answers 409
+`cancel-cooldown` with a short `retryAfterMs`, and a retry after it reaches
+the same turn. The Esc once-per-turn latch and cooldown do not apply: an
+abort of a turn that has already ended is simply `turn-not-running`. When
+the abort request left but its answer was lost, the result is 500
+`cancel-failed` with `effect:"uncertain"`, as for a Claude/Codex write.
 
 ---
 
@@ -2684,7 +2708,8 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   `false` on transcript-file bindings (Claude/Codex rows land per record, not
   per token) and absent for OpenCode. A `managed` binding has `history:true`
   and every other capability `false` or absent. `cancel` is `false` unless you
-  sent the `chat-cancel` capability (see Chat cancel). `queue:true` (live Claude) means a send
+  sent the `chat-cancel` capability (see Chat cancel); for OpenCode it also
+  needs a plugin that advertises abort. `queue:true` (live Claude) means a send
   during a running turn can be accepted and answered with `queued:true`.
 - **`blocked` is authoritative and computed at read time**: a pending approval
   (`by:"approval"`), or `by:"terminal"` for a `terminal_prompt` record (as
