@@ -507,7 +507,7 @@ describe('WebTerminalServer', () => {
   /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
   let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
   /** #1342 — the daemon's resume state per session, as the server reads it. */
-  let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
+  let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; resumeAgent?: string }>;
 
   beforeEach(() => {
     desktopBridge = null;
@@ -9283,6 +9283,59 @@ describe('WebTerminalServer', () => {
       expect(first).toContain('\x1b[?2004h');
       // No alt-screen switch was sent, so none is asserted.
       expect(first).not.toContain('\x1b[?1049h');
+    });
+
+    /** Open the stream and return the `meta` that precedes the first snapshot. */
+    const firstSnapshotMeta = async (): Promise<Record<string, unknown>> => {
+      const info = await startRO();
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+      const [meta] = metas(text);
+      expect(meta).toBeDefined();
+      return meta;
+    };
+
+    it('★ stamps the snapshot meta with commandRunning so the client can disarm a dead TUI\'s mouse mode', async () => {
+      // The web client feeds this to the shared staleReplayResetLevel gate:
+      // `false` (shell at its prompt) is what earns the mouse/focus reset.
+      primeRing('\x1b[?1003h\x1b[?1006h');
+      resumeStates = { s1: { commandRunning: false } };
+      expect((await firstSnapshotMeta()).commandRunning).toBe(false);
+    });
+
+    it('omits commandRunning from the snapshot meta when the shell reports no prompt state', async () => {
+      primeRing('\x1b[?1003h\x1b[?1006h');
+      resumeStates = { s1: {} };
+      const meta = await firstSnapshotMeta();
+      expect(meta).not.toHaveProperty('commandRunning');
+      expect(meta).not.toHaveProperty('resumeAgent');
+    });
+
+    it('★ stamps resumeAgent for a pane recovered after a daemon restart (empty prompt log)', async () => {
+      // After a restart the prompt log is empty, so commandRunning is absent;
+      // the recovery hint is what tells the client the arming process is dead
+      // — the same input the desktop's pty.list gate reads.
+      primeRing('\x1b[?1003h\x1b[?1006h\x1b[?2004h');
+      resumeStates = { s1: { resumeAgent: 'claude' } };
+      const meta = await firstSnapshotMeta();
+      expect(meta.resumeAgent).toBe('claude');
+      expect(meta).not.toHaveProperty('commandRunning');
+    });
+
+    it('keeps resumeAgent off /api/workspaces (snapshot meta only)', async () => {
+      resumeStates = { s1: { resumeAgent: 'claude', commandRunning: false } };
+      const info = await startRO();
+      const res = await fetch(`${base()}/api/workspaces`, { headers: { Authorization: `Bearer ${info.token as string}` } });
+      expect(res.status).toBe(200);
+      const raw = JSON.stringify(await res.json());
+      // Non-vacuous: s1 is listed with its other resume facts.
+      expect(raw).toContain('"commandRunning":false');
+      expect(raw).not.toContain('resumeAgent');
     });
 
     it('ends just this stream when the initial frame cannot be built', async () => {

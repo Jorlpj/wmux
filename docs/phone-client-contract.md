@@ -164,7 +164,7 @@ POST /api/stream-ticket        (Authorization header, as always)
 
 | Event | Data |
 | --- | --- |
-| `meta` | `{cols, rows, truncated, omittedBytes}` |
+| `meta` | `{cols, rows, truncated, omittedBytes, commandRunning?, resumeAgent?}` |
 | `snapshot` | base64 of the initial paint |
 | `data` | base64 of live PTY bytes |
 | `exit` | `1` |
@@ -173,6 +173,24 @@ POST /api/stream-ticket        (Authorization header, as always)
 The first paint is **capped**, and never cut mid-character or mid-escape. When
 `truncated` is true, `omittedBytes` says how much history is above — surface it
 rather than pretending the buffer starts there.
+
+`commandRunning` (optional, present only when the pane's shell emits OSC 133
+prompt markers) is `false` when the shell sits at its prompt. The snapshot
+re-arms whatever input modes the pane's output last left on, including mouse
+tracking a TUI armed and never disabled; a client that sees `false` should
+disarm mouse and focus reporting terminal-side after painting the snapshot
+(never bracketed paste — the live shell owns that), or its pointer moves type
+mouse reports into the prompt.
+
+`resumeAgent` (optional) is set only for a pane the daemon recovered after its
+own restart whose agent has not been re-detected: the process that armed the
+modes is known dead, so it is grounds to disarm mouse and focus reporting even
+when `commandRunning` is absent (`commandRunning: true` still wins: a fresh
+command now owns the modes). It is **not** grounds to clear bracketed paste:
+the recovered pane's new shell is alive and owns `?2004`, and `resumeAgent`
+persists until the agent is re-detected, so clearing it on every attach breaks
+multi-line paste (the first line runs at once). These are the same two inputs
+the desktop app gates its own replay reset on.
 
 **`agent.liveness` on this stream is the terminal face's activity header.** Same
 event name and same `state` union as the fleet copy in the next section, and the
