@@ -52,7 +52,8 @@ SUBCOMMANDS
                Other entries are left untouched.
 
 OPTIONS
-  --target <id>  Limit to one agent: claude | codex | gemini (default: all).
+  --target <id>  Limit to one agent: claude | codex | gemini | agy
+                 (default: all except opt-in agy).
   --profile <p>  register only. Tool surface the registered server launches
                  with: full | core (default: full).
                    full  every tool, including the browser family.
@@ -71,9 +72,10 @@ function homeDir(): string {
 // Returns the selected targets, or null when `--target` was given with an
 // unknown/missing id (so the caller can error out instead of silently acting on
 // ALL targets — a `--target codxe` typo must NOT unregister everything).
-function selectedTargets(args: string[]): McpTarget[] | null {
+export function selectedTargets(args: string[]): McpTarget[] | null {
   const i = args.indexOf('--target');
-  if (i === -1) return [...MCP_TARGETS];
+  // Opt-in targets (autoRegister false) are only ever acted on when named.
+  if (i === -1) return MCP_TARGETS.filter((t) => t.autoRegister);
   const id = args[i + 1];
   const t = MCP_TARGETS.find((x) => x.id === id);
   return t ? [t] : null;
