@@ -401,7 +401,7 @@ describe('MCP_TARGETS registry', () => {
   });
 
   it('keeps agy opt-in: only it is excluded from automatic registration', () => {
-    expect(MCP_TARGETS.filter((t) => !t.autoRegister).map((t) => t.id)).toEqual(['agy']);
+    expect(MCP_TARGETS.filter((t) => !t.autoRegister).map((t) => t.id)).toEqual(['gemini', 'agy']);
   });
 });
 

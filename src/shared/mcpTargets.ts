@@ -103,7 +103,8 @@ export const MCP_TARGETS: readonly McpTarget[] = [
     configPath: (home) => path.join(home, '.gemini', 'settings.json'),
     createIfMissing: false,
     verified: false,
-    autoRegister: true,
+    // Personal build: the Gemini CLI is retired here, so wmux stops writing it.
+    autoRegister: false,
   },
   {
     // Antigravity CLI (`agy`), Google's successor to the Gemini CLI. It reads

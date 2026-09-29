@@ -166,7 +166,7 @@ describe('canConnectBrokerPipe', () => {
 
 describe('selectedTargets — opt-in agy target', () => {
   it('leaves agy out when no --target is given', () => {
-    expect(selectedTargets(['register'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini']);
+    expect(selectedTargets(['register'])!.map((t) => t.id)).toEqual(['claude', 'codex']);
   });
 
   it('acts on agy only when it is named', () => {
