@@ -11,3 +11,9 @@
   where agy reads its MCP servers. It is never written at boot or by a
   target-less `wmux mcp register`, because agy often runs as a worker whose
   tool surface the operator keeps restricted on purpose.
+- **Role bindings can target agy.** `agy` joins the known agent launchers and
+  the role-binding agent list, with its `--model` grammar verified (a full
+  `agy models` id such as `gemini-3.8-flash-low`). Fan-out lists agy but keeps
+  it unselectable: a fresh worktree stops on agy's project trust screen, which
+  no flag or environment variable can pre-answer, and its first prompt needs
+  `-i` rather than a positional argument.

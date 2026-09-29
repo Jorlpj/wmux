@@ -4,6 +4,7 @@ import {
   applyRoleBinding,
   bindingEnforcesModel,
   launcherSupportsModelFlag,
+  KNOWN_AGENT_STEMS,
   normalizeRoleBinding,
   normalizeRoleBindings,
   ROLE_BINDING_ARGS_MAX,
@@ -395,6 +396,11 @@ describe('launcherSupportsModelFlag', () => {
     expect(launcherSupportsModelFlag('codex')).toBe(true);
     expect(launcherSupportsModelFlag('gemini')).toBe(false);
     expect(launcherSupportsModelFlag('aider')).toBe(false);
+  });
+
+  it('knows agy (--model grammar verified against agy 1.2.13)', () => {
+    expect(launcherSupportsModelFlag('agy')).toBe(true);
+    expect(KNOWN_AGENT_STEMS.has('agy')).toBe(true);
   });
 });
 

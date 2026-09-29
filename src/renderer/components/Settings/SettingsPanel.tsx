@@ -640,7 +640,7 @@ const ORCHESTRATOR_MODEL_OPTIONS = [
 // no-op'ing silently. Model entry is a datalist combobox, not a <select>: only
 // claude's aliases are known to us, and a codex model id (`gpt-5.5`) must be
 // typeable.
-const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini'] as const;
+const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini', 'agy'] as const;
 
 // Model ids and CLI args are machine evidence, so the free-text fields are mono.
 const ROLE_BINDING_FIELD_CLASS = 'settings-input font-mono';

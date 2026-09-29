@@ -110,6 +110,11 @@ const MODEL_FLAG_BY_LAUNCHER: Readonly<Record<string, ModelFlagGrammar>> = {
   // KNOWN_AGENT_STEMS entry, so a role binding never reaches it. Verified
   // 2026-09-26: `grok --model grok-4.7-build-fast` runs, an unknown id is refused.
   grok: { flag: (m) => `--model ${m}` },
+  // agy (Antigravity CLI 1.2.13). Verified 2026-09-29: `agy --model
+  // gemini-3.8-flash-low` runs; an unknown id is refused with the model list.
+  // The id must be a full `agy models` id (the effort suffix included) — a bare
+  // family name such as `gemini-3.8-flash` also demands `--effort`.
+  agy: { flag: (m) => `--model ${m}` },
   // opencode/gemini/aider deliberately absent — their `--model` CLI grammar is
   // NOT verified anywhere in the repo (integrations/ + agentResume both cover
   // only claude/codex). Binding a role to them is a no-op + note (D-5), never a
@@ -212,6 +217,7 @@ export const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
   'copilot',
   'openclaude',
   'kiro-cli',
+  'agy',
 ]);
 
 /** Max lengths for the binding fields at the normalization boundary. `args` is
