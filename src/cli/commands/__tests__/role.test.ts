@@ -63,6 +63,23 @@ describe('wmux role resolve', () => {
     expect(missing.code).toBe(1);
   });
 
+  it('exits 1 (unreadable, not "not bound") when the JSON root is not an object', async () => {
+    for (const root of ['5', '"x"', '[]', 'null', 'true']) {
+      const r = await run(['resolve', 'Builder'], true, () => root);
+      expect(r.code, root).toBe(1);
+      expect(r.err[0], root).toMatch(/^wmux role: cannot read /);
+      expect(r.out, root).toEqual([]);
+    }
+  });
+
+  it('treats Object.prototype names as unbound roles (exit 2)', async () => {
+    for (const role of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      const r = await run(['resolve', role]);
+      expect(r.code, role).toBe(2);
+      expect(JSON.parse(r.out[0]), role).toEqual({ role, bound: false });
+    }
+  });
+
   it('prints a plain command line without --json', async () => {
     expect((await run(['resolve', 'Reviewer'], false)).out[0]).toBe(
       'codex --model gpt-6-sol -c model_reasoning_effort=low',

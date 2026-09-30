@@ -96,14 +96,20 @@ export async function handleRole(args: string[], jsonMode: boolean, overrides: P
 
   let bindings;
   try {
-    const data = JSON.parse(deps.readFile(sessionPath)) as { orchestratorRoleBindings?: unknown };
-    bindings = normalizeRoleBindings(data?.orchestratorRoleBindings);
+    const data: unknown = JSON.parse(deps.readFile(sessionPath));
+    // A root that is not an object is a corrupt file, not "no bindings": report
+    // it as unreadable (exit 1) so a script does not read it as "not bound".
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('session data is not a JSON object');
+    }
+    bindings = normalizeRoleBindings((data as { orchestratorRoleBindings?: unknown }).orchestratorRoleBindings);
   } catch (err) {
     deps.error(`wmux role: cannot read ${sessionPath}: ${(err as Error).message}`);
     deps.exit(1);
     return;
   }
-  const binding = bindings[role];
+  // Own keys only: `constructor` / `toString` are not roles.
+  const binding = Object.hasOwn(bindings, role) ? bindings[role] : undefined;
   if (!binding) {
     if (jsonMode) deps.log(JSON.stringify({ role, bound: false }));
     else deps.error(`Role "${role}" is not bound in Settings → Roles & fan-out.`);
