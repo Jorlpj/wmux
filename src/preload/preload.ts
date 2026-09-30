@@ -639,6 +639,13 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.AUTOMATION_OPEN_RUN, listener); };
     },
   },
+  agentModels: {
+    /** Models an agent CLI reports; `refresh` bypasses main's cache. */
+    list: (agent: string, refresh = false) =>
+      ipcRenderer.invoke(IPC.AGENT_MODELS_LIST, { agent, refresh }) as Promise<
+        import('../shared/modelCatalog').ModelCatalogResult
+      >,
+  },
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace
     // whose brain it addresses. `model` is the orchestrator model override
@@ -790,10 +797,11 @@ const electronAPI = {
     },
     // Orchestrator model picker → main-side authority, so scheduled and
     // event-woken turns (and the composer-less terminal brain) all see it.
-    modelSet: (model: string) =>
-      ipcRenderer.invoke(IPC.DECK_MODEL_SET, { model }) as Promise<{
+    modelSet: (model: string, effort?: string) =>
+      ipcRenderer.invoke(IPC.DECK_MODEL_SET, { model, effort }) as Promise<{
         ok: true;
         model: string;
+        effort: string;
       }>,
     // The operator's `/clear` — resets one workspace orchestrator's brain
     // context (fresh SDK conversation on the next turn). Transcript stays.

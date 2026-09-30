@@ -1166,6 +1166,10 @@ export const en = {
   'settings.orchestratorModelDesc':
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
+  'settings.orchestratorEffort': 'Orchestrator effort',
+  'settings.orchestratorEffortDesc':
+    'How much the orchestrator thinks per turn (claude --effort). Lower is faster and uses fewer tokens. Applies from your next command.',
+  'settings.orchestratorEffortDefault': 'Default (CLI setting)',
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':
     'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
@@ -1185,7 +1189,11 @@ export const en = {
     'Pick an agent too — a model on its own is not enforced (wmux can’t tell whose --model flag it is).',
   'settings.roleBindingHintNoGrammar':
     'wmux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
-  'settings.roleBindingHintInert': 'Add a model or extra args — an agent alone enforces nothing.',
+  'settings.roleBindingHintInert': 'Add a model, an effort, skip permissions or extra args — an agent alone enforces nothing.',
+  'settings.roleBindingEffortLabel': '{role} effort',
+  'settings.roleBindingEffortDefault': 'Effort: default',
+  'settings.roleBindingSkipPermissions': 'Skip permissions',
+  'settings.roleBindingRefreshModels': 'Refresh models',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
   'pane.enforcedLaunch': 'Role-enforced launch: {binding}',

@@ -510,3 +510,117 @@ describe('applyRoleAgent — launcher swap for wmux-assembled launches', () => {
     expect(applyRoleAgent('claude x', undefined).changed).toBe(false);
   });
 });
+
+describe('role binding launch options (effort, skip permissions)', () => {
+  it('splices claude effort and skip flags after the model', () => {
+    const r = applyRoleBinding('claude', {
+      agent: 'claude', model: 'claude-sonnet-5-5', effort: 'low', skipPermissions: true,
+    });
+    expect(r.command).toBe('claude --model claude-sonnet-5-5 --effort low --dangerously-skip-permissions');
+    expect(r.modelInjected).toBe(true);
+  });
+
+  it('uses the codex -c grammar before a subcommand', () => {
+    const r = applyRoleBinding('codex resume --last', { agent: 'codex', effort: 'high', skipPermissions: true });
+    expect(r.command).toBe(
+      'codex -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox resume --last',
+    );
+  });
+
+  it('never emits an effort flag for agy (effort lives in the model id)', () => {
+    const r = applyRoleBinding('agy', {
+      agent: 'agy', model: 'gemini-3.8-flash-low', effort: 'low', skipPermissions: true,
+    });
+    expect(r.command).toBe('agy --model gemini-3.8-flash-low --dangerously-skip-permissions');
+  });
+
+  it('lets a flag already on the line win', () => {
+    const b = { agent: 'claude', effort: 'low', skipPermissions: true };
+    expect(applyRoleBinding('claude --effort max', b).command).toBe(
+      'claude --dangerously-skip-permissions --effort max',
+    );
+    expect(applyRoleBinding('codex --yolo', { agent: 'codex', skipPermissions: true }).changed).toBe(false);
+  });
+
+  it('is idempotent', () => {
+    const b = { agent: 'claude', model: 'opus', effort: 'low', skipPermissions: true };
+    const once = applyRoleBinding('claude', b).command;
+    expect(applyRoleBinding(once, b).command).toBe(once);
+  });
+
+  it('lets a flag in the binding\'s own args win over effort / skip (claude)', () => {
+    expect(applyRoleBinding('claude', { agent: 'claude', effort: 'low', args: '--effort high' }).command).toBe(
+      'claude --effort high',
+    );
+    expect(
+      applyRoleBinding('claude', { agent: 'claude', skipPermissions: true, args: '--dangerously-skip-permissions' })
+        .command,
+    ).toBe('claude --dangerously-skip-permissions');
+    // --effort=<level> spelling in args counts too.
+    expect(applyRoleBinding('claude', { agent: 'claude', effort: 'low', args: '--effort=max' }).command).toBe(
+      'claude --effort=max',
+    );
+  });
+
+  it('lets a flag in the binding\'s own args win over effort / skip (codex)', () => {
+    const b = {
+      agent: 'codex', effort: 'low', skipPermissions: true,
+      args: '-c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox',
+    };
+    const once = applyRoleBinding('codex', b).command;
+    expect(once).toBe('codex -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox');
+    expect(applyRoleBinding(once, b).command).toBe(once);
+    expect(applyRoleBinding('codex', { agent: 'codex', skipPermissions: true, args: '--yolo' }).command).toBe(
+      'codex --yolo',
+    );
+  });
+
+  // `--allow-dangerously-skip-permissions` only makes bypass available; it does
+  // not enable it, so it must not count as the skip flag already being there.
+  it('does not treat --allow-dangerously-skip-permissions as skip', () => {
+    expect(
+      applyRoleBinding('claude --allow-dangerously-skip-permissions', { agent: 'claude', skipPermissions: true })
+        .command,
+    ).toBe('claude --dangerously-skip-permissions --allow-dangerously-skip-permissions');
+  });
+
+  it('suppressSkipPermissions withholds only the skip flag (explicit per-launch OFF)', () => {
+    const b = { agent: 'claude', model: 'opus', effort: 'low', skipPermissions: true };
+    // A fresh launch still gets the role's skip flag.
+    expect(applyRoleBinding('claude', b).command).toBe(
+      'claude --model opus --effort low --dangerously-skip-permissions',
+    );
+    expect(applyRoleBinding('claude --permission-mode plan', b, { suppressSkipPermissions: true }).command).toBe(
+      'claude --model opus --effort low --permission-mode plan',
+    );
+    // Nothing else to apply → unchanged.
+    expect(
+      applyRoleBinding('claude', { agent: 'claude', skipPermissions: true }, { suppressSkipPermissions: true }).changed,
+    ).toBe(false);
+  });
+
+  it('needs the agent named, like the model', () => {
+    expect(applyRoleBinding('claude', { effort: 'low', skipPermissions: true }).changed).toBe(false);
+  });
+
+  it('normalizes the new fields strictly', () => {
+    expect(
+      normalizeRoleBinding({ agent: 'codex', effort: 'high; rm', skipPermissions: 'true' }),
+    ).toEqual({ agent: 'codex' });
+    expect(normalizeRoleBinding({ skipPermissions: true })).toEqual({ skipPermissions: true });
+    expect(normalizeRoleBinding({ effort: 'medium' })).toEqual({ effort: 'medium' });
+  });
+
+  // An earlier draft of this feature stored `freshContext`; a session.json that
+  // still carries it loads as if the field were never there.
+  it('drops a stale freshContext field from an old session.json', () => {
+    expect(normalizeRoleBinding({ agent: 'codex', effort: 'high', freshContext: true })).toEqual({
+      agent: 'codex',
+      effort: 'high',
+    });
+    expect(normalizeRoleBinding({ freshContext: true })).toBeUndefined();
+    expect(normalizeRoleBindings({ Builder: { agent: 'claude', freshContext: true } })).toEqual({
+      Builder: { agent: 'claude' },
+    });
+  });
+});

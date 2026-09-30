@@ -1,4 +1,5 @@
 import { launcherStem, tokenize } from './agentResume';
+import { EFFORT_TOKEN_RE, launchGrammarFor } from './agentLaunchOptions';
 
 // Orchestrator pane role (soft, operator-assigned "preferred role").
 //
@@ -89,6 +90,11 @@ export interface RoleBinding {
   model?: string;
   /** Extra launch args appended verbatim (advanced). Normalized/capped. */
   args?: string;
+  /** Reasoning effort, spliced with the agent's own grammar
+   *  (agentLaunchOptions). Ignored for agy, whose effort is the model id suffix. */
+  effort?: string;
+  /** Launch with the agent's own skip-permission-prompts flag. */
+  skipPermissions?: boolean;
 }
 
 /** Operator-level, cross-workspace. Keyed by role name (ORCH_ROLES ∪ custom). */
@@ -302,7 +308,10 @@ function normalizeArgsField(input: unknown): string | undefined {
  *  load), or undefined when the result carries no usable field. */
 export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const src = input as { agent?: unknown; model?: unknown; args?: unknown };
+  const src = input as {
+    agent?: unknown; model?: unknown; args?: unknown;
+    effort?: unknown; skipPermissions?: unknown;
+  };
   const binding: RoleBinding = {};
   // Agent normalizes to a launcher stem so it compares cleanly against a live
   // command's stem (drops a path/extension a hand-edited value might carry).
@@ -313,7 +322,13 @@ export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   if (agent) binding.agent = agent;
   if (model) binding.model = model;
   if (args) binding.args = args;
-  if (binding.agent === undefined && binding.model === undefined && binding.args === undefined) {
+  if (typeof src.effort === 'string' && EFFORT_TOKEN_RE.test(src.effort)) binding.effort = src.effort;
+  // Strict booleans only: a hand-edited "true" string does not switch it on.
+  if (src.skipPermissions === true) binding.skipPermissions = true;
+  if (
+    binding.agent === undefined && binding.model === undefined && binding.args === undefined &&
+    binding.effort === undefined && !binding.skipPermissions
+  ) {
     return undefined;
   }
   return binding;
@@ -454,6 +469,10 @@ function alreadyEndsWithArgs(command: string, args: string): boolean {
  *    though `binding.args` may still be appended.
  *  - Otherwise: inject `--model <m>` right after the launcher token and append
  *    normalized `binding.args` at the end.
+ *  - `binding.effort` / `binding.skipPermissions` splice the agent's own flag
+ *    (agentLaunchOptions) next to the model, unless that flag is already on the
+ *    line; {@link ApplyRoleBindingOptions.suppressSkipPermissions} withholds the
+ *    skip flag for a launch whose toggle the user explicitly set OFF.
  *
  * `modelInjected` reports whether the model flag was ACTUALLY spliced in, so a
  * caller never advertises an enforced model when only `args` changed.
@@ -488,6 +507,14 @@ export interface ApplyRoleBindingOptions {
    * everywhere else (detection, resume, the role-binding dropdown).
    */
   extraAgents?: ReadonlySet<string>;
+  /**
+   * Do not inject the binding's skip-permissions flag on this launch. Set by the
+   * resume chip and the recovery pill when the user explicitly turned their
+   * "skip permissions" toggle OFF: that per-launch choice wins over the role
+   * (owner decision, #1677). Model, effort and args are still applied, and a
+   * skip flag already on the line is left alone.
+   */
+  suppressSkipPermissions?: boolean;
 }
 
 export function applyRoleBinding(
@@ -499,7 +526,9 @@ export function applyRoleBinding(
   if (!binding) return unchanged;
   const model = binding.model?.trim() || undefined;
   const args = binding.args?.trim() || undefined;
-  if (!model && !args) return unchanged;
+  const effort = binding.effort && EFFORT_TOKEN_RE.test(binding.effort) ? binding.effort : undefined;
+  const skipPermissions = !!binding.skipPermissions && !options?.suppressSkipPermissions;
+  if (!model && !args && !effort && !skipPermissions) return unchanged;
 
   const tokens = tokenize(command);
   if (tokens.length === 0) return unchanged;
@@ -536,10 +565,29 @@ export function applyRoleBinding(
     }
   }
 
+  // Launch options (effort, skip permissions) use the agent's verified grammar
+  // and, like the model, need the binding to name the agent. A flag already on
+  // the line OR in the binding's own args wins (D-4 for options): the args are
+  // appended below, so checking the line alone put two `--effort` on it.
+  const launch = binding.agent ? launchGrammarFor(stem) : undefined;
+  const present = [...tokens, ...(args ? tokenize(args) : [])].map((t) => t.value);
+  const optionTokens: string[] = [];
+  if (effort && launch?.effortFlag && !present.some((v) => launch.hasEffort?.(v))) {
+    optionTokens.push(...launch.effortFlag(effort));
+  }
+  if (skipPermissions && launch?.skipPermissionsFlag) {
+    const spellings = [launch.skipPermissionsFlag, ...(launch.skipPermissionsAliases ?? [])];
+    if (!present.some((v) => spellings.includes(v))) optionTokens.push(launch.skipPermissionsFlag);
+  }
+
   let out = command;
-  if (injectModel && grammar) {
-    const at = tokens[0].end;
-    out = `${command.slice(0, at)} ${grammar.flag(model as string)}${command.slice(at)}`;
+  const at = tokens[0].end;
+  const inserted = [
+    ...(injectModel && grammar ? [grammar.flag(model as string)] : []),
+    ...optionTokens,
+  ];
+  if (inserted.length > 0) {
+    out = `${command.slice(0, at)} ${inserted.join(' ')}${command.slice(at)}`;
   }
   // Append extra args verbatim, but only when not already trailing (idempotence).
   if (args && !alreadyEndsWithArgs(out, args)) {

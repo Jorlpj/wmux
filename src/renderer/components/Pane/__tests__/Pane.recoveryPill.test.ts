@@ -134,6 +134,44 @@ describe('planRecoveryPillType — two-stage assembly puts the model on the base
   });
 });
 
+// #1677 — the pill's explicit "skip permissions: OFF" wins over a role's
+// skipPermissions; model/effort injection is unchanged.
+describe('planRecoveryPillType — role skipPermissions vs the toggle', () => {
+  const skipRole: RoleBinding = { agent: 'claude', model: 'haiku', skipPermissions: true };
+
+  it('toggle OFF: the permission-restore base carries no skip flag', () => {
+    const plan = planRecoveryPillType({
+      launcher: 'claude', sessionId: SID, permFlag: '--permission-mode plan',
+      forceSkip: false, resumeStage: 0, roleBinding: skipRole,
+    });
+    expect(plan?.text).toBe('claude --model haiku --permission-mode plan');
+  });
+
+  it('toggle OFF without a captured mode: one line, still no skip flag', () => {
+    const plan = planRecoveryPillType({
+      launcher: 'claude', sessionId: SID, permFlag: '',
+      forceSkip: false, resumeStage: 0, roleBinding: skipRole,
+    });
+    expect(plan?.text).toBe(`claude --model haiku --resume ${SID}`);
+  });
+
+  it('toggle ON: exactly one skip flag', () => {
+    const plan = planRecoveryPillType({
+      launcher: 'claude', sessionId: SID, permFlag: '--dangerously-skip-permissions',
+      forceSkip: true, resumeStage: 0, roleBinding: skipRole,
+    });
+    expect(plan?.text).toBe(`claude --model haiku --dangerously-skip-permissions --resume ${SID}`);
+  });
+
+  it('codex (no toggle) still gets the role skip flag', () => {
+    const plan = planRecoveryPillType({
+      launcher: 'codex', sessionId: 'sess-77', permFlag: '',
+      forceSkip: false, resumeStage: 0, roleBinding: { agent: 'codex', skipPermissions: true },
+    });
+    expect(plan?.text).toBe('codex --dangerously-bypass-approvals-and-sandbox resume sess-77');
+  });
+});
+
 describe('planRecoveryPillType — gates that must NOT rewrite', () => {
   it('no role binding → command is untouched (the fix does not touch the unbound path)', () => {
     const plan = planRecoveryPillType({
