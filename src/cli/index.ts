@@ -18,6 +18,7 @@ import { handleSetupHooks } from './commands/setupHooks';
 import { handleSetupStatusline } from './commands/setupStatusline';
 import { handleDoctor } from './commands/doctor';
 import { handleRole } from './commands/role';
+import { handleDeck } from './commands/deck';
 import { handleChannel } from './commands/channel';
 import { handleWeb } from './commands/web';
 import { handleDaemon } from './commands/daemon';
@@ -145,6 +146,11 @@ ROLES
              [--json]               {agent, model, effort, argv, flags}; exit 2 if unbound
              [--session <path>]     Read another session.json (default: the app's)
 
+COMMAND DECK
+  deck state                        Report or prune orphan Deck state
+             [--orphans]            List orphan workspace IDs across Deck store files
+             [--prune --yes]        Prune orphan state (archives active work records)
+
 BROWSER COMMANDS
   browser navigate <url>            Navigate your workspace's browser surface
   browser close                     Close the browser panel
@@ -191,6 +197,8 @@ EXAMPLES
   wmux doctor --json
   wmux doctor --performance
   wmux role resolve Builder --json
+  wmux deck state --orphans
+  wmux deck state --prune --yes
 `.trimStart();
 
 const WORKSPACE_CMDS = new Set([
@@ -269,6 +277,8 @@ async function main(): Promise<void> {
       await handleDoctor(rest, jsonMode);
     } else if (cmd === 'role') {
       await handleRole(rest, jsonMode);
+    } else if (cmd === 'deck') {
+      await handleDeck(rest, jsonMode);
     } else if (cmd === 'channel') {
       await handleChannel(rest[0], rest.slice(1), jsonMode);
     } else {
