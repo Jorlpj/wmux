@@ -846,11 +846,30 @@ export function getTcpPortPath(): string {
   return `${home}/.wmux${dataSuffix()}-tcp-port`;
 }
 
+/**
+ * Fail-closed safety guard: refuses to touch the live wmux data directory from a test.
+ * Active when running under vitest with WMUX_TEST_REAL_HOME set, the given home matches
+ * the real user home (case-insensitive, \// normalized), and dataSuffix() is empty.
+ */
+export function assertNotLiveWmuxDataDir(home: string): void {
+  if (
+    process.env.VITEST &&
+    process.env.WMUX_TEST_REAL_HOME &&
+    dataSuffix() === ''
+  ) {
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (home && norm(home) === norm(process.env.WMUX_TEST_REAL_HOME)) {
+      throw new Error('Refusing to touch the live wmux data dir from a test');
+    }
+  }
+}
+
 // wmux user home directory — root for plugin-trust.json, pid-map/, and other
 // substrate state that needs to survive across wmux restarts. Single source
 // of truth so callers don't reimplement the USERPROFILE/HOME dance.
 export function getWmuxHomeDir(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
+  assertNotLiveWmuxDataDir(home);
   return `${home}/.wmux${dataSuffix()}`;
 }
 
