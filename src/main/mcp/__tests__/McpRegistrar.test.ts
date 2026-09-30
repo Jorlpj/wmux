@@ -37,10 +37,16 @@ const geminiJson = () => path.join(tmpHome, '.gemini', 'settings.json');
 const target = (s: McpRegistrarStatus, id: string): McpTargetStatus =>
   s.targets.find((t) => t.id === id) as McpTargetStatus;
 
+let origSuffix: string | undefined;
+
 beforeEach(() => {
+  origSuffix = process.env.WMUX_DATA_SUFFIX;
+  delete process.env.WMUX_DATA_SUFFIX;
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-mcp-test-'));
 });
 afterEach(() => {
+  if (origSuffix === undefined) delete process.env.WMUX_DATA_SUFFIX;
+  else process.env.WMUX_DATA_SUFFIX = origSuffix;
   try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort */ }
 });
 
