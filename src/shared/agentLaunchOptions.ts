@@ -47,8 +47,12 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
   },
 };
 
+// hasOwnProperty, not Object.hasOwn: orchestratorRole imports this file and is
+// compiled into the MCP bundle, whose tsconfig targets ES2020.
 export function launchGrammarFor(agent: string | undefined): AgentLaunchGrammar | undefined {
-  return agent && Object.hasOwn(LAUNCH_GRAMMAR_BY_AGENT, agent) ? LAUNCH_GRAMMAR_BY_AGENT[agent] : undefined;
+  return agent && Object.prototype.hasOwnProperty.call(LAUNCH_GRAMMAR_BY_AGENT, agent)
+    ? LAUNCH_GRAMMAR_BY_AGENT[agent]
+    : undefined;
 }
 
 /** Effort levels that are safe as a single CLI token. */
