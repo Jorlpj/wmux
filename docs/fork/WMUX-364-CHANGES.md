@@ -21,8 +21,8 @@ sent to the model provider. In the AIOTPM project that means `third_party/firmwa
 `third_party/infineon-v2.03/` are exposed whenever agy's workspace is the main checkout. The project's own loop now runs
 agy in a git worktree, which never contains gitignored trees (`tools/agy_dispatch.py --worktree`, AIOTPM ADR 0039);
 live check: agy listing `third_party/` from the worktree saw only `keyauth` and `README.md`. That is exposure
-reduction, not a guarantee: an explicit absolute path is still readable. Inside wmux, `fanout_start` already gives each
-task its own worktree, but fan-out cannot launch agy (see below).
+reduction, not a guarantee: an explicit absolute path is still readable. Inside wmux, `fanout_start` gives each task its own
+worktree, and it now launches agy there (see below).
 
 ## Carried over from the 3.63 fork (PR #1677, C1–C4)
 
@@ -45,7 +45,9 @@ task its own worktree, but fan-out cannot launch agy (see below).
 | C7 | A vitest run that bypassed the isolate setup refuses the live data dir. Found and fixed: the `test:runtime` lane never had the setup and wrote shell integration under the live `~/.wmux`. |
 | C9 | `--role=<Planner/Reviewer/Builder/Tester>` MCP surface (an optimization like `--core`, not a security boundary): Planner 6 tools / 8.2k chars, Reviewer 5 / 5.4k, Builder/Tester none, vs core 49 / 45k. `wmux role resolve --json` prints the opt-in `mcp.argv` per CLI (claude `--mcp-config` replaces the user-level `wmux` server; codex `-c mcp_servers.wmux.args=[…]` / `enabled=false`; all verified 2026-09-30). The full/core/commander wire baseline is byte-identical (`probe:mcp`). |
 | C10 | Settings › Agents › **Token usage**: Balanced/Minimal model+effort profile over the role bindings with an Apply preview (derived, never persisted; permissions never touched), per-role launch + wmux tool count, Deck brain link. en/ko/zh/pl. |
-| agy | agy is offered again in Roles & fan-out. Upstream left it out because fan-out cannot start agy with a positional prompt; that stays true (`applyRoleAgent` keeps the default agent), and the row now says so inline instead of the binding rendering as an empty select. |
+| agy fan-out | **Fan-out launches the agy CLI.** agy refuses a positional prompt, so the swap writes `agy … -i "<prompt>"`; a fresh worktree stops on agy's trust screen, so main lists exactly that task folder in agy's own `trustedWorkspaces` (`~/.gemini/antigravity-cli/settings.json`, the entry the screen itself writes) and prunes vanished sibling task folders; only a folder fan-out is spawning in right now is accepted. agy is selectable in fan-out and in Roles & fan-out. Live 2026-09-30: a Claude pane called `fanout_start` with `agents:[{agent:'agy'}]`, the worktree was pre-trusted, agy ran the prompt, wrote the file and committed. |
+| Tool levels | `RoleBinding.tools` = `full` / `core` / `role`. `wmux role resolve --json` reports it (opt-in `mcp` field) and a role-bound pane wmux launches gets it: main splices `--mcp-config <file>` (claude) or `-c "mcp_servers.wmux.args=['…']"` (codex, TOML literals so PowerShell keeps the quotes). |
+| Profiles | Token usage has **Full, Coding, Balanced, Minimal**, applied through each agent's grammar (claude model+effort, codex effort, agy model suffix) plus a tool level: Full = best models/high/all tools; Coding = strong planner/medium/core (no browser); Balanced = medium planner/low checkers/role tools; Minimal = lowest effort/role tools. |
 
 ## Deferred, with reasons
 
