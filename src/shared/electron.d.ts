@@ -1,5 +1,18 @@
 import type { ElectronAPI, McpRegisterTargetResult, McpTargetStatusPayload } from '../preload/preload';
 import type {
+  AgySensorInstallResult,
+  AgySensorStatus,
+  QuotaReadRequest,
+  QuotaReadResult,
+} from './tokenUsage/quotaTypes';
+import type {
+  ProviderInventory,
+  SurfaceApplyResult,
+  SurfaceChangeRequest,
+  SurfaceInventoryRequest,
+  SurfacePreview,
+} from './tokenUsage/surfaceTypes';
+import type {
   RemoteInboxItem,
   LanLinkStatus,
   LanLinkConfigurePatch,
@@ -46,6 +59,14 @@ declare global {
         reregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         unregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         registerTarget: (targetId: string) => Promise<McpRegisterTargetResult>;
+      };
+      tokenUsage?: {
+        readQuota: (request?: QuotaReadRequest) => Promise<QuotaReadResult>;
+        agySensorStatus: () => Promise<AgySensorStatus>;
+        installAgySensor: () => Promise<AgySensorInstallResult>;
+        readInventory: (request: SurfaceInventoryRequest) => Promise<ProviderInventory>;
+        previewChanges: (request: SurfaceChangeRequest) => Promise<SurfacePreview>;
+        applyChanges: (request: SurfaceChangeRequest) => Promise<SurfaceApplyResult>;
       };
       firstRun?: {
         check: () => Promise<FirstRunCheckResult>;

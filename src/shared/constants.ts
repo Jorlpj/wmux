@@ -563,6 +563,13 @@ export const IPC = {
   MCP_REREGISTER: 'mcp:reregister',
   MCP_UNREGISTER: 'mcp:unregister',
   MCP_REGISTER_TARGET: 'mcp:register-target',
+  // Settings -> Token usage: quota (manual refresh only) and the CLI "surface" inventory / toggles.
+  TOKEN_QUOTA_READ: 'tokenUsage:quota:read',
+  TOKEN_QUOTA_SENSOR_STATUS: 'tokenUsage:quota:sensor-status',
+  TOKEN_QUOTA_SENSOR_INSTALL: 'tokenUsage:quota:sensor-install',
+  TOKEN_SURFACE_INVENTORY: 'tokenUsage:surface:inventory',
+  TOKEN_SURFACE_PREVIEW: 'tokenUsage:surface:preview',
+  TOKEN_SURFACE_APPLY: 'tokenUsage:surface:apply',
   // LanLink PR-3 control plane (renderer → main → daemon control pipe).
   LANLINK_STATUS: 'lanlink:status',
   LANLINK_CONFIGURE: 'lanlink:configure',

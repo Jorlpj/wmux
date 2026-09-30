@@ -3,6 +3,19 @@ import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 import type {
+  AgySensorInstallResult,
+  AgySensorStatus,
+  QuotaReadRequest,
+  QuotaReadResult,
+} from '../shared/tokenUsage/quotaTypes';
+import type {
+  ProviderInventory,
+  SurfaceApplyResult,
+  SurfaceChangeRequest,
+  SurfaceInventoryRequest,
+  SurfacePreview,
+} from '../shared/tokenUsage/surfaceTypes';
+import type {
   FirstRunCheckResult,
   RegisterMcpResult,
   SampleTaskStartPayload,
@@ -1221,6 +1234,19 @@ const electronAPI = {
     unregister: () => ipcRenderer.invoke(IPC.MCP_UNREGISTER) as Promise<McpStatusPayload>,
     registerTarget: (targetId: string) =>
       ipcRenderer.invoke(IPC.MCP_REGISTER_TARGET, targetId) as Promise<McpRegisterTargetResult>,
+  },
+  tokenUsage: {
+    readQuota: (request?: QuotaReadRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_READ, request) as Promise<QuotaReadResult>,
+    agySensorStatus: () => ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_STATUS) as Promise<AgySensorStatus>,
+    installAgySensor: () =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_INSTALL) as Promise<AgySensorInstallResult>,
+    readInventory: (request: SurfaceInventoryRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_INVENTORY, request) as Promise<ProviderInventory>,
+    previewChanges: (request: SurfaceChangeRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_PREVIEW, request) as Promise<SurfacePreview>,
+    applyChanges: (request: SurfaceChangeRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_APPLY, request) as Promise<SurfaceApplyResult>,
   },
   firstRun: {
     check: () => ipcRenderer.invoke(IPC.FIRST_RUN_CHECK) as Promise<FirstRunCheckResult>,
