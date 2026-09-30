@@ -1250,7 +1250,7 @@ export const zh = {
   'settings.roleBindingArgsLabel': '{role} 额外参数',
   'settings.roleBindingHintNoAgent': '也请选择一个智能体 — 单独的模型不会被强制（wmux 无法分辨那是谁的 --model 标志）。',
   'settings.roleBindingHintNoGrammar': 'wmux 没有针对 {agent} 的已验证 --model 标志，因此该模型会被忽略。额外参数仍然生效。',
-  'settings.roleBindingHintInert': '添加模型或额外参数 — 仅一个智能体本身不构成任何强制。',
+  'settings.roleBindingHintInert': '添加模型、effort、跳过权限确认或额外参数 — 仅一个智能体本身不构成任何强制。',
   'settings.roleBindingEffortLabel': '{role} effort',
   'settings.roleBindingEffortDefault': 'Effort：默认',
   'settings.roleBindingSkipPermissions': '跳过权限确认',
