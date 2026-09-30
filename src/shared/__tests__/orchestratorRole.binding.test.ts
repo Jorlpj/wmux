@@ -548,6 +548,21 @@ describe('role binding launch options (effort, skip permissions)', () => {
     expect(applyRoleBinding(once, b).command).toBe(once);
   });
 
+  it('suppressSkipPermissions withholds only the skip flag (explicit per-launch OFF)', () => {
+    const b = { agent: 'claude', model: 'opus', effort: 'low', skipPermissions: true };
+    // A fresh launch still gets the role's skip flag.
+    expect(applyRoleBinding('claude', b).command).toBe(
+      'claude --model opus --effort low --dangerously-skip-permissions',
+    );
+    expect(applyRoleBinding('claude --permission-mode plan', b, { suppressSkipPermissions: true }).command).toBe(
+      'claude --model opus --effort low --permission-mode plan',
+    );
+    // Nothing else to apply → unchanged.
+    expect(
+      applyRoleBinding('claude', { agent: 'claude', skipPermissions: true }, { suppressSkipPermissions: true }).changed,
+    ).toBe(false);
+  });
+
   it('needs the agent named, like the model', () => {
     expect(applyRoleBinding('claude', { effort: 'low', skipPermissions: true }).changed).toBe(false);
   });

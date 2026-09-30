@@ -469,6 +469,10 @@ function alreadyEndsWithArgs(command: string, args: string): boolean {
  *    though `binding.args` may still be appended.
  *  - Otherwise: inject `--model <m>` right after the launcher token and append
  *    normalized `binding.args` at the end.
+ *  - `binding.effort` / `binding.skipPermissions` splice the agent's own flag
+ *    (agentLaunchOptions) next to the model, unless that flag is already on the
+ *    line; {@link ApplyRoleBindingOptions.suppressSkipPermissions} withholds the
+ *    skip flag for a launch whose toggle the user explicitly set OFF.
  *
  * `modelInjected` reports whether the model flag was ACTUALLY spliced in, so a
  * caller never advertises an enforced model when only `args` changed.
@@ -503,6 +507,14 @@ export interface ApplyRoleBindingOptions {
    * everywhere else (detection, resume, the role-binding dropdown).
    */
   extraAgents?: ReadonlySet<string>;
+  /**
+   * Do not inject the binding's skip-permissions flag on this launch. Set by the
+   * resume chip and the recovery pill when the user explicitly turned their
+   * "skip permissions" toggle OFF: that per-launch choice wins over the role
+   * (owner decision, #1677). Model, effort and args are still applied, and a
+   * skip flag already on the line is left alone.
+   */
+  suppressSkipPermissions?: boolean;
 }
 
 export function applyRoleBinding(
@@ -515,7 +527,8 @@ export function applyRoleBinding(
   const model = binding.model?.trim() || undefined;
   const args = binding.args?.trim() || undefined;
   const effort = binding.effort && EFFORT_TOKEN_RE.test(binding.effort) ? binding.effort : undefined;
-  if (!model && !args && !effort && !binding.skipPermissions) return unchanged;
+  const skipPermissions = !!binding.skipPermissions && !options?.suppressSkipPermissions;
+  if (!model && !args && !effort && !skipPermissions) return unchanged;
 
   const tokens = tokenize(command);
   if (tokens.length === 0) return unchanged;
@@ -560,7 +573,7 @@ export function applyRoleBinding(
   if (effort && launch?.effortFlag && !tokens.some((t) => launch.hasEffort?.(t.value))) {
     optionTokens.push(...launch.effortFlag(effort));
   }
-  if (binding.skipPermissions && launch?.skipPermissionsFlag) {
+  if (skipPermissions && launch?.skipPermissionsFlag) {
     const spellings = [launch.skipPermissionsFlag, ...(launch.skipPermissionsAliases ?? [])];
     if (!tokens.some((t) => spellings.includes(t.value))) optionTokens.push(launch.skipPermissionsFlag);
   }
