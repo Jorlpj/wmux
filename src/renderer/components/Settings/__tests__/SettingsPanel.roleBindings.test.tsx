@@ -95,12 +95,14 @@ describe('RoleBindingsView render', () => {
     expect(html).not.toContain('<datalist');
   });
 
-  // agy is a known launcher, but fan-out cannot start it with a positional
-  // prompt, so the role list must not offer it.
-  it('does not offer agy as a role-binding agent', () => {
-    const html = render();
-    expect(html).toContain('<option value="gemini">');
-    expect(html).not.toContain('<option value="agy">');
+  // agy is offered for role-bound panes and `wmux role resolve`; fan-out cannot
+  // start it with a positional prompt, and the row must say so rather than hide it.
+  it('offers agy and states inline that fan-out keeps its default agent', () => {
+    expect(render()).toContain('<option value="agy">');
+    const html = render({ Builder: { agent: 'agy', model: 'gemini-3.8-flash-low' } });
+    expect(html).toContain('data-role-binding-hint="Builder"');
+    expect(html).toContain('Fan-out cannot start agy with a prompt');
+    expect(roleBindingHint({ agent: 'agy', model: 'gemini-3.8-flash-low' })?.key).toBe('settings.roleBindingHintNoFanout');
   });
 
   it('offers the agent\'s own launch options once an agent is bound', () => {

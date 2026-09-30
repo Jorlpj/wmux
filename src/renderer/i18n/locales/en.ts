@@ -1194,6 +1194,8 @@ export const en = {
   'settings.roleBindingEffortDefault': 'Effort: default',
   'settings.roleBindingSkipPermissions': 'Skip permissions',
   'settings.roleBindingRefreshModels': 'Refresh models',
+  'settings.roleBindingHintNoFanout':
+    'Applies to a {agent} pane with this role and to `wmux role resolve`. Fan-out cannot start {agent} with a prompt, so fan-out tasks with this role keep their default agent.',
   'settings.tabTokens': 'Token usage',
   'settings.tokenProfile': 'Profile',
   'settings.tokenProfileDesc':

@@ -1175,6 +1175,8 @@ export const pl = {
   'settings.roleBindingEffortDefault': 'Effort: domyślny',
   'settings.roleBindingSkipPermissions': 'Pomijaj uprawnienia',
   'settings.roleBindingRefreshModels': 'Odśwież modele',
+  'settings.roleBindingHintNoFanout':
+    'Dotyczy panelu {agent} z tą rolą oraz `wmux role resolve`. Fan-out nie może uruchomić {agent} z poleceniem, więc zadania fan-out z tą rolą zachowują domyślnego agenta.',
   'settings.tabTokens': 'Zużycie tokenów',
   'settings.tokenProfile': 'Profil',
   'settings.tokenProfileDesc':

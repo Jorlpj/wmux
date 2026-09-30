@@ -1255,6 +1255,8 @@ export const zh = {
   'settings.roleBindingEffortDefault': 'Effort：默认',
   'settings.roleBindingSkipPermissions': '跳过权限确认',
   'settings.roleBindingRefreshModels': '刷新模型',
+  'settings.roleBindingHintNoFanout':
+    '适用于带此角色的 {agent} 面板和 `wmux role resolve`。扇出无法带提示启动 {agent}，因此此角色的扇出任务保持默认智能体。',
   'settings.tabTokens': '令牌用量',
   'settings.tokenProfile': '配置档',
   'settings.tokenProfileDesc':

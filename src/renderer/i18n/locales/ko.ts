@@ -703,6 +703,8 @@ export const ko = {
   'settings.roleBindingEffortDefault': 'Effort: 기본',
   'settings.roleBindingSkipPermissions': '권한 확인 건너뛰기',
   'settings.roleBindingRefreshModels': '모델 새로고침',
+  'settings.roleBindingHintNoFanout':
+    '이 역할을 가진 {agent} 패널과 `wmux role resolve`에 적용됩니다. 팬아웃은 {agent}를 프롬프트와 함께 시작할 수 없으므로 이 역할의 팬아웃 작업은 기본 에이전트를 유지합니다.',
   'settings.tabTokens': '토큰 사용량',
   'settings.tokenProfile': '프로필',
   'settings.tokenProfileDesc':

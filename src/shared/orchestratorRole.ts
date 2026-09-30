@@ -239,6 +239,12 @@ export const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
  *  binding reaches applyRoleAgent too, so the Settings list alone is no guard. */
 const NO_POSITIONAL_PROMPT_STEMS: ReadonlySet<string> = new Set(['agy']);
 
+/** True for a launcher fan-out cannot start with a positional prompt (its role
+ *  binding still applies to a role-bound pane and to `wmux role resolve`). */
+export function rejectsPositionalPrompt(agent: string | undefined): boolean {
+  return !!agent && NO_POSITIONAL_PROMPT_STEMS.has(agent);
+}
+
 /** Max lengths for the binding fields at the normalization boundary. `args` is
  *  the widest surface (arbitrary flags) so it gets the command-sized cap. */
 export const ROLE_BINDING_AGENT_MAX = 48;
