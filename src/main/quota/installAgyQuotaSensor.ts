@@ -71,7 +71,7 @@ export function escapeChainedCommandArg(cmd: string, platform: NodeJS.Platform =
 
 /**
  * Classifies the current statusLine entry in settings.json:
- * - 'none': missing, null, or undefined.
+ * - 'none': missing, null, undefined, empty/whitespace string, or object with missing/non-string/whitespace command.
  * - 'agy-sink': already configured to point to wmux's quota-sink.js.
  * - 'foreign': another command is configured.
  */
@@ -83,13 +83,16 @@ export function classifyAgyStatusLine(
   if (sl === undefined || sl === null) return 'none';
   if (typeof sl === 'object' && !Array.isArray(sl)) {
     const cmd = (sl as Record<string, unknown>).command;
-    if (typeof cmd === 'string') {
-      if (sinkScriptPath && cmd.includes(sinkScriptPath)) return 'agy-sink';
-      if (cmd.includes('quota-sink.js')) return 'agy-sink';
-    }
-  } else if (typeof sl === 'string') {
+    if (typeof cmd !== 'string' || cmd.trim().length === 0) return 'none';
+    if (sinkScriptPath && cmd.includes(sinkScriptPath)) return 'agy-sink';
+    if (cmd.includes('quota-sink.js')) return 'agy-sink';
+    return 'foreign';
+  }
+  if (typeof sl === 'string') {
+    if (sl.trim().length === 0) return 'none';
     if (sinkScriptPath && sl.includes(sinkScriptPath)) return 'agy-sink';
     if (sl.includes('quota-sink.js')) return 'agy-sink';
+    return 'foreign';
   }
   return 'foreign';
 }
