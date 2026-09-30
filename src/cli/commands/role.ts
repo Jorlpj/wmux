@@ -15,7 +15,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { dataSuffix } from '../../shared/constants';
+import { dataSuffix, getWmuxHomeDir } from '../../shared/constants';
+import { ROLE_TOOL_SURFACES, resolveRoleName, roleMcpArgv } from '../../shared/roleSurfaces';
 import { applyRoleBinding, normalizeRoleBindings, type RoleBinding } from '../../shared/orchestratorRole';
 import { tokenize } from '../../shared/agentResume';
 import { agyEffortOf } from '../../shared/modelCatalog';
@@ -48,9 +49,17 @@ export interface ResolvedRole {
   argv: string[];
   /** Flags only (argv without the launcher), for scripts that own the launcher. */
   flags: string[];
+  /** The role's wmux MCP surface. `argv` is opt-in: append it to the launch to
+   *  narrow the agent's wmux tools (see src/shared/roleSurfaces.ts). */
+  mcp?: { tools: string[]; argv: string[] };
 }
 
-export function resolveRole(role: string, binding: RoleBinding): ResolvedRole {
+/** The stdio bundle the CLI configs register (McpRegistrar stabilizes it there). */
+export function defaultMcpEntry(): string {
+  return path.join(getWmuxHomeDir(), 'mcp', 'index.js');
+}
+
+export function resolveRole(role: string, binding: RoleBinding, mcpEntry = defaultMcpEntry()): ResolvedRole {
   const agent = binding.agent;
   const effort = agent === 'agy' ? (binding.model ? agyEffortOf(binding.model) : undefined) : binding.effort;
   const argv = agent
@@ -65,7 +74,15 @@ export function resolveRole(role: string, binding: RoleBinding): ResolvedRole {
     freshContext: !!binding.freshContext,
     argv,
     flags: argv.slice(1),
+    ...mcpFor(role, agent, mcpEntry),
   };
+}
+
+function mcpFor(role: string, agent: string | undefined, entry: string): Pick<ResolvedRole, 'mcp'> {
+  const known = resolveRoleName(role);
+  if (known.kind !== 'role' || !agent) return {};
+  const argv = roleMcpArgv(agent, known.role, entry);
+  return argv ? { mcp: { tools: [...ROLE_TOOL_SURFACES[known.role]], argv } } : {};
 }
 
 export interface RoleDeps {

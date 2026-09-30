@@ -78,5 +78,27 @@ describe('wmux role resolve', () => {
 
   it('resolveRole reports fields without an agent', () => {
     expect(resolveRole('R', { model: 'm' })).toMatchObject({ role: 'R', model: 'm', argv: [], flags: [] });
+    expect(resolveRole('R', { model: 'm' }).mcp).toBeUndefined();
+  });
+
+  it('adds the role MCP surface as separate, opt-in tokens (argv itself is unchanged)', () => {
+    const entry = 'C:\\u\\.wmux\\mcp\\index.js';
+    const planner = resolveRole('Planner', { agent: 'claude' }, entry);
+    expect(planner.argv).toEqual(['claude']);
+    expect(planner.mcp?.tools).toContain('terminal_send');
+    expect(planner.mcp?.argv[0]).toBe('--mcp-config');
+    expect(JSON.parse(planner.mcp?.argv[1] ?? '')).toEqual({
+      mcpServers: { wmux: { command: 'node', args: [entry, '--role=Planner'] } },
+    });
+
+    const reviewer = resolveRole('Reviewer', { agent: 'codex' }, entry);
+    expect(reviewer.mcp).toEqual({
+      tools: ['terminal_read', 'workspace_list', 'pane_list', 'channel_join', 'channel_post'],
+      argv: ['-c', 'mcp_servers.wmux.args=["C:\\\\u\\\\.wmux\\\\mcp\\\\index.js","--role=Reviewer"]'],
+    });
+    expect(resolveRole('Tester', { agent: 'codex' }, entry).mcp?.argv).toEqual(['-c', 'mcp_servers.wmux.enabled=false']);
+    expect(resolveRole('Builder', { agent: 'agy' }, entry).mcp).toEqual({ tools: [], argv: [] });
+    expect(resolveRole('Builder', { agent: 'opencode' }, entry).mcp).toBeUndefined();
+    expect(resolveRole('Custom', { agent: 'claude' }, entry).mcp).toBeUndefined();
   });
 });
