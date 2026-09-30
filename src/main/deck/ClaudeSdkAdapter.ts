@@ -21,6 +21,7 @@
 // turn at a time, so a single `_active` handle is enough for `interrupt()`.
 
 import * as fs from 'fs';
+import type { ClaudeEffort } from '../../shared/claudeModels';
 import * as path from 'path';
 import * as os from 'os';
 import { pathToFileURL } from 'url';
@@ -166,6 +167,8 @@ export interface ClaudeSdkAdapterDeps {
   allowedTools?: string[];
   /** Model id; defaults to the SDK default (subscription's default model). */
   model?: string;
+  /** Effort level (SDK `options.effort` -> claude `--effort`); absent = default. */
+  effort?: ClaudeEffort;
   /** Per-turn ceiling on agentic tool loops. */
   maxTurns?: number;
   /** Non-default backend (GLM/Z.ai). Omit for Claude subscription. */
@@ -636,6 +639,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   /** BYOB approach A — see ClaudeSdkAdapterDeps.fullPower. */
   private readonly fullPower: boolean;
   private readonly model?: string;
+  private readonly effort?: ClaudeEffort;
   private readonly maxTurns: number;
   private readonly profile?: BrainEndpointProfile;
   private readonly loadMemory: () => string;
@@ -675,6 +679,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this.fullPower = deps.fullPower ?? false;
     this.allowedTools = deps.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
     this.model = deps.model;
+    this.effort = deps.effort;
     this.maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
     this.profile = deps.profile;
     // Default loader layers both partitions for THIS workspace (M1c). Bound to
@@ -834,6 +839,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         : this._systemPrompt;
     }
     if (this.model) options.model = this.model;
+    if (this.effort) options.effort = this.effort;
     if (this.mcpBundlePath) {
       // Spawn the MCP bundle with wmux's own Electron binary in Node mode
       // (ELECTRON_RUN_AS_NODE) instead of assuming a `node` on the END USER'S

@@ -50,6 +50,7 @@ import {
 } from '../../../shared/keymap';
 import { shortcutPressGuard } from '../../utils/shortcutBindings';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
+import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from '../../../shared/claudeModels';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
@@ -621,12 +622,6 @@ function disposeWorkspacePtys(ws: Workspace) {
 // between turns: main swaps the brain adapter on the next send after a change —
 // the conversation itself survives via the persisted session id.
 
-const ORCHESTRATOR_MODEL_OPTIONS = [
-  { value: '',       labelKey: 'settings.orchestratorModelDefault' },
-  { value: 'opus',   labelKey: '' }, // product names — no translation
-  { value: 'sonnet', labelKey: '' },
-  { value: 'haiku',  labelKey: '' },
-];
 
 // D2 — global role→model enforcement editor. One compact row per built-in role
 // (v1 binds only the 4 fixed roles; a custom-role combobox is deferred): an
@@ -799,6 +794,8 @@ function OrchestratorSection() {
   const t = useT();
   const deckBrainModel = useStore((s) => s.deckBrainModel);
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
+  const deckBrainEffort = useStore((s) => s.deckBrainEffort);
+  const setDeckBrainEffort = useStore((s) => s.setDeckBrainEffort);
   const deckBrainFullPower = useStore((s) => s.deckBrainFullPower);
   const setDeckBrainFullPower = useStore((s) => s.setDeckBrainFullPower);
   const deckBrainVendor = useStore((s) => s.deckBrainVendor);
@@ -886,12 +883,18 @@ function OrchestratorSection() {
       })
       .catch(() => setBriefingAutoShow(!autoShow));
   };
-  const options = ORCHESTRATOR_MODEL_OPTIONS.map((o) => ({
+  const options = CLAUDE_MODEL_OPTIONS.map((o) => ({
     value: o.value,
-    label: o.labelKey
-      ? t(o.labelKey)
-      : o.value.charAt(0).toUpperCase() + o.value.slice(1),
+    label: o.value === '' ? t('settings.orchestratorModelDefault') : o.label,
   }));
+  // A hand-typed / newer id that is not in the list still shows as itself.
+  if (deckBrainModel && !options.some((o) => o.value === deckBrainModel)) {
+    options.push({ value: deckBrainModel, label: deckBrainModel });
+  }
+  const effortOptions = [
+    { value: '', label: t('settings.orchestratorEffortDefault') },
+    ...CLAUDE_EFFORT_LEVELS.map((l) => ({ value: l, label: l })),
+  ];
   return (
     <>
       <SettingsSection data-testid="orchestrator-section">
@@ -932,6 +935,21 @@ function OrchestratorSection() {
             label={t('settings.orchestratorModel')}
           />
         </SettingRow>
+        {/* Effort reaches both Claude runtimes (SDK options.effort / TUI
+            --effort); an ACP brain ignores it, so the row hides there. */}
+        {deckBrainVendor !== 'hermes' && (
+          <SettingRow id="effort"
+            label={t('settings.orchestratorEffort')}
+            description={t('settings.orchestratorEffortDesc')}
+          >
+            <SettingSelect
+              value={deckBrainEffort}
+              onChange={setDeckBrainEffort}
+              options={effortOptions}
+              label={t('settings.orchestratorEffort')}
+            />
+          </SettingRow>
+        )}
         {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
             terminal brain (an interactive TUI) and ACP brains ignore the flag
             entirely (see createAdapter in deck.handler), so with the terminal

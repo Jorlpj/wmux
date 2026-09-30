@@ -755,3 +755,33 @@ describe('ClaudeSdkAdapter', () => {
     }
   });
 });
+
+describe('ClaudeSdkAdapter model + effort options', () => {
+  const run = async (deps: { model?: string; effort?: 'low' | 'max' }) => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => '',
+      ...deps,
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    return calls[0].options;
+  };
+
+  it('passes model and effort to query()', async () => {
+    const options = await run({ model: 'claude-opus-5-5', effort: 'low' });
+    expect(options.model).toBe('claude-opus-5-5');
+    expect(options.effort).toBe('low');
+  });
+
+  it('leaves both unset for the CLI defaults', async () => {
+    const options = await run({});
+    expect(options).not.toHaveProperty('model');
+    expect(options).not.toHaveProperty('effort');
+  });
+});
