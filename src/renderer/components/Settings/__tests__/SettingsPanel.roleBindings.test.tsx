@@ -31,6 +31,11 @@ describe('roleBindingHint — a row never lies about what it enforces (P2-4)', (
     expect(roleBindingHint({ agent: 'claude' })?.key).toBe('settings.roleBindingHintInert');
   });
 
+  it('counts an effort or skip permissions as something enforced', () => {
+    expect(roleBindingHint({ agent: 'claude', effort: 'low' })).toBeUndefined();
+    expect(roleBindingHint({ agent: 'codex', skipPermissions: true })).toBeUndefined();
+  });
+
   it('is silent for a fully valid binding', () => {
     expect(roleBindingHint({ agent: 'claude', model: 'haiku' })).toBeUndefined();
     expect(roleBindingHint({ agent: 'codex', model: 'gpt-5.5', args: '--verbose' })).toBeUndefined();
@@ -110,8 +115,6 @@ describe('RoleBindingsView render', () => {
     expect(claude).toContain('aria-label="Builder effort"');
     const agy = render({ Builder: { agent: 'agy' } });
     expect(agy).toContain('Skip permissions');
-    // Not offered until a task-dispatch path honours it.
-    expect(claude).not.toContain('Fresh context per task');
     expect(render()).not.toContain('data-role-binding-options');
   });
 

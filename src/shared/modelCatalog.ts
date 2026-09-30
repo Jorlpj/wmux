@@ -25,8 +25,6 @@ export interface CatalogModel {
   label: string;
   /** Effort levels this model accepts, when the CLI reports them. */
   efforts?: string[];
-  /** The CLI's default effort for this model, when reported. */
-  defaultEffort?: string;
 }
 
 export type ModelCatalogStatus = 'ok' | 'static' | 'unavailable';
@@ -63,8 +61,7 @@ export function parseAgyModels(text: string): CatalogModel[] {
     const [id, label] = raw.split('\t');
     if (!id || label === undefined || !/^[A-Za-z0-9._-]{1,64}$/.test(id.trim())) continue;
     const trimmed = id.trim();
-    const effort = agyEffortOf(trimmed);
-    out.push({ id: trimmed, label: label.trim() || trimmed, ...(effort ? { defaultEffort: effort } : {}) });
+    out.push({ id: trimmed, label: label.trim() || trimmed });
   }
   return out;
 }
@@ -93,7 +90,6 @@ export function parseCodexModels(text: string): CatalogModel[] {
       id,
       label: typeof m.display_name === 'string' && m.display_name ? m.display_name : id,
       ...(efforts.length ? { efforts } : {}),
-      ...(typeof m.default_reasoning_level === 'string' ? { defaultEffort: m.default_reasoning_level } : {}),
     });
   }
   return out;

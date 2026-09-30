@@ -76,6 +76,15 @@ describe('wmux role resolve', () => {
     expect(defaultSessionPath({ XDG_CONFIG_HOME: '/x' }, 'linux')).toBe(path.join('/x', `wmux${dataSuffix()}`, 'session.json'));
   });
 
+  it('ignores a stale freshContext field in session.json', async () => {
+    const session = JSON.stringify({
+      orchestratorRoleBindings: { Builder: { agent: 'claude', effort: 'low', freshContext: true } },
+    });
+    const r = JSON.parse((await run(['resolve', 'Builder'], true, () => session)).out[0]);
+    expect(r).not.toHaveProperty('freshContext');
+    expect(r.argv).toEqual(['claude', '--effort', 'low']);
+  });
+
   it('resolveRole reports fields without an agent', () => {
     expect(resolveRole('R', { model: 'm' })).toMatchObject({ role: 'R', model: 'm', argv: [], flags: [] });
   });

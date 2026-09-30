@@ -661,7 +661,7 @@ export function roleBindingHint(b: RoleBinding):
   if (b.model && b.agent && !launcherSupportsModelFlag(b.agent)) {
     return { key: 'settings.roleBindingHintNoGrammar', params: { agent: b.agent } };
   }
-  if (b.agent && !b.model && !b.args && !b.effort && !b.skipPermissions && !b.freshContext) {
+  if (b.agent && !b.model && !b.args && !b.effort && !b.skipPermissions) {
     return { key: 'settings.roleBindingHintInert' };
   }
   return undefined;
@@ -840,9 +840,6 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                     {t('settings.roleBindingSkipPermissions')}
                   </label>
                 )}
-                {/* freshContext is stored and normalized, but no task-dispatch path
-                    reads it yet (input.send sees every message, not tasks), so
-                    it is not offered until one does. */}
                 {onRefreshModels && b.agent !== 'claude' && (
                   <UiButton
                     variant="ghost"

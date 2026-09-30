@@ -43,7 +43,6 @@ export interface ResolvedRole {
   /** For agy this is the model id suffix, never a separate flag. */
   effort?: string;
   skipPermissions: boolean;
-  freshContext: boolean;
   /** The full launch, launcher first, as exec-ready tokens. */
   argv: string[];
   /** Flags only (argv without the launcher), for scripts that own the launcher. */
@@ -62,7 +61,6 @@ export function resolveRole(role: string, binding: RoleBinding): ResolvedRole {
     ...(binding.model ? { model: binding.model } : {}),
     ...(effort ? { effort } : {}),
     skipPermissions: !!binding.skipPermissions,
-    freshContext: !!binding.freshContext,
     argv,
     flags: argv.slice(1),
   };

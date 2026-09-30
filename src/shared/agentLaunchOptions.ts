@@ -13,8 +13,6 @@
 //   agy 1.2.x       `--dangerously-skip-permissions` in --help. Effort is part
 //                   of the model id (`gemini-3.8-flash-low`); wmux never emits
 //                   agy's own `--effort`, so the two can never disagree.
-// Fresh-context commands are the agents' own slash commands (`/clear` claude,
-// `/new` codex); agy has none verified, so the option is not offered for it.
 
 export interface AgentLaunchGrammar {
   /** Tokens that set the effort, or absent when effort is not a flag. */
@@ -25,8 +23,6 @@ export interface AgentLaunchGrammar {
   skipPermissionsFlag?: string;
   /** Other spellings that already mean "skip permissions" on this CLI. */
   skipPermissionsAliases?: readonly string[];
-  /** Slash command that starts a fresh conversation in a running session. */
-  freshContextCommand?: string;
   /** Effort is encoded in the model id suffix (agy). */
   effortInModelId?: boolean;
 }
@@ -37,14 +33,12 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
     hasEffort: (t) => t === '--effort' || t.startsWith('--effort='),
     skipPermissionsFlag: '--dangerously-skip-permissions',
     skipPermissionsAliases: ['--allow-dangerously-skip-permissions'],
-    freshContextCommand: '/clear',
   },
   codex: {
     effortFlag: (e) => ['-c', `model_reasoning_effort=${e}`],
     hasEffort: (t) => t.includes('model_reasoning_effort'),
     skipPermissionsFlag: '--dangerously-bypass-approvals-and-sandbox',
     skipPermissionsAliases: ['--yolo'],
-    freshContextCommand: '/new',
   },
   agy: {
     skipPermissionsFlag: '--dangerously-skip-permissions',

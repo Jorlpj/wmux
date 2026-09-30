@@ -554,9 +554,22 @@ describe('role binding launch options (effort, skip permissions)', () => {
 
   it('normalizes the new fields strictly', () => {
     expect(
-      normalizeRoleBinding({ agent: 'codex', effort: 'high; rm', skipPermissions: 'true', freshContext: true }),
-    ).toEqual({ agent: 'codex', freshContext: true });
+      normalizeRoleBinding({ agent: 'codex', effort: 'high; rm', skipPermissions: 'true' }),
+    ).toEqual({ agent: 'codex' });
     expect(normalizeRoleBinding({ skipPermissions: true })).toEqual({ skipPermissions: true });
     expect(normalizeRoleBinding({ effort: 'medium' })).toEqual({ effort: 'medium' });
+  });
+
+  // An earlier draft of this feature stored `freshContext`; a session.json that
+  // still carries it loads as if the field were never there.
+  it('drops a stale freshContext field from an old session.json', () => {
+    expect(normalizeRoleBinding({ agent: 'codex', effort: 'high', freshContext: true })).toEqual({
+      agent: 'codex',
+      effort: 'high',
+    });
+    expect(normalizeRoleBinding({ freshContext: true })).toBeUndefined();
+    expect(normalizeRoleBindings({ Builder: { agent: 'claude', freshContext: true } })).toEqual({
+      Builder: { agent: 'claude' },
+    });
   });
 });

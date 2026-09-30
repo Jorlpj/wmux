@@ -95,9 +95,6 @@ export interface RoleBinding {
   effort?: string;
   /** Launch with the agent's own skip-permission-prompts flag. */
   skipPermissions?: boolean;
-  /** Start each dispatched task with the agent's fresh-context command
-   *  (`/clear`, `/new`). Read by dispatchers, never spliced into a launch. */
-  freshContext?: boolean;
 }
 
 /** Operator-level, cross-workspace. Keyed by role name (ORCH_ROLES ∪ custom). */
@@ -313,7 +310,7 @@ export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
   const src = input as {
     agent?: unknown; model?: unknown; args?: unknown;
-    effort?: unknown; skipPermissions?: unknown; freshContext?: unknown;
+    effort?: unknown; skipPermissions?: unknown;
   };
   const binding: RoleBinding = {};
   // Agent normalizes to a launcher stem so it compares cleanly against a live
@@ -328,10 +325,9 @@ export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   if (typeof src.effort === 'string' && EFFORT_TOKEN_RE.test(src.effort)) binding.effort = src.effort;
   // Strict booleans only: a hand-edited "true" string does not switch it on.
   if (src.skipPermissions === true) binding.skipPermissions = true;
-  if (src.freshContext === true) binding.freshContext = true;
   if (
     binding.agent === undefined && binding.model === undefined && binding.args === undefined &&
-    binding.effort === undefined && !binding.skipPermissions && !binding.freshContext
+    binding.effort === undefined && !binding.skipPermissions
   ) {
     return undefined;
   }
