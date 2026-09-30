@@ -40,6 +40,19 @@ tests that spawn real OS resources, such as ConPTY shells or Windows process
 probes. `npm test` runs these runtime tests serially after the regular parallel
 suite to avoid cross-test contention.
 
+### Running tests as an agent
+
+Coding agents pay for every line of test output they read. While working,
+run only the files you touched and keep the output short:
+
+```
+npm run test:agent -- src/shared/__tests__/foo.test.ts   # dots + summary
+npm run test:changed                                      # files changed vs git HEAD
+npm run typecheck:quiet                                   # errors + one line
+```
+
+Run the full `npm test` and `npm run typecheck` once before opening the PR.
+
 ### Commit Style
 
 ```

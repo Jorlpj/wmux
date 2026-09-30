@@ -3,6 +3,7 @@
 //
 //   node scripts/typecheck.mjs                 every slice (what CI runs)
 //   node scripts/typecheck.mjs src tests-main  only the named slices
+//   node scripts/typecheck.mjs --quiet         errors only, plus one summary line
 //
 // The slices live in scripts/typecheck/*.json; why they exist is in
 // scripts/lib/typecheck-slices.mjs. The checks before and around tsc stand in
@@ -27,9 +28,12 @@ function fail(header, lines) {
 }
 
 function main() {
-  const asked = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const quiet = argv.includes('--quiet');
+  const asked = argv.filter((a) => a !== '--quiet');
   const names = asked.length > 0 ? asked : SLICES;
   assertSlicesExist(names);
+  const startedAll = Date.now();
 
   const configProblems = sliceConfigProblems(SLICES);
   if (configProblems.length > 0) fail('slice configs are invalid', configProblems);
@@ -63,7 +67,7 @@ function main() {
 
     const ok = run.status === 0 && casing.length === 0;
     const secs = ((Date.now() - started) / 1000).toFixed(1);
-    console.log(`typecheck: ${name} ${ok ? 'ok' : 'FAILED'} (${secs}s)`);
+    if (!quiet || !ok) console.log(`typecheck: ${name} ${ok ? 'ok' : 'FAILED'} (${secs}s)`);
     if (!ok) failed.push(name);
   }
 
@@ -71,6 +75,7 @@ function main() {
     console.error(`typecheck: failed in ${failed.join(', ')}`);
     process.exit(1);
   }
+  if (quiet) console.log(`typecheck: ok (${names.length} slices, ${((Date.now() - startedAll) / 1000).toFixed(1)}s)`);
 }
 
 main();
