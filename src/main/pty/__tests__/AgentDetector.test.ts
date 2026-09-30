@@ -461,6 +461,15 @@ describe('AgentDetector', () => {
       expect(cb.mock.calls.map((c) => c[0].status)).toContain('awaiting_input');
     });
 
+    it('reports a trust screen that arrives before any banner', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Do you trust the contents of this project?\n');
+      expect(det.getLastAgent()).toBe('Antigravity CLI');
+      expect(cb.mock.calls.map((c) => c[0].status)).toContain('awaiting_input');
+    });
+
     it('reads the footer: esc to cancel is running, ? for shortcuts is waiting', () => {
       const { det, cb } = agyGated();
       cb.mockClear();

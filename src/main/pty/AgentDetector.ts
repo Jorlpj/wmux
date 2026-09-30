@@ -351,10 +351,12 @@ const AGENT_PATTERNS: AgentPattern[] = [
   // `esc to cancel` while a turn runs, `? for shortcuts` once the composer is
   // idle, both followed on the same row by `<mode> · <model> · <effort>`.
   // The trust screen shows before the banner in an untrusted folder.
+  // As with Codex, the trust phrase is part of the gate: when it arrives
+  // before any banner, the same line opens the gate and emits awaiting_input.
   {
     agent: 'Antigravity CLI',
     slug: 'agy',
-    gate: /Antigravity\s*CLI/,
+    gate: /Antigravity\s*CLI|Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*project\?/,
     patterns: [
       { regex: /^\s*Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*project\?/, status: 'awaiting_input', message: 'Project trust prompt' },
       { regex: /^\s*esc\s*to\s*cancel/,                                        status: 'running',        message: 'Working' },
