@@ -265,6 +265,7 @@ let deviceStore: DeviceStore | null = null;
 // registerRpcHandlers runs, which is before either site.
 let sessionLifecycle: WebSessionLifecycle | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
+let noteCodexServerLost: ((id:string)=>void) | undefined;
 // Late-bound: the pipe server that carries notices exists only after boot.
 let notifyCodexIdentityRefused: ((id:string,reason:string)=>void) | undefined;
 const codexRefusalNoticedAt = new Map<string,number>();
@@ -312,6 +313,10 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
     },
     decisionSettled: (id,ref,reason)=>{
       void approvalRegistry?.expireNative(id,{ adapter: 'codex', ...ref },reason).catch(()=>undefined);
+    },
+    serverLost: (id)=>{
+      log('info',`[codex-relay] the Codex account server under ${id} is gone; its running turn is over`);
+      noteCodexServerLost?.(id);
     },
   });
 // Contract v-next item 2: account status read from a pane's live relay account.
@@ -7400,6 +7405,11 @@ async function main(): Promise<void> {
     if (before !== JSON.stringify(owner.meta.codexRelayResume) && !stateWriter.saveImmediate(buildState(sessionManager))) {
       throw new Error('Codex recovery selection could not be persisted');
     }
+  };
+  // #1671 — the account server under this pane's Codex is gone: a turn it
+  // was running is over, and no Stop hook or transcript end will say so.
+  noteCodexServerLost = (id) => {
+    sessionManager.getSession(id)?.bridge.noteServerLost();
   };
 
   recordHistory(store => store.reconcileLiveSessions(new Set(sessionManager.listLiveSessions().map(s => s.id))));
