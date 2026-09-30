@@ -28,6 +28,13 @@ export interface McpStatusPayload {
   targets: McpTargetStatusPayload[];
 }
 
+export interface McpRegisterTargetResult {
+  id: string;
+  success: boolean;
+  error?: string;
+  status: McpStatusPayload;
+}
+
 function serialize(status: McpRegistrarStatus): McpStatusPayload {
   return {
     targets: status.targets.map((t) => ({
@@ -103,9 +110,37 @@ export function registerMcpHandlers(
     }),
   );
 
+  ipcMain.removeHandler(IPC.MCP_REGISTER_TARGET);
+  ipcMain.handle(
+    IPC.MCP_REGISTER_TARGET,
+    wrapHandler(
+      IPC.MCP_REGISTER_TARGET,
+      async (_event, targetId: unknown): Promise<McpRegisterTargetResult> => {
+        if (typeof targetId !== 'string' || !targetId.trim()) {
+          throw new Error('Invalid target id for MCP registration');
+        }
+        const token = getAuthToken();
+        if (!token) {
+          throw new Error('MCP registration unavailable: auth token not ready (pipe server still starting)');
+        }
+        const reregisterSkip = externalRegistrationSkipReason();
+        if (reregisterSkip) throw new Error(reregisterSkip);
+
+        const targetResult = await registrar.registerTarget(token, targetId.trim());
+        return {
+          id: targetResult.id,
+          success: targetResult.success,
+          ...(targetResult.error ? { error: targetResult.error } : {}),
+          status: serialize(registrar.getStatus()),
+        };
+      },
+    ),
+  );
+
   return () => {
     ipcMain.removeHandler(IPC.MCP_CHECK);
     ipcMain.removeHandler(IPC.MCP_REREGISTER);
     ipcMain.removeHandler(IPC.MCP_UNREGISTER);
+    ipcMain.removeHandler(IPC.MCP_REGISTER_TARGET);
   };
 }
