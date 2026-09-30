@@ -38,7 +38,8 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import type { RpcMethod } from '../../../shared/rpc';
-import { teardownWorkspaceDeckState, surfaceStrandedWork } from '../../deck/deckWorkspaceTeardown';
+import { teardownWorkspaceDeckState } from '../../deck/deckWorkspaceTeardown';
+import { renderStrandedDeckWorkBlock } from '../../deck/deckWorkStore';
 
 /** Positive allow-list — only channel/principal-mutating methods may ride the
  *  renderer trust path. Reads and every other RPC are rejected so this surface
@@ -169,7 +170,12 @@ export function registerChannelLocalHandlers(getDaemonClient: () => DaemonClient
         try {
           const wsId = p.workspaceId.trim();
           await teardownWorkspaceDeckState(wsId, {
-            onStrandedWork: (work) => surfaceStrandedWork(wsId, work, 'cleared'),
+            // Log only: raising a Deck decision here would re-create state for the workspace
+            // being removed (the decision step of the teardown runs right after this callback).
+            onStrandedWork: (work) => {
+              // eslint-disable-next-line no-console
+              console.warn(`[channelLocal] workspace ${wsId} removed with delegated work:`, renderStrandedDeckWorkBlock(work));
+            },
           });
         } catch (err) {
           // eslint-disable-next-line no-console
