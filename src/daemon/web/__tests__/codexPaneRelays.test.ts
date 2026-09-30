@@ -1,14 +1,34 @@
 import {describe,it,expect,vi} from 'vitest';
 import type {ManagedSession} from '../../DaemonSessionManager';
 import {CodexPaneRelays} from '../codexPaneRelays';
-import type {createCodexTuiRelay} from '../codexTuiRelay';
+import {CodexUpstreamError,type createCodexTuiRelay} from '../codexTuiRelay';
 const owner=(id='pane')=>({meta:{id,state:'attached'}} as ManagedSession);
 function relay() {
-  const state = {retired:false,selected:true};
+  // `active`: the running turn the pane's stream reported; `complete` plays
+  // that stream's `turn/completed`.
+  const state = {retired:false,disconnected:false,selected:true,active:undefined as string|undefined,ended:new Map<string,string>(),
+    waiters:new Set<{turnId:string;resolve:(status:string|undefined)=>void}>()};
   return {url:'unix:///private/socket',state,
     current:()=>state.selected ? {threadId:'thread',cwd:'/repo',generation:1} : undefined,
-    retired:()=>state.retired,close:vi.fn(async()=> { /* noop */ }),
-    answer:vi.fn(async(_threadId:string,_requestId:string,_decision:'accept'|'cancel'):Promise<'ok'|'not-found'|'unavailable'>=>'ok')};
+    retired:()=>state.retired,disconnected:()=>state.disconnected,close:vi.fn(async()=> { /* noop */ }),
+    answer:vi.fn(async(_threadId:string,_requestId:string,_decision:'accept'|'cancel'):Promise<'ok'|'not-found'|'unavailable'>=>'ok'),
+    activeTurn:(_threadId:string)=>state.active,
+    turnEnded:(_threadId:string,turnId:string)=>state.ended.get(turnId),
+    waitTurnEnd:(_threadId:string,turnId:string,ms:number)=>{
+      let cancel=()=>{ /* settled */ };
+      const ended=new Promise<string|undefined>(resolve=>{
+        const timer=setTimeout(()=>finish(undefined),ms);
+        const waiter={turnId,resolve:(status:string|undefined)=>finish(status)};
+        const finish=(status:string|undefined)=>{clearTimeout(timer);state.waiters.delete(waiter);resolve(status);};
+        state.waiters.add(waiter);cancel=()=>finish(undefined);
+      });
+      return {ended,cancel:()=>cancel()};
+    },
+    interrupt:vi.fn(async(_threadId:string,_turnId:string,_timeoutMs?:number):Promise<unknown>=>({})),
+    complete:(turnId:string,status:string)=>{
+      state.ended.set(turnId,status);if(state.active===turnId)state.active=undefined;
+      for(const waiter of [...state.waiters])if(waiter.turnId===turnId)waiter.resolve(status);
+    }};
 }
 describe('Codex pane relay lifetime',()=>{
   it('publishes selection only for its committed managed instance',async()=>{
@@ -43,6 +63,19 @@ describe('Codex pane relay lifetime',()=>{
     // A foreign owner retires the entry, and a retired entry stays non-live.
     expect(registry.liveSelection('pane',owner())).toEqual({live:false});
     expect(registry.liveSelection('pane',pane)).toEqual({live:false});
+    await registry.shutdown();
+  });
+  it('names the account home only for a live, committed relay (account status)',async()=>{
+    const connection=relay();const registry=new CodexPaneRelays(async()=>connection);
+    const lease=await registry.prepare('pane','/h/account-a');const pane=owner();
+    expect(registry.accountHome('pane',pane)).toBeUndefined();
+    expect(registry.liveIds()).toEqual([]);
+    lease.commit(pane);
+    expect(registry.accountHome('pane',pane)).toBe('/h/account-a');
+    expect(registry.liveIds()).toEqual(['pane']);
+    connection.state.retired=true;
+    expect(registry.accountHome('pane',pane)).toBeUndefined();
+    expect(registry.liveIds()).toEqual([]);
     await registry.shutdown();
   });
   it('closes a relay that finishes preparing after pane retirement',async()=>{
@@ -218,5 +251,127 @@ describe('Codex pane relay phone answers',()=>{
     await expect(registry.answer(ref,'approve')).resolves.toBe('not-found');
     expect(relayOf('a').answer).not.toHaveBeenCalled();
     await registry.shutdown();
+  });
+});
+describe('Codex pane relay native interrupt',()=>{
+  async function live() {
+    const connection=relay();const registry=new CodexPaneRelays(async()=>connection);
+    const lease=await registry.prepare('pane');const pane=owner();lease.commit(pane);
+    connection.state.active='turn-aimed';
+    const aimed=registry.activeTurn('pane',pane)!;
+    return {connection,registry,pane,aimed};
+  }
+  it('is interrupted only when the pane\'s own stream reports the pinned turn interrupted',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    expect(aimed).toEqual({relayId:expect.any(String),threadId:'thread',turnId:'turn-aimed'});
+    const answered=vi.fn();
+    connection.interrupt.mockImplementation(async()=>{connection.complete('turn-aimed','interrupted');return {};});
+    const result=await registry.interrupt('pane',pane,aimed,{timeoutMs:1000,answered});
+    expect(result).toEqual({outcome:'interrupted',turn:aimed});
+    expect(connection.interrupt).toHaveBeenCalledWith('thread','turn-aimed',1000);
+    expect(registry.turnEnded('pane',aimed)).toBe('interrupted');
+    await vi.waitFor(()=>expect(answered).toHaveBeenCalledOnce());
+    await registry.shutdown();
+  });
+  it('never counts {} alone, nor a late {} after another turn\'s interrupt, as ended',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.interrupt.mockImplementation(async()=>{connection.complete('turn-other','interrupted');return {};});
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'uncertain'});
+    await registry.shutdown();
+  });
+  it('bounds an interrupt that never answers (the hang guard) and reports uncertain, not ended',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.interrupt.mockImplementation(()=>new Promise(()=>{ /* held forever, as the server does */ }));
+    const started=Date.now();
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:40})).resolves.toMatchObject({outcome:'uncertain'});
+    expect(Date.now()-started).toBeLessThan(1000);
+    await registry.shutdown();
+  });
+  it('returns at once when the turn ends some other way, without waiting for a held request',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.interrupt.mockImplementation(()=>{connection.complete('turn-aimed','completed');return new Promise(()=>{ /* held */ });});
+    const started=Date.now();
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:5000})).resolves.toMatchObject({outcome:'uncertain'});
+    expect(Date.now()-started).toBeLessThan(1000);
+    await registry.shutdown();
+  });
+  it('sends nothing for a pinned turn that already ended or was replaced (the server would hold it)',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.complete('turn-aimed','completed');
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:5000})).resolves.toEqual({outcome:'not-written',turn:aimed});
+    expect(registry.stillRunning('pane',pane,aimed)).toBe(false);
+    // A newer turn is running now: the pinned one is still not sent, nor is the newer one.
+    connection.state.active='turn-newer';
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:5000})).resolves.toEqual({outcome:'not-written',turn:aimed});
+    expect(registry.stillRunning('pane',pane,aimed)).toBe(false);
+    expect(connection.interrupt).not.toHaveBeenCalled();
+    await registry.shutdown();
+  });
+  it('reports not-written for a refused request (wrong turn, unknown thread) without waiting out the bound',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.interrupt.mockRejectedValue(new CodexUpstreamError('refused'));
+    const started=Date.now();
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:5000})).resolves.toMatchObject({outcome:'not-written'});
+    expect(Date.now()-started).toBeLessThan(1000);
+    await registry.shutdown();
+  });
+  it('writes nothing without a live owned relay on the pinned thread',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.state.selected=false;
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'not-written'});
+    connection.state.selected=true;
+    await expect(registry.interrupt('pane',owner('other'),aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'not-written'});
+    expect(connection.interrupt).not.toHaveBeenCalled();
+    await registry.shutdown();
+  });
+});
+describe('Codex pane relay after a lost server link (#1671)',()=>{
+  it('starts a new relay incarnation on a lost link, reads as not live until relinked, and reports a gone server once',async()=>{
+    let options:RelayOptions|undefined;const connection=relay();
+    const pending=vi.fn();const settled=vi.fn();const serverLost=vi.fn();
+    const runtime=vi.fn(async(_id:string,_codeHome?:string)=> { /* the runtime start */ });
+    const registry=new CodexPaneRelays((async(o:RelayOptions)=>{options=o;return connection;}) as unknown as typeof createCodexTuiRelay,undefined,undefined,
+      {ensureRuntime:runtime,decisionPending:pending,decisionSettled:settled,serverLost});
+    const lease=await registry.prepare('pane','/h/.codex');const pane=owner();lease.commit(pane);
+    options!.policy!.recordOwner('thread');
+    options!.policy!.decisionPending?.('0',{method:'item/commandExecution/requestApproval',threadId:'thread',question:'Run?',toolName:'command'});
+    const ref=pending.mock.calls[0]![2];
+    connection.state.active='turn-1';
+    const aimed=registry.activeTurn('pane',pane)!;
+    runtime.mockClear();
+    // The relay settles the old link's requests under the old incarnation, then reports the loss.
+    options!.policy!.decisionSettled?.('0','thread','pane-gone');
+    expect(settled).toHaveBeenCalledWith('pane',{relayId:ref.relayId,threadId:'thread',requestId:'0'},'pane-gone');
+    connection.state.disconnected=true;
+    options!.onLinkLost?.();
+    // Disconnected: no live relay, so no account status, no native cancel, no selection authority.
+    expect(registry.liveSelection('pane',pane)).toEqual({live:false});
+    expect(registry.accountHome('pane',pane)).toBeUndefined();
+    expect(registry.activeTurn('pane',pane)).toBeUndefined();
+    expect(registry.liveIds()).toEqual([]);
+    expect(serverLost).not.toHaveBeenCalled();
+    // Relinked to the same server: its turn is live again, under the new incarnation.
+    connection.state.disconnected=false;
+    expect(registry.accountHome('pane',pane)).toBe('/h/.codex');
+    expect(registry.stillRunning('pane',pane,aimed)).toBe(false);
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'not-written'});
+    await expect(registry.answer(ref,'approve')).resolves.toBe('not-found');
+    expect(connection.interrupt).not.toHaveBeenCalled();
+    expect(connection.answer).not.toHaveBeenCalled();
+    const now=registry.activeTurn('pane',pane)!;
+    expect(now.relayId).not.toBe(aimed.relayId);
+    expect(registry.stillRunning('pane',pane,now)).toBe(true);
+    // A gone server is reported for the committed pane.
+    options!.onServerLost?.();
+    expect(serverLost).toHaveBeenCalledExactlyOnceWith('pane');
+    await options!.ensureUpstream?.();
+    expect(runtime).toHaveBeenCalledWith('pane','/h/.codex');
+    await registry.shutdown();
+    // A retired entry neither reports nor starts anything.
+    runtime.mockClear();serverLost.mockClear();
+    options!.onLinkLost?.();options!.onServerLost?.();
+    await options!.ensureUpstream?.();
+    expect(runtime).not.toHaveBeenCalled();
+    expect(serverLost).not.toHaveBeenCalled();
   });
 });

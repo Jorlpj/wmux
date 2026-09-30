@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v3.63.0 sources.** This file is produced by
+> **Generated from wmux v3.64.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -33,8 +33,8 @@ Total: **189** methods (`ALL_RPC_METHODS` in
 - `capability` is the `wmuxPermissions` capability the method requires.
   `null` = bootstrap/introspection (any caller, no declaration needed).
   `wmux.internal` = reserved prefix no plugin can declare (internal-only;
-  legacy envelope-less callers grandfather through until #1111 closes
-  the lane — first release on or after 2026-09-30).
+  reached only through wmux's own curated lanes; an envelope-less caller
+  is refused since #1111 closed the legacy grandfather lane).
 - `riskClass` drives the approval-dialog wording; blank for `null` and
   `wmux.internal` methods.
 
