@@ -1243,7 +1243,7 @@ export function fleetTitle(pane: FleetPane, mission?: WorkTask): string {
   if (pane.paneLabel?.trim()) return pane.paneLabel.trim();
   if (mission?.title.trim()) return mission.title.trim();
   const title = pane.title.replace(/^[✳✻✽✶✢*]\s*/, '').trim();
-  const generic = /^(claude(?: code)?|codex(?: cli)?|gemini(?: cli)?|terminal|shell|zsh|bash|pwsh|powershell|cmd(?:\.exe)?)$/i;
+  const generic = /^(claude(?: code)?|codex(?: cli)?|gemini(?: cli)?|agy|antigravity(?: cli)?|terminal|shell|zsh|bash|pwsh|powershell|cmd(?:\.exe)?)$/i;
   if (title && !generic.test(title) && title.toLowerCase() !== pane.agentName?.toLowerCase()) return title;
   return pane.workspaceName;
 }
