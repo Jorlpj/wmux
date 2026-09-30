@@ -89,11 +89,15 @@ export class ModelCatalog {
   }
 
   private async discover(agent: string, source: Source): Promise<ModelCatalogResult> {
+    // One retry: the first discovery after launch was seen to fail once
+    // (agy, 2026-09-30) and succeed seconds later with nothing changed.
     let models: CatalogModel[] = [];
-    try {
-      models = source.parse(await this.run(source.command, source.args));
-    } catch {
-      models = [];
+    for (let attempt = 0; attempt < 2 && models.length === 0; attempt++) {
+      try {
+        models = source.parse(await this.run(source.command, source.args));
+      } catch {
+        models = [];
+      }
     }
     const result: ModelCatalogResult = {
       agent,
@@ -103,8 +107,13 @@ export class ModelCatalog {
     };
     const cache = this.readCache();
     cache[agent] = result;
-    // A failed write only costs a re-discovery next launch.
-    await atomicWriteJSON(this.cachePath, cache).catch(() => undefined);
+    // Only successes are persisted; a failure is remembered in memory for
+    // FAILURE_TTL_MS, so a restart always tries again. A failed write only
+    // costs a re-discovery next launch.
+    if (result.status === 'ok') {
+      const persisted = Object.fromEntries(Object.entries(cache).filter(([, v]) => v.status === 'ok'));
+      await atomicWriteJSON(this.cachePath, persisted).catch(() => undefined);
+    }
     return result;
   }
 
