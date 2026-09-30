@@ -294,7 +294,9 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
   Keyboard (shortcuts, prefix mode, custom keybindings) · Notifications. Group
   **Agents**: Claude Code (setup card, plugin signal health, usage meter, MCP
   registration) · Accounts · Orchestrator · Roles & fan-out (role bindings,
-  A2A, fan-out approval and worker permissions) · Browser. Group
+  A2A, fan-out approval and worker permissions) · Token usage (a model/effort
+  profile applied over the role bindings, per-role launch and wmux tool
+  surface, Deck brain levers; fork addition 2026-09-30) · Browser. Group
   **Connections**: Remote & phone (paired devices, quick commands; the live
   serve toggle stays in the sidebar Remote popover) · LAN. Then About. Each
   tab answers one question; a setting lives on exactly one tab and the search

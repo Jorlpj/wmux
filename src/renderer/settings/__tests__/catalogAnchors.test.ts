@@ -22,6 +22,7 @@ const SOURCES = [
   'ClaudeIntegrationSection.tsx',
   'IntegrationSetupSection.tsx',
   'FanoutPresetsSection.tsx',
+  'tabs/TokenUsageTab.tsx',
 ];
 
 function anchoredIds(): Set<string> {

@@ -86,6 +86,7 @@ import Select from '../ui/Select';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import Badge from '../ui/Badge';
+import TokenUsageTab from './tabs/TokenUsageTab';
 import './settings.css';
 import { SettingsSection, SettingRow, SettingNote } from './SettingsLayout';
 
@@ -5324,6 +5325,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
     accounts:             { label: t('settings.tabAccounts'),      icon: <IconUsers /> },
     orchestrator:         { label: t('settings.tabOrchestrator'),  icon: <IconAgents /> },
     roles:                { label: t('settings.tabRoles'),         icon: <IconRobot /> },
+    tokens:               { label: t('settings.tabTokens'),        icon: <IconAgents /> },
     browser:              { label: t('settings.tabBrowser'),       icon: <IconBrowser /> },
     remote:               { label: t('settings.tabRemote'),        icon: <IconRemoteDevices /> },
     lanlink:              { label: t('settings.tabLan'),           icon: <IconLanLink /> },
@@ -5505,6 +5507,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'accounts'           && <AccountsSection />}
                     {activeTab === 'orchestrator'       && <TabOrchestrator />}
                     {activeTab === 'roles'              && <TabRoles />}
+          {activeTab === 'tokens'             && <TokenUsageTab onOpenTab={setActiveTab} />}
                     {activeTab === 'browser'            && <TabBrowser />}
                     {activeTab === 'remote'             && <TabRemote />}
                     {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
