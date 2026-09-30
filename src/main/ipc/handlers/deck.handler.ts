@@ -111,7 +111,6 @@ import {
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
-  hasPendingDeckWorkA2aTasks,
   isDeckWorkParked,
   loadActiveDeckWork,
   loadActiveDeckWorks,
@@ -120,11 +119,11 @@ import {
   recordDeckWorkA2aTask,
   renderActiveDeckWorkBlock,
   renderActiveDeckWorkReminderLine,
-  renderStrandedDeckWorkBlock,
   setDeckWorkBootId,
   unparkDeckWork,
-  type ActiveDeckWork,
 } from '../../deck/deckWorkStore';
+import { surfaceStrandedWork } from '../../deck/deckWorkspaceTeardown';
+export { surfaceStrandedWork } from '../../deck/deckWorkspaceTeardown';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
 import {
   buildWorkspaceBriefing,
@@ -590,48 +589,9 @@ export function registerDeckHandler(
    *
    * Never throws and never blocks its caller — the supersede/clear already
    * happened on disk, and neither may fail because of this bookkeeping.
+   *
+   * Shared implementation imported from deckWorkspaceTeardown.
    */
-  const surfaceStrandedWork = (
-    workspaceId: string,
-    work: ActiveDeckWork,
-    reason: 'superseded' | 'cleared',
-  ): void => {
-    try {
-      if (!hasPendingDeckWorkA2aTasks(work)) {
-        // eslint-disable-next-line no-console
-        console.warn(`[deck] ${reason} work record ${work.id} (no delegated tasks outstanding)`);
-        return;
-      }
-      // The decision store is last-writer-wins, so a real question already
-      // waiting on this human must never be clobbered by our bookkeeping (same
-      // guard as the startup reconcile). The log keeps the drop diagnosable.
-      if (hasPendingDecision(workspaceId)) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[deck] ${reason} work record ${work.id} has outstanding A2A tasks; ` +
-          'a decision is already pending, not replacing it',
-        );
-        return;
-      }
-      const question = reason === 'superseded'
-        ? 'A newer request replaced an earlier one that still has delegated tasks running. ' +
-          'Cancel those tasks, or adopt them into the new request?'
-        : 'Starting a new session dropped a request that still has delegated tasks running. ' +
-          'Cancel those tasks, or leave them running?';
-      void raiseDecision(workspaceId, {
-        question,
-        options: reason === 'superseded'
-          ? ['Cancel the old tasks', 'Adopt them into the current request']
-          : ['Cancel the old tasks', 'Leave them running'],
-        context: renderStrandedDeckWorkBlock(work),
-      }).catch(() => {
-        /* best-effort — the log line above is the fallback record */
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[deck] failed to surface stranded work:', err);
-    }
-  };
 
   /** Persist request ownership without ever breaking a human turn. The store is
    *  synchronous so the DECK_SEND idle-check → send sequence does not yield. */
@@ -788,6 +748,7 @@ export function registerDeckHandler(
     // about to be constructed INTO — late-bound through this holder, exactly
     // like the coalescer's own forward reference above. It can only fire long
     // after the assignment below.
+    // eslint-disable-next-line prefer-const
     let managerRef: CommanderSessionManager | undefined;
     const manager = new CommanderSessionManager({
       adapter: createAdapter({
@@ -1039,7 +1000,7 @@ export function registerDeckHandler(
       const verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
       settleAmbient(workspaceId, verdict);
       if (verdict.ok && injectedDecision?.status === 'resolved') {
-        void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => {});
+        void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => { /* ignore */ });
       }
       return verdict;
     }),
@@ -1404,7 +1365,7 @@ export function registerDeckHandler(
             // instead of deleting the only evidence it existed.
             verdict.code !== 'errored'
           ) {
-            void clearResolvedDecision(workspaceId, after.id).catch(() => {});
+            void clearResolvedDecision(workspaceId, after.id).catch(() => { /* ignore */ });
           } else if (after?.status === 'resolved' && injected && after.id === injected.id) {
             // Two ways to land here, both needing a follow-up resume turn:
             //  - the HUMAN answered while this re-examine turn was running
@@ -1430,7 +1391,7 @@ export function registerDeckHandler(
           // acted on the resolution its prompt carried — keep the durable
           // record so the next natural wake / startup reconcile resumes it
           // again, instead of deleting the answer unacted-on.
-          void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+          void clearResolvedDecision(workspaceId, injected.id).catch(() => { /* ignore */ });
         }
       }
       return verdict;
@@ -2480,7 +2441,7 @@ export function registerDeckHandler(
         // drop on a full gate — the answer would sit forever with autonomy off.
         // Provenance-aware prompt (round-3 P2): a brain self-resolution must not
         // replay as "the operator resolved".
-        void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => {});
+        void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => { /* ignore */ });
       }
       return { decision };
     }),
@@ -2690,7 +2651,7 @@ export function registerDeckHandler(
         // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
         // resumes as the brain's OWN answer, never as "the operator resolved".
         await runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(
-          () => {},
+          () => { /* ignore */ },
         );
       }
     }
