@@ -18,10 +18,12 @@ import pkg from './package.json';
 const root = __dirname;
 const r = (p: string) => path.join(root, p);
 const NULL_STUB = r('src/renderer/web/stubs/NullComponent.tsx');
+const WEB_TERMINAL = r('src/renderer/web/WebTerminal.tsx');
 
 /** Resolved module → browser stand-in. */
 export const WEB_STUBS: Record<string, string> = {
-  [r('src/renderer/components/Terminal/Terminal.tsx')]: r('src/renderer/web/stubs/WebTerminalPlaceholder.tsx'),
+  // The real Terminal behind a live-stream slot and the desktop's fixed grid.
+  [r('src/renderer/components/Terminal/Terminal.tsx')]: WEB_TERMINAL,
   [r('src/renderer/components/Browser/BrowserPanel.tsx')]: NULL_STUB,
   [r('src/renderer/components/Editor/EditorPanel.tsx')]: NULL_STUB,
   [r('src/renderer/components/Diff/DiffPanel.tsx')]: NULL_STUB,
@@ -44,6 +46,9 @@ function webStubs(): Plugin {
     enforce: 'pre',
     async resolveId(source, importer, options) {
       if (!importer) return null;
+      // The terminal stand-in wraps the real component: its own import of
+      // Terminal.tsx must resolve to the file, not back to itself.
+      if (importer.split('?')[0] === WEB_TERMINAL) return null;
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
       if (!resolved) return null;
       const stub = WEB_STUBS[resolved.id.split('?')[0]];
@@ -60,6 +65,8 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
     // The browser has no Node `process`; React and zustand read NODE_ENV.
     'process.env.NODE_ENV': JSON.stringify('production'),
+    // Dogfood-only page hooks that read pane contents (main.tsx).
+    __WMUX_WEB_DEBUG__: JSON.stringify(process.env.WMUX_WEB_DEBUG === '1'),
   },
   publicDir: false,
   build: {

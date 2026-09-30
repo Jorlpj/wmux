@@ -371,7 +371,7 @@ GET /api/events?since=<cursor>     (Bearer)
 GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
                       gatedTools, gateEnabled?, fleetSidebar?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
-                      serverVersion}
+                      serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
                       liveness?, lastAssistantText?, surfaceTitle?, paneName?}]}
@@ -2720,28 +2720,92 @@ is over its budget, largest tree first, before pane placement, titles and pane
 rows. A tree is never sent with pane placement, titles or pane rows cut, so a
 `layout` you receive is always backed by a full `panes[]`.
 
-#### Browser app (/app)
+#### Browser app (`/`)
 
-`GET /app` is an opt-in second page, next to the classic `/`: the desktop
-renderer's own components (sidebar, workspace rows, surface tabs, split
-layout, theme and fonts), built by `vite.web.config.ts` and inlined by
-`scripts/build-daemon-web.mjs` as two scripts and one style block. It is a
-read-only mirror of the tree above — it reads `GET /api/workspaces` and
-`GET /api/sessions` every 2.5 s and never calls a write route. Terminal tabs
-render as placeholders until the terminal adapter lands; then `/` switches to it.
+**The native iOS app does not use any of the HTML pages below.** It talks to
+the JSON/SSE routes in this document directly; the pages are the daemon's
+browser clients, and nothing in them is part of the native contract.
 
-- The first script (es2017) stores `?token=` under the same key `/` uses and
-  installs a deny-by-default `window.electronAPI`: only static values
-  (`platform`, `systemLocale`, `windowsBuildNumber`, `browser.getBackendSync`)
-  are implemented; every other member (`pty.*`, `shell.*`, `accounts.*`,
-  `dialog.*`, …) returns a rejected promise and is never wired to the daemon.
-  A browser that cannot run the es2022 bundle (iOS before 16.4) is sent to `/`.
-- The page is served under its own CSP, derived from its own bytes like `/`'s.
-  Both policies now carry `font-src 'self'`: the app's fonts are served
-  same-origin from `/app/assets/<name>.woff2` (exact file names from the build,
-  immutable caching). The page makes no request to any other origin.
-- The service worker caches `/app` under its own key (it no longer overwrites
-  the offline copy of `/`) and caches the fonts on first use.
+`GET /` (also `/index.html` and `/app`) is the browser app: the desktop
+renderer's own components (sidebar, workspace rows, surface tabs, split layout,
+terminals, theme and fonts), built by `vite.web.config.ts` and inlined by
+`scripts/build-daemon-web.mjs` as two scripts and one style block. It mirrors
+the tree above — it reads `GET /api/workspaces` and `GET /api/sessions` every
+2.5 s, one after the other — and changes no structure (no split, close, rename
+or reorder). `GET /classic` is the flat client that used to live at `/`, and
+`GET /pair` is that same classic page opened on its pairing screen. A daemon
+whose app page was not built serves the classic page at `/`.
+
+- The first script (es2017) stores `?token=` under the same key the classic
+  page uses and installs a deny-by-default `window.electronAPI`: static values
+  (`platform`, `systemLocale`, `windowsBuildNumber`, `browser.getBackendSync`),
+  no-op subscriptions (`events.publish`, `daemon.onConnected`) and the terminal
+  members listed below; every other member (`pty.create` / `dispose` /
+  `promote` / `resize`, `shell.*`, `accounts.*`, `dialog.*`, …) returns a
+  rejected promise and is never wired to the daemon. It also installs a
+  `window.clipboardAPI` on the browser clipboard (secure contexts only) and
+  registers `/sw.js` in a secure context, as the classic page does.
+- No stored credential, a 401, or a browser that cannot run the es2022 bundle
+  (iOS before 16.4) → the page goes to `/classic`. After pairing, the classic
+  page lands on `/` again (and an old browser falls straight back).
+- Terminals are the desktop's own `Terminal` component over the web routes:
+  - A pane's stream (`GET /api/stream`, with a stream ticket for a device
+    credential — `<deviceId>.<secret>` — and `?token=` for the operator token,
+    which never asks for a ticket) is open only while the pane is shown and its
+    terminal reports itself visible; it closes on hide. A device credential
+    never goes into the URL: no ticket, no stream.
+  - Inline images (sixel / iTerm2) are off in the browser: the image decoder
+    needs WebAssembly, which the page's CSP does not allow.
+  - At most **4** panes stream at once (the daemon allows 8 streams per
+    principal, the browser 6 HTTP/1.1 connections per origin). A shown pane
+    beyond that shows a placeholder with "Show live", which takes the slot of
+    the least recently activated pane; a freed slot goes to the longest waiter.
+    At phone width only the selected pane is shown, so only it streams.
+  - The grid is the desktop's: cols/rows from `/api/sessions` and the stream's
+    `meta` (including mid-stream resize metas). The page fits the **font size**
+    to its box — never a CSS transform, which would misplace mouse reports — and
+    never asks to resize a pane.
+  - Each `snapshot` is replayed as one write starting with RIS (a re-opened
+    stream repaints instead of stacking). Queries the snapshot replays are
+    not answered (the viewer answers none — see below). The stale-mode reset
+    uses the shared gate (`commandRunning`,
+    `resumeAgent` from `meta`) capped at the alive-shell set: mouse and focus
+    reporting are cleared, bracketed paste (`?2004`) never is.
+  - `hostPlatform` in `/api/config` is the daemon's `process.platform`
+    (`darwin`, `win32`, `linux`): the browser app folds keyboard-protocol
+    negotiation by the pane's host, not by the browser's OS.
+  - The page re-reads `/api/config` every 10 s (backing off on failure), so a
+    failed first read or a changed grant does not stick; until the first
+    answer the page shows "Checking input…", and a read-only caller sees a
+    "Read-only" chip.
+  - Keystrokes go to `POST /api/input` in order per pane, only while this
+    caller may type; a read-only caller's terminal sends nothing, and never
+    arms mouse reporting (the drag selects text instead). Keys typed while a
+    snapshot is being parsed wait for it. A delivery that fails or cannot be
+    confirmed (409, other 4xx, 5xx, no answer) stops that pane's input and the
+    page says so, with how many keystrokes were not sent and a Resume button.
+    An unconfirmed keystroke is never re-sent (it may have arrived); input
+    receipts are not used per keystroke (two durable writes each, 10 000 a day
+    shared by every client).
+  - The browser terminal is a viewer and **answers no terminal query** (DA,
+    DSR/CPR, DECRQM, XTVERSION, DECRQSS, OSC 4/10/11/12 `?`), replayed or live,
+    and sends no focus reports: the pane's owner (the desktop's terminal)
+    answers. With no desktop attached a query goes unanswered and the app
+    falls back on its own timeout — a viewer that answers can type into a
+    shell; one that stays quiet cannot.
+  - Paste (⌘V, Ctrl+V, Ctrl+Shift+V) is the browser's own paste event, so it
+    works outside a secure context; copy falls back to the legacy copy
+    command there.
+  - A stream the daemon keeps refusing (stream quota, expired ticket) backs
+    off (1 s doubling to 30 s) and after 5 failures gives its slot up; the
+    pane shows it as unavailable with "Show live" to try again.
+- The page is served under its own CSP, derived from its own bytes like the
+  classic page's. Both policies carry `font-src 'self'`: the app's fonts are
+  served same-origin from `/app/assets/<name>.woff2` (exact file names from the
+  build, immutable caching). The page makes no request to any other origin.
+- The service worker keeps two offline shells under their own keys — `/` (the
+  app; `/index.html` and `/app` share it) and `/classic` (`/pair` shares it) —
+  precaches both, and caches the fonts on first use.
 
 ### Isolated Electron preview smoke test
 

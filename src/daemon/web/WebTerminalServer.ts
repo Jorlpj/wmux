@@ -2161,9 +2161,20 @@ export class WebTerminalServer {
       return this.json(res, 403, { error: 'host not allowed' });
     }
 
-    // Static, unauthenticated app shell (no secrets live in these). `/pair`
-    // is the same SPA shell — the frontend renders the pairing screen for it.
-    if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/pair')) {
+    // Static, unauthenticated pages (no secrets live in these). `/` is the
+    // browser app (the desktop's own UI, app.html); `/classic` is the flat
+    // client it falls back to on browsers that cannot run it, and `/pair` is
+    // that same classic shell, which renders the pairing screen. A daemon
+    // whose app page was not built keeps serving the classic page at `/`.
+    const appPage = p === '/' || p === '/index.html' || p === '/app';
+    if (req.method === 'GET' && appPage && this.appHtml) {
+      // Same no-store reasoning as the classic shell below.
+      return this.serveStatic(res, this.appHtml, 'text/html; charset=utf-8', {
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': this.appCsp,
+      });
+    }
+    if (req.method === 'GET' && (appPage || p === '/classic' || p === '/pair')) {
       // The whole app is inlined into this one file and it is rebuilt on every
       // release, so a stale copy is not a slightly-old page — it is the old
       // client talking to a new daemon. With no Cache-Control and no validator
@@ -2174,13 +2185,6 @@ export class WebTerminalServer {
       return this.serveStatic(res, this.terminalHtml, 'text/html; charset=utf-8', {
         'Cache-Control': 'no-store',
         ...(this.csp ? { 'Content-Security-Policy': this.csp } : {}),
-      });
-    }
-    if (req.method === 'GET' && p === '/app') {
-      // Same no-store reasoning as the classic shell above.
-      return this.serveStatic(res, this.appHtml, 'text/html; charset=utf-8', {
-        'Cache-Control': 'no-store',
-        'Content-Security-Policy': this.appCsp,
       });
     }
     if (req.method === 'GET' && p.startsWith('/app/assets/')) {
@@ -2315,6 +2319,9 @@ export class WebTerminalServer {
         // that 403s on every keystroke.
         allowInput: this.mayInput(principal),
         inputReceipts: this.mayInput(principal) && this.deps.inputReceipts !== undefined,
+        // The panes' host OS: key encodings follow the machine the PTY runs on
+        // (ConPTY's own ?9001h on win32), not the client drawing it.
+        hostPlatform: process.platform,
         allowUpload: this.opts?.allowUpload === true,
         generalFileUpload: this.opts?.allowUpload === true && this.deps.uploadsDir !== undefined,
         allowTranscript: this.opts?.allowTranscript === true,

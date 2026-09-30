@@ -165,6 +165,20 @@ export const pl = {
   // App lifecycle
   'app.restoringPanes': 'Przywracanie paneli…',
   'web.surfacePlaceholder': 'Jeszcze niewidoczne w przeglądarce',
+  'web.streamWaiting': 'Wstrzymano: na żywo jest {count} paneli',
+  'web.streamShow': 'Pokaż na żywo',
+  'web.streamConnecting': 'Łączenie…',
+  'web.streamUnavailable': 'Nie udało się przesyłać tego panelu',
+  'web.appReadOnly': 'Tylko odczyt',
+  'web.inputChecking': 'Sprawdzanie wprowadzania…',
+  'web.inputPaused': 'Wprowadzanie wstrzymane',
+  'web.inputPausedOffline': 'Połączenie zostało przerwane, więc wpisany tekst mógł nie dotrzeć.',
+  'web.inputPausedPrompt': 'Panel wyświetla prośbę o uprawnienia. Odpowiedz przy komputerze lub w zatwierdzeniach.',
+  'web.inputPausedRefused': 'Serwer odrzucił wprowadzanie ({code}).',
+  'web.inputPausedUnauthorized': 'To urządzenie nie ma już dostępu.',
+  'web.inputPausedTooLarge': 'Wklejany tekst jest zbyt duży.',
+  'web.inputDropped': 'Nie wysłano kolejnych naciśnięć klawiszy: {count}.',
+  'web.inputResume': 'Wznów wprowadzanie',
 
   // Common
   'common.cancel': 'Anuluj',
