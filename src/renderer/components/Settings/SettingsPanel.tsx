@@ -49,7 +49,6 @@ import {
   type ShortcutActionId,
 } from '../../../shared/keymap';
 import { shortcutPressGuard } from '../../utils/shortcutBindings';
-import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from '../../../shared/claudeModels';
 import {
   agyEffortOf,
@@ -60,7 +59,7 @@ import {
   type ModelCatalogResult,
 } from '../../../shared/modelCatalog';
 import { launchGrammarFor } from '../../../shared/agentLaunchOptions';
-import ModelCombobox from './ModelCombobox';
+import { ModelCombobox } from './ModelCombobox';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';

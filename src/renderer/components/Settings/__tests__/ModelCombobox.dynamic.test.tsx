@@ -65,14 +65,112 @@ describe('ModelCombobox', () => {
     expect(onChange).toHaveBeenLastCalledWith('sonnet');
   });
 
-  it('commits the picked id', () => {
+  it('commits the picked id on click, keeping focus in the field on mousedown', () => {
     const { input, onChange } = mount('');
     act(() => input.focus());
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
     act(() => {
-      options()[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      options()[0].dispatchEvent(down);
     });
+    // mousedown alone neither commits nor blurs (so the list survives to the click).
+    expect(down.defaultPrevented).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+    act(() => {
+      options()[0].click();
+    });
+    expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenLastCalledWith('gemini-3.8-flash-high');
-    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    expect(listbox()).toBeNull();
+  });
+});
+
+const listbox = () => container.querySelector('[role="listbox"]');
+
+function key(input: HTMLInputElement, k: string) {
+  const ev = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
+  act(() => {
+    input.dispatchEvent(ev);
+  });
+  return ev;
+}
+
+describe('ModelCombobox keyboard', () => {
+  it('arrows move an active option, wrapping, tracked by aria-activedescendant', () => {
+    const { input } = mount('');
+    act(() => input.focus());
+    expect(input.getAttribute('aria-activedescendant')).toBeNull();
+    expect(input.getAttribute('aria-controls')).toBe(listbox()?.id);
+
+    expect(key(input, 'ArrowDown').defaultPrevented).toBe(true);
+    expect(input.getAttribute('aria-activedescendant')).toBe(options()[0].id);
+    expect(options()[0].id).not.toBe('');
+    key(input, 'ArrowDown');
+    expect(input.getAttribute('aria-activedescendant')).toBe(options()[1].id);
+    key(input, 'ArrowUp');
+    key(input, 'ArrowUp'); // wraps from the first to the last
+    expect(input.getAttribute('aria-activedescendant')).toBe(options()[2].id);
+    expect(options()[2].getAttribute('data-active')).toBe('true');
+  });
+
+  it('Enter commits the active option and closes the list', () => {
+    const { input, onChange } = mount('');
+    act(() => input.focus());
+    key(input, 'ArrowDown');
+    key(input, 'ArrowDown');
+    key(input, 'Enter');
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith('gemini-3.8-flash-low');
+    expect(listbox()).toBeNull();
+  });
+
+  it('Enter with no active option keeps the typed text', () => {
+    const { input, onChange } = mount('');
+    act(() => input.focus());
+    type(input, 'my-own-model');
+    key(input, 'Enter');
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith('my-own-model');
+    expect(listbox()).toBeNull();
+  });
+
+  it('filters, then arrows within the filtered list', () => {
+    const { input, onChange } = mount('');
+    act(() => input.focus());
+    type(input, 'gemini');
+    expect(options()).toHaveLength(2);
+    key(input, 'ArrowUp');
+    key(input, 'Enter');
+    expect(onChange).toHaveBeenLastCalledWith('gemini-3.8-flash-low');
+  });
+
+  it('ArrowDown reopens a closed list', () => {
+    const { input } = mount('');
+    act(() => input.focus());
+    key(input, 'Escape');
+    expect(listbox()).toBeNull();
+    key(input, 'ArrowDown');
+    expect(listbox()).not.toBeNull();
+    expect(input.getAttribute('aria-activedescendant')).toBe(options()[0].id);
+  });
+
+  it('Escape closes the open list without letting the Escape escape', () => {
+    const { input } = mount('');
+    act(() => input.focus());
+    const outer = vi.fn();
+    document.addEventListener('keydown', outer);
+    key(input, 'Escape');
+    expect(listbox()).toBeNull();
+    expect(outer).not.toHaveBeenCalled();
+    document.removeEventListener('keydown', outer);
+  });
+
+  it('options are not tab stops, and tabbing away closes the list', () => {
+    const { input } = mount('');
+    act(() => input.focus());
+    expect(options().every((o) => o.tabIndex === -1)).toBe(true);
+    act(() => input.blur());
+    expect(listbox()).toBeNull();
+    expect(input.getAttribute('aria-expanded')).toBe('false');
   });
 });
 
