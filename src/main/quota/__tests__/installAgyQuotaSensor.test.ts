@@ -98,6 +98,79 @@ describe('installAgyQuotaSensor', () => {
     expect(sl.enabled).toBe(true);
   });
 
+  it('Case 1c: Fresh install when settings.json contains empty placeholder statusLine, preserving other keys and creating no backup', () => {
+    const settingsPath = settingsFilePath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const initialConfig = {
+      theme: 'dracula',
+      statusLine: { type: '', command: '', enabled: false },
+      user_preference: 42,
+    };
+    fs.writeFileSync(settingsPath, JSON.stringify(initialConfig, null, 2), 'utf8');
+
+    const outcome = installAgyQuotaSensor(tmpHome, {
+      sourceScriptPath: mockSinkSource,
+      nodePath: 'C:\\Node\\node.exe',
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.action).toBe('installed');
+    expect(outcome.backupPath).toBeUndefined();
+
+    // No backup file created in the dir
+    const geminiDir = path.dirname(settingsPath);
+    const backups = fs.readdirSync(geminiDir).filter((f) => f.includes('.bak-wmux-'));
+    expect(backups).toHaveLength(0);
+
+    const settings = readSettings();
+    expect(settings.theme).toBe('dracula');
+    expect(settings.user_preference).toBe(42);
+
+    const installedSink = path.join(tmpHome, '.wmux', 'bin', 'quota-sink.js');
+    expect(settings.statusLine).toEqual({
+      type: 'command',
+      command: `"C:\\Node\\node.exe" "${installedSink}" agy`,
+      enabled: true,
+      stack_with_default: true,
+    });
+  });
+
+  it('Case 1d: Fresh install when settings.json contains whitespace command in statusLine, preserving other keys and creating no backup', () => {
+    const settingsPath = settingsFilePath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const initialConfig = {
+      theme: 'solarized',
+      statusLine: { type: 'command', command: '   ', enabled: false },
+      user_preference: 100,
+    };
+    fs.writeFileSync(settingsPath, JSON.stringify(initialConfig, null, 2), 'utf8');
+
+    const outcome = installAgyQuotaSensor(tmpHome, {
+      sourceScriptPath: mockSinkSource,
+      nodePath: 'node',
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.action).toBe('installed');
+    expect(outcome.backupPath).toBeUndefined();
+
+    const geminiDir = path.dirname(settingsPath);
+    const backups = fs.readdirSync(geminiDir).filter((f) => f.includes('.bak-wmux-'));
+    expect(backups).toHaveLength(0);
+
+    const settings = readSettings();
+    expect(settings.theme).toBe('solarized');
+    expect(settings.user_preference).toBe(100);
+
+    const installedSink = path.join(tmpHome, '.wmux', 'bin', 'quota-sink.js');
+    expect(settings.statusLine).toEqual({
+      type: 'command',
+      command: `"node" "${installedSink}" agy`,
+      enabled: true,
+      stack_with_default: true,
+    });
+  });
+
   it('Case 2: Chains pre-existing foreign statusLine and backs up settings.json', () => {
     const settingsPath = settingsFilePath();
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
@@ -141,6 +214,54 @@ describe('installAgyQuotaSensor', () => {
 
     const installedSink = path.join(tmpHome, '.wmux', 'bin', 'quota-sink.js');
     expect(sl.command).toBe(`"C:\\node.exe" "${installedSink}" agy "my-custom-status --format=json"`);
+  });
+
+  it('Case 2b: Chains foreign statusLine with non-empty command even when enabled is false, and creates a backup', () => {
+    const settingsPath = settingsFilePath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const initialConfig = {
+      theme: 'nord',
+      statusLine: {
+        type: 'command',
+        command: 'my-disabled-command --flag',
+        enabled: false,
+      },
+    };
+    fs.writeFileSync(settingsPath, JSON.stringify(initialConfig, null, 2), 'utf8');
+
+    const outcome = installAgyQuotaSensor(tmpHome, {
+      sourceScriptPath: mockSinkSource,
+      nodePath: 'C:\\node.exe',
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.action).toBe('chained');
+    expect(outcome.backupPath).toBeDefined();
+
+    // Verify backup exists and contains original contents
+    expect(fs.existsSync(outcome.backupPath!)).toBe(true);
+    const backupContent = JSON.parse(fs.readFileSync(outcome.backupPath!, 'utf8'));
+    expect(backupContent).toEqual(initialConfig);
+
+    const geminiDir = path.dirname(settingsPath);
+    const backups = fs.readdirSync(geminiDir).filter((f) => f.includes('.bak-wmux-'));
+    expect(backups).toHaveLength(1);
+
+    const settings = readSettings();
+    expect(settings.theme).toBe('nord');
+
+    const sl = settings.statusLine as {
+      type: string;
+      command: string;
+      enabled: boolean;
+      stack_with_default: boolean;
+    };
+    expect(sl.type).toBe('command');
+    expect(sl.enabled).toBe(true);
+    expect(sl.stack_with_default).toBe(true);
+
+    const installedSink = path.join(tmpHome, '.wmux', 'bin', 'quota-sink.js');
+    expect(sl.command).toBe(`"C:\\node.exe" "${installedSink}" agy "my-disabled-command --flag"`);
   });
 
   it('Case 3: Idempotent re-run on already-installed sink is a no-op (no rewrite, no backup)', () => {
@@ -332,6 +453,42 @@ describe('classifyAgyStatusLine & extractExistingCommand helper', () => {
     expect(classifyAgyStatusLine({})).toBe('none');
     expect(classifyAgyStatusLine({ statusLine: undefined })).toBe('none');
     expect(classifyAgyStatusLine({ statusLine: null })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: '' })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: '   ' })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: '\t\r\n ' })).toBe('none');
+
+    // Fresh Antigravity CLI placeholder object: { type: "", command: "", enabled: false }
+    expect(
+      classifyAgyStatusLine({
+        statusLine: { type: '', command: '', enabled: false },
+      }),
+    ).toBe('none');
+
+    // Object with missing command key
+    expect(classifyAgyStatusLine({ statusLine: {} })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: { type: 'command' } })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: { enabled: true } })).toBe('none');
+
+    // Object with non-string command
+    expect(classifyAgyStatusLine({ statusLine: { command: 123 } })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: { command: null } })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: { command: true } })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: { command: {} } })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: { command: [] } })).toBe('none');
+
+    // Object with empty or whitespace-only command
+    expect(classifyAgyStatusLine({ statusLine: { command: '' } })).toBe('none');
+    expect(classifyAgyStatusLine({ statusLine: { command: '   ' } })).toBe('none');
+    expect(
+      classifyAgyStatusLine({
+        statusLine: { type: 'command', command: '   ', enabled: false },
+      }),
+    ).toBe('none');
+    expect(
+      classifyAgyStatusLine({
+        statusLine: { type: 'command', command: ' \r\n\t ', enabled: true },
+      }),
+    ).toBe('none');
   });
 
   it('classifies agy-sink correctly', () => {
@@ -346,12 +503,36 @@ describe('classifyAgyStatusLine & extractExistingCommand helper', () => {
         statusLine: { command: '"node" "C:\\custom\\sink.js" agy' },
       }, 'C:\\custom\\sink.js'),
     ).toBe('agy-sink');
+
+    expect(
+      classifyAgyStatusLine({
+        statusLine: { command: 'node quota-sink.js', enabled: false },
+      }),
+    ).toBe('agy-sink');
+
+    expect(
+      classifyAgyStatusLine({
+        statusLine: 'node "C:\\path\\quota-sink.js"',
+      }),
+    ).toBe('agy-sink');
   });
 
   it('classifies foreign correctly', () => {
     expect(
       classifyAgyStatusLine({
         statusLine: { command: 'node other-script.js' },
+      }),
+    ).toBe('foreign');
+
+    expect(
+      classifyAgyStatusLine({
+        statusLine: { command: 'node other-script.js', enabled: false },
+      }),
+    ).toBe('foreign');
+
+    expect(
+      classifyAgyStatusLine({
+        statusLine: { command: 'my-custom-command --flag', enabled: true },
       }),
     ).toBe('foreign');
 
