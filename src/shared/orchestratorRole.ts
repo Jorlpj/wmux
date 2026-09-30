@@ -163,6 +163,9 @@ export function applyRoleAgent(
   if (!known(agent)) {
     return { ...unchanged, note: `Role is bound to "${agent}", which wmux does not recognise as an agent CLI; launched unchanged.` };
   }
+  if (NO_POSITIONAL_PROMPT_STEMS.has(agent)) {
+    return { ...unchanged, note: `Role is bound to "${agent}", which rejects a positional prompt; launched unchanged.` };
+  }
   const tokens = tokenize(command);
   if (tokens.length === 0) return unchanged;
   const stem = launcherStem(tokens[0].value);
@@ -219,6 +222,13 @@ export const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
   'kiro-cli',
   'agy',
 ]);
+
+/** Known agent CLIs a role binding never swaps into a fan-out launch. The
+ *  worker line is `<agent> "$(cat <prompt file>)"`, and agy (1.2.13) refuses a
+ *  positional prompt ("Prompts are read only from -p/--print, -i/...") — the
+ *  swap would launch a worker that exits at once. A hand-edited session.json
+ *  binding reaches applyRoleAgent too, so the Settings list alone is no guard. */
+const NO_POSITIONAL_PROMPT_STEMS: ReadonlySet<string> = new Set(['agy']);
 
 /** Max lengths for the binding fields at the normalization boundary. `args` is
  *  the widest surface (arbitrary flags) so it gets the command-sized cap. */

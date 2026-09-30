@@ -456,6 +456,13 @@ describe('applyRoleAgent — launcher swap for wmux-assembled launches', () => {
     expect(out.command).toBe(`codex ${PROMPT_ARG}`);
   });
 
+  it('never swaps in agy, which rejects a positional prompt (even from a hand-edited binding)', () => {
+    const out = applyRoleAgent(`claude ${PROMPT_ARG}`, { agent: 'agy', model: 'gemini-3.8-flash-low' });
+    expect(out.changed).toBe(false);
+    expect(out.command).toBe(`claude ${PROMPT_ARG}`);
+    expect(out.note).toMatch(/"agy".*positional prompt/);
+  });
+
   it('leaves the prompt argument byte-identical', () => {
     // The argument carries a quoted shell substitution; splicing must not
     // requote, reorder or normalize any of it.

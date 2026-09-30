@@ -639,8 +639,9 @@ const ORCHESTRATOR_MODEL_OPTIONS = [
 // but a row that cannot do what it looks like it does says so INLINE rather than
 // no-op'ing silently. Model entry is a datalist combobox, not a <select>: only
 // claude's aliases are known to us, and a codex model id (`gpt-5.5`) must be
-// typeable.
-const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini', 'agy'] as const;
+// typeable. agy is left out: a role binding feeds fan-out, which cannot launch
+// agy with a positional prompt (see NO_POSITIONAL_PROMPT_STEMS).
+const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini'] as const;
 
 // Model ids and CLI args are machine evidence, so the free-text fields are mono.
 const ROLE_BINDING_FIELD_CLASS = 'settings-input font-mono';
