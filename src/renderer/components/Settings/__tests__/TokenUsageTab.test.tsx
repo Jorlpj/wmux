@@ -1,15 +1,19 @@
+// @vitest-environment jsdom
 /**
  * Settings › Agents › Token usage. The repo's vitest config is node-env, so the
  * view is rendered with renderToStaticMarkup (same as the role-binding tests);
  * what Apply writes is covered by src/shared/__tests__/tokenProfiles.test.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { createElement } from 'react';
+import { createElement, act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { TokenUsageView, type TokenUsageViewProps } from '../tabs/TokenUsageTab';
 import { t as translate } from '../../../i18n';
 import { applyTokenProfile } from '../../../../shared/tokenProfiles';
 import type { OrchestratorRoleBindings } from '../../../../shared/orchestratorRole';
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const t = translate as unknown as TokenUsageViewProps['t'];
 
@@ -76,5 +80,64 @@ describe('TokenUsageView', () => {
     const html = render(BOUND);
     expect(html).toContain('claude-sonnet-5-5 · medium');
     expect(html).toContain('Open Orchestrator');
+  });
+
+  it('toggles Custom panel when clicking the badge or using keyboard', () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        createElement(TokenUsageView, {
+          bindings: BOUND,
+          onApply: () => undefined,
+          onOpenTab: () => undefined,
+          deckBrainModel: 'claude-sonnet-5-5',
+          deckBrainEffort: 'medium',
+          t,
+        }),
+      );
+    });
+
+    const badge = container.querySelector('[data-testid="token-profile-current"]') as HTMLElement;
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute('role')).toBe('button');
+    expect(badge.getAttribute('tabindex')).toBe('0');
+    expect(badge.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-testid="token-custom-panel"]')).toBeNull();
+
+    // Click to show Custom panel
+    act(() => {
+      badge.click();
+    });
+    expect(badge.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-testid="token-custom-panel"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="token-custom-panel"]')?.textContent).toContain(
+      'Per-provider MCP/tool/skill/plugin/hook editing is not implemented yet.',
+    );
+
+    // Keyboard activation (Enter) to hide
+    act(() => {
+      badge.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(badge.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-testid="token-custom-panel"]')).toBeNull();
+
+    // Keyboard activation (Space) to show
+    act(() => {
+      badge.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    });
+    expect(badge.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-testid="token-custom-panel"]')).toBeTruthy();
+
+    // Click again to hide Custom panel
+    act(() => {
+      badge.click();
+    });
+    expect(badge.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-testid="token-custom-panel"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
   });
 });
