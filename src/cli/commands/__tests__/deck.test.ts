@@ -46,7 +46,6 @@ function createMockDeps(overrides?: Partial<DeckDeps>): {
   deps: DeckDeps;
   logs: string[];
   errors: string[];
-  exitCode: number | null;
 } {
   const logs: string[] = [];
   const errors: string[] = [];
