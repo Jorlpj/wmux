@@ -487,9 +487,12 @@ if (COMMANDER_MODE && ROLE_ARG.kind !== 'none') {
 }
 const ROLE_SURFACE: readonly string[] | null =
   !COMMANDER_MODE && ROLE_ARG.kind === 'role' ? ROLE_TOOL_SURFACES[ROLE_ARG.role] : null;
+// Any --role (known or not) runs on core; folded into ctx so the profile
+// derivation below keeps its pinned shape (workspaceRouting.test.ts).
+if (ROLE_ARG.kind !== 'none' && !ctx.coreMode) ctx = { ...ctx, coreMode: true };
 const SURFACE_PROFILE: WmuxToolProfile = COMMANDER_MODE
   ? 'commander'
-  : ctx.coreMode || ROLE_ARG.kind !== 'none'
+  : ctx.coreMode
     ? 'core'
     : 'full';
 
