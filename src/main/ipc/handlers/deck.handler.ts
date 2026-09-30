@@ -147,6 +147,9 @@ import {
   DECK_SCHEDULE_LIMITS,
   type DeckSchedule,
 } from '../../deck/deckScheduleStore';
+import { sweepOrphanAtomicTemps } from '../../../daemon/util/atomicWrite';
+import { getWmuxDir } from '../../../daemon/config';
+import { isStartupDeckReconcileDone, tryStartupDeckReconcile } from '../../deck/deckOrphanReconcile';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -188,6 +191,8 @@ export interface RegisterDeckHandlerOptions {
   /** Live daemon client getter. Required for the `claude-pty` vendor, whose
    *  brain IS a daemon pty session; every other vendor ignores it. */
   getDaemonClient?: () => DaemonClientLike | null;
+  /** Data directory override for tests. */
+  dir?: string;
 }
 
 /** Fleet-context token budget (~2KB). A larger snapshot is truncated so the
@@ -286,6 +291,13 @@ export function registerDeckHandler(
   // Runs before anything can write a record, otherwise records stamped with the
   // store's own seed value would come back parked.
   setDeckWorkBootId(eventBus.bootId);
+
+  // WMX-06: sweep orphan atomic write temps before deck stores are first read
+  try {
+    sweepOrphanAtomicTemps(opts.dir ?? getWmuxDir());
+  } catch {
+    /* best-effort — startup sweep must never break registration */
+  }
 
   // One-way push: which daemon session holds a workspace's embedded brain TUI
   // (`claude-pty` only; null retires it). Declared before createAdapter so the
@@ -1759,6 +1771,10 @@ export function registerDeckHandler(
   // manager OR a resting mode other than 'off'; the coalescer's own gates decide
   // whether a wake actually fires (the tick conditions only skip obvious no-ops).
   const heartbeatWorkspaceIds = (): string[] => {
+    // WMX-06: retry startup orphan reconcile on heartbeat tick if not already completed
+    if (!isStartupDeckReconcileDone()) {
+      void tryStartupDeckReconcile({ dir: opts.dir });
+    }
     const ids = new Set<string>(managers.keys());
     // Durable direct requests arm the heartbeat even when the workspace's
     // resting autonomy mode is off and no brain manager has been recreated yet.
@@ -1835,6 +1851,25 @@ export function registerDeckHandler(
     intervalMs: heartbeatConfig.intervalMs,
   });
   heartbeat.start();
+
+  // WMX-06: startup reconcile of orphan Deck state once renderer workspace mirror is loaded.
+  // Retries a bounded number of times (max 5 retries at 2.5s intervals) and on heartbeat tick.
+  let orphanReconcileRetries = 0;
+  const MAX_ORPHAN_RECONCILE_RETRIES = 5;
+  const orphanReconcileTimer = setInterval(() => {
+    if (isStartupDeckReconcileDone() || ++orphanReconcileRetries > MAX_ORPHAN_RECONCILE_RETRIES) {
+      clearInterval(orphanReconcileTimer);
+      if (!isStartupDeckReconcileDone()) {
+        // eslint-disable-next-line no-console
+        console.log('[deck:reconcile] skipped startup reconcile: workspace mirror not ready after retries');
+      }
+      return;
+    }
+    void tryStartupDeckReconcile({ dir: opts.dir }).then((done) => {
+      if (done) clearInterval(orphanReconcileTimer);
+    });
+  }, 2500);
+  orphanReconcileTimer.unref?.();
 
   // Seed the binding operator-policy file once (never overwrites an existing
   // one). Fire-and-forget: a missing policy file just means no policy block, so
@@ -2713,6 +2748,7 @@ export function registerDeckHandler(
     app.removeListener('before-quit', disposeAll);
     clearTimeout(reconcileTimer);
     clearInterval(ledgerReconcileTimer);
+    clearInterval(orphanReconcileTimer);
     offBus();
     coalescer?.dispose();
     disposeLedgerEmitter();

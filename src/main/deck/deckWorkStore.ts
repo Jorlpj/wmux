@@ -527,3 +527,25 @@ export function renderActiveDeckWorkReminderLine(work: ActiveDeckWork): string {
     'Still ACTIVE: you still own it, and only a successful deck_complete_work({summary, verification}) finishes it.'
   );
 }
+
+export function getDeckWorkArchivePath(dir: string = getWmuxDir()): string {
+  return path.join(dir, 'deck-work.archive.json');
+}
+
+export function loadArchivedDeckWorks(dir?: string): ActiveDeckWork[] {
+  try {
+    const raw = atomicReadJSONSync<unknown>(getDeckWorkArchivePath(dir));
+    if (Array.isArray(raw)) return raw as ActiveDeckWork[];
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+export function archiveDeckWork(work: ActiveDeckWork, dir?: string): void {
+  const list = loadArchivedDeckWorks(dir);
+  list.push(work);
+  atomicWriteJSONSync(getDeckWorkArchivePath(dir), list, {
+    durable: true,
+  });
+}
