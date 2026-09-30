@@ -1,6 +1,6 @@
 // wmux ↔ Antigravity CLI (agy) quota sensor installer.
 // Configures agy's statusLine hook to feed the quota sink while preserving any
-// pre-existing statusLine configuration via chaining.
+// pre-existing statusLine configuration via base64url chaining.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -10,7 +10,7 @@ export type AgyStatusLineKind = 'none' | 'agy-sink' | 'foreign';
 export type InstallAgyQuotaSensorAction = 'installed' | 'chained' | 'noop';
 
 export interface InstallAgyQuotaSensorOptions {
-  /** Node executable path to write into statusLine.command (defaults to process.execPath). */
+  /** Node executable path to write into statusLine.command (defaults to 'node'). */
   nodePath?: string;
   /** Destination script path (defaults to <homeDir>/.wmux/bin/quota-sink.js). */
   sinkScriptPath?: string;
@@ -18,7 +18,7 @@ export interface InstallAgyQuotaSensorOptions {
   sourceScriptPath?: string;
   /** Whether to copy the quota-sink.js script to sinkScriptPath (defaults to true). */
   copyScript?: boolean;
-  /** Target OS platform for command line quoting (defaults to process.platform). */
+  /** Target OS platform (retained for backward compatibility). */
   platform?: NodeJS.Platform;
 }
 
@@ -30,6 +30,8 @@ export interface InstallAgyQuotaSensorOutcome {
   commandWritten?: string;
   error?: string;
 }
+
+export const ALLOWED_PATH_CHARS = /^[\p{L}\p{Nd}_.:\\/~-]+$/u;
 
 /**
  * Searches upward candidate paths to find the bundled or repository quota-sink.js script.
@@ -55,18 +57,31 @@ export function findQuotaSinkSourceFrom(startDir: string): string | null {
 }
 
 /**
- * Escapes an existing statusLine command so it can be safely passed as a single quoted argument
- * in statusLine.command.
- *
- * On Windows (cmd.exe), double quotes are escaped by doubling them (`""`), because cmd.exe
- * does not use backslashes to escape quotes inside command line strings.
- * On POSIX systems (sh/bash), double quotes are escaped with backslashes (`\"`).
+ * Encodes a command into a base64url string (unpadded, URL-safe alphabet).
  */
-export function escapeChainedCommandArg(cmd: string, platform: NodeJS.Platform = process.platform): string {
-  if (platform === 'win32') {
-    return cmd.replace(/"/g, '""');
+export function encodeChainedCommand(cmd: string): string {
+  return Buffer.from(cmd, 'utf8').toString('base64url');
+}
+
+/**
+ * Decodes a base64url-encoded chained command string, returning the original string or null if empty/invalid.
+ */
+export function decodeChainedCommand(b64: string): string | null {
+  try {
+    const decoded = Buffer.from(b64, 'base64url').toString('utf8');
+    return decoded.trim().length > 0 ? decoded : null;
+  } catch {
+    return null;
   }
-  return cmd.replace(/"/g, '\\"');
+}
+
+/**
+ * Extracts and decodes the chained command argument (--chain-b64 <val>) from a statusLine command string.
+ */
+export function extractChainedB64(command: string): string | null {
+  const match = command.match(/--chain-b64(?:=|\s+)([A-Za-z0-9_-]+)/);
+  if (!match) return null;
+  return decodeChainedCommand(match[1]);
 }
 
 /**
@@ -115,26 +130,39 @@ export function extractExistingCommand(statusLine: unknown): string {
  * Injected home directory ensures safe execution in tests without touching real user home.
  *
  * Behavior:
- * 1. Copies quota-sink.js to <homeDir>/.wmux/bin/quota-sink.js (unless copyScript is false).
+ * 1. Checks nodePath and sinkScriptPath against invalid characters (whitespace, quotes, cmd metacharacters).
+ *    Returns ok: false immediately without modifying anything if found.
+ * 2. Copies quota-sink.js to <homeDir>/.wmux/bin/quota-sink.js (unless copyScript is false).
  *    Returns ok: false if the source script cannot be found.
- * 2. Reads <homeDir>/.gemini/antigravity-cli/settings.json (creates parent dirs / {} if missing).
- * 3. If no statusLine key exists:
- *    Writes `"statusLine": { "type": "command", "command": "\"<node>\" \"<sink>\" agy", "enabled": true, "stack_with_default": true }`.
+ * 3. Reads <homeDir>/.gemini/antigravity-cli/settings.json (creates parent dirs / {} if missing).
  * 4. If statusLine already points to quota-sink.js:
- *    No-op: returns action='noop' without rewriting settings.json or creating a backup.
+ *    - If the command equals the command that would be written now: no-op without backup or rewrite.
+ *    - If it differs (moved path, old format), rewrites it with a backup, preserving --chain-b64 if present.
  * 5. If statusLine exists and is foreign:
  *    Backs up settings.json to <settingsPath>.bak-wmux-<timestamp>, then rewrites statusLine to chain
- *    to the original command via trailing argument with platform-safe quote escaping:
- *    `"\"<node>\" \"<sink>\" agy \"<original>\""`.
- * 6. Preserves all other keys in settings.json; writes atomically via writeJsonAtomic.
+ *    via `--chain-b64 <base64url>`:
+ *    `${node} ${sinkScriptPath} agy --chain-b64 <b64>`.
+ * 6. If no statusLine key exists (or empty placeholder):
+ *    Writes `"statusLine": { "type": "command", "command": "${node} ${sinkScriptPath} agy", "enabled": true, "stack_with_default": true }`.
+ * 7. Preserves all other keys in settings.json; writes atomically via writeJsonAtomic.
  */
 export function installAgyQuotaSensor(
   homeDir: string,
   options?: InstallAgyQuotaSensorOptions,
 ): InstallAgyQuotaSensorOutcome {
   const settingsPath = path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json');
-  const nodePath = options?.nodePath ?? process.execPath;
+  const nodePath = options?.nodePath ?? 'node';
   const sinkScriptPath = options?.sinkScriptPath ?? path.join(homeDir, '.wmux', 'bin', 'quota-sink.js');
+
+  // Safety guard: reject node or sink paths containing anything other than allowed characters
+  if (!ALLOWED_PATH_CHARS.test(nodePath) || !ALLOWED_PATH_CHARS.test(sinkScriptPath)) {
+    return {
+      ok: false,
+      action: 'noop',
+      settingsPath,
+      error: 'Install path must not contain spaces or special characters',
+    };
+  }
 
   // Copy quota-sink.js into place
   if (options?.copyScript !== false) {
@@ -179,26 +207,58 @@ export function installAgyQuotaSensor(
 
   const classification = classifyAgyStatusLine(settings, sinkScriptPath);
 
-  // Round-trip safety: already correctly installed → no-op
   if (classification === 'agy-sink') {
     const currentCmd = extractExistingCommand(settings.statusLine);
+    const chainedOriginal = extractChainedB64(currentCmd);
+
+    let targetCommand: string;
+    let targetAction: InstallAgyQuotaSensorAction;
+    if (chainedOriginal) {
+      const b64 = encodeChainedCommand(chainedOriginal);
+      targetCommand = `${nodePath} ${sinkScriptPath} agy --chain-b64 ${b64}`;
+      targetAction = 'chained';
+    } else {
+      targetCommand = `${nodePath} ${sinkScriptPath} agy`;
+      targetAction = 'installed';
+    }
+
+    if (currentCmd === targetCommand) {
+      return {
+        ok: true,
+        action: 'noop',
+        settingsPath,
+        commandWritten: currentCmd,
+      };
+    }
+
+    const backupPath = `${settingsPath}.bak-wmux-${Date.now()}`;
+    fs.copyFileSync(settingsPath, backupPath);
+
+    settings.statusLine = {
+      type: 'command',
+      command: targetCommand,
+      enabled: true,
+      stack_with_default: true,
+    };
+
+    writeJsonAtomic(settingsPath, settings);
+
     return {
       ok: true,
-      action: 'noop',
+      action: targetAction,
       settingsPath,
-      commandWritten: currentCmd,
+      backupPath,
+      commandWritten: targetCommand,
     };
   }
 
   if (classification === 'foreign') {
-    // Existing statusLine: back up file and chain original command
     const backupPath = `${settingsPath}.bak-wmux-${Date.now()}`;
     fs.copyFileSync(settingsPath, backupPath);
 
-    const platform = options?.platform ?? process.platform;
     const existingCmd = extractExistingCommand(settings.statusLine);
-    const escapedExistingCmd = escapeChainedCommandArg(existingCmd, platform);
-    const chainedCommand = `"${nodePath}" "${sinkScriptPath}" agy "${escapedExistingCmd}"`;
+    const b64 = encodeChainedCommand(existingCmd);
+    const chainedCommand = `${nodePath} ${sinkScriptPath} agy --chain-b64 ${b64}`;
 
     settings.statusLine = {
       type: 'command',
@@ -219,7 +279,7 @@ export function installAgyQuotaSensor(
   }
 
   // classification === 'none': fresh install
-  const command = `"${nodePath}" "${sinkScriptPath}" agy`;
+  const command = `${nodePath} ${sinkScriptPath} agy`;
   settings.statusLine = {
     type: 'command',
     command,

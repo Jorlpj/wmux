@@ -4,7 +4,7 @@
 // Registered as agy's `statusLine` command in ~/.gemini/antigravity-cli/settings.json:
 //   "statusLine": {
 //     "type": "command",
-//     "command": "\"<node>\" \"<abs path to quota-sink.js>\" agy",
+//     "command": "node <abs path to quota-sink.js> agy",
 //     "enabled": true,
 //     "stack_with_default": true
 //   }
@@ -14,16 +14,21 @@
 // This script:
 //   1. Reads full JSON payload from stdin.
 //   2. Extracts ONLY allowlisted fields:
-//        quota, plan_tier, model.id (nested under model: { id }), context_window,
-//        conversation_id, version, capturedAtMs (Date.now()).
+//        quota, quotaCapturedAtMs, plan_tier, model.id (nested under model: { id }),
+//        context_window, conversation_id, version, capturedAtMs (Date.now()).
 //      Explicitly drops email, cwd, transcript_path, vcs, and any other field (privacy).
-//   3. Writes the subset atomically to <homeDir>/.wmux/quota/agy.json via tmp + rename.
+//   3. Merges with previous stored record:
+//      - If incoming payload has no quota (or empty object), preserves previous quota, plan_tier, and quotaCapturedAtMs.
+//      - If incoming payload has no allowlisted fields at all, writes nothing.
+//      - Writes only if merged record differs from stored record ignoring capturedAtMs,
+//        OR stored capturedAtMs is older than 30 000 ms.
+//   4. Writes the merged record atomically to <homeDir>/.wmux/quota/agy.json via tmp + rename.
 //      homeDir is overridable via WMUX_QUOTA_SINK_HOME.
-//   4. If an original statusLine command was chained (via trailing CLI arg or
+//   5. If an original statusLine command was chained (via --chain-b64 <base64url> CLI arg or
 //      WMUX_AGY_ORIGINAL_STATUSLINE env var), re-executes that command piping the
 //      same stdin through to it, and prints its stdout verbatim.
 //      If no original command is configured, prints nothing (empty stdout).
-//   5. Exits 0 (or chained command's exit code).
+//   6. Exits 0 (or chained command's exit code).
 //
 // SELF-CONTAINED: Node built-ins only, no external dependencies, no imports from src/.
 
@@ -34,52 +39,201 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
 /**
- * Extracts ONLY the allowlisted fields from agy's statusLine JSON payload.
- *
- * Allowlist:
- * - quota
- * - plan_tier
- * - model.id (nested under model: { id })
- * - context_window
- * - conversation_id
- * - version
- * - capturedAtMs: Date.now()
- *
- * Explicitly drops: email, cwd, transcript_path, vcs, and any other field.
+ * Deep equality check for plain objects, arrays, and primitive values.
  */
-function extractQuotaPayload(input) {
-  const result = {
-    capturedAtMs: Date.now(),
+function isDeepEqual(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!isDeepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    if (!isDeepEqual(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+/**
+ * Checks whether two records are deeply equal ignoring their `capturedAtMs` and `quotaCapturedAtMs` timestamps.
+ */
+function recordsEqualIgnoringCapturedAt(a, b) {
+  if (!a || !b) return false;
+  const aCopy = { ...a };
+  delete aCopy.capturedAtMs;
+  delete aCopy.quotaCapturedAtMs;
+  const bCopy = { ...b };
+  delete bCopy.capturedAtMs;
+  delete bCopy.quotaCapturedAtMs;
+  return isDeepEqual(aCopy, bCopy);
+}
+
+/**
+ * Checks whether the input object contains a non-empty quota bucket dictionary.
+ */
+function hasQuota(input) {
+  return Boolean(
+    input &&
+    input.quota !== null &&
+    input.quota !== undefined &&
+    typeof input.quota === 'object' &&
+    !Array.isArray(input.quota) &&
+    Object.keys(input.quota).length > 0,
+  );
+}
+
+/**
+ * Checks whether the input object contains any allowlisted field.
+ */
+function hasAnyAllowlistedField(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return false;
+  }
+  if (hasQuota(input)) {
+    return true;
+  }
+  if (typeof input.plan_tier === 'string' && input.plan_tier.length > 0) {
+    return true;
+  }
+  if (typeof input.model === 'string' && input.model.length > 0) {
+    return true;
+  }
+  if (input.model && typeof input.model === 'object' && !Array.isArray(input.model) && input.model.id !== undefined) {
+    return true;
+  }
+  if (input.context_window !== undefined && input.context_window !== null && typeof input.context_window === 'object' && !Array.isArray(input.context_window)) {
+    return true;
+  }
+  if (typeof input.conversation_id === 'string' && input.conversation_id.length > 0) {
+    return true;
+  }
+  if (typeof input.version === 'string' && input.version.length > 0) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Persisting policy (pure function):
+ * Merges previous stored quota record with an incoming payload.
+ *
+ * Rules:
+ * 1. Extract only allowlisted fields (quota, plan_tier, model id, context_window, conversation_id, version).
+ * 2. Stamp capturedAtMs: nowMs. Additionally keep quotaCapturedAtMs (timestamp of most recent payload carrying quota).
+ * 3. If incoming payload has no quota (or empty object), keep previous quota, plan_tier, and quotaCapturedAtMs.
+ * 4. If incoming payload has none of the allowlisted fields at all, write nothing (shouldWrite: false).
+ * 5. Write only if merged record differs from stored record ignoring capturedAtMs and quotaCapturedAtMs, OR stored capturedAtMs is older than 30 000 ms.
+ * 6. Never include forbidden fields (email, cwd, transcript_path, workspace, session_id, etc.).
+ *
+ * @param {object|null} previous Stored record from ~/.wmux/quota/agy.json
+ * @param {object|null} incoming Incoming raw payload from agy statusLine
+ * @param {number} [nowMs=Date.now()] Current timestamp in milliseconds
+ * @returns {{ record: object|null, shouldWrite: boolean }}
+ */
+function mergeQuotaRecord(previous, incoming, nowMs = Date.now()) {
+  if (!hasAnyAllowlistedField(incoming)) {
+    return {
+      record: previous ?? null,
+      shouldWrite: false,
+    };
+  }
+
+  const record = {
+    capturedAtMs: nowMs,
   };
 
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return result;
-  }
-
-  if (input.quota !== undefined) {
-    result.quota = input.quota;
-  }
-  if (input.plan_tier !== undefined) {
-    result.plan_tier = input.plan_tier;
-  }
-  if (typeof input.model === 'string') {
-    result.model = { id: input.model };
-  } else if (input.model && typeof input.model === 'object' && !Array.isArray(input.model)) {
-    if (input.model.id !== undefined) {
-      result.model = { id: input.model.id };
+  // 1. Quota & QuotaCapturedAtMs & PlanTier
+  if (hasQuota(incoming)) {
+    record.quota = incoming.quota;
+    record.quotaCapturedAtMs = nowMs;
+    if (incoming.plan_tier !== undefined) {
+      record.plan_tier = incoming.plan_tier;
+    } else if (previous && previous.plan_tier !== undefined) {
+      record.plan_tier = previous.plan_tier;
+    }
+  } else {
+    // Keep previous quota, plan_tier, and quotaCapturedAtMs across gap
+    if (previous && previous.quota !== undefined) {
+      record.quota = previous.quota;
+    }
+    if (previous && previous.quotaCapturedAtMs !== undefined) {
+      record.quotaCapturedAtMs = previous.quotaCapturedAtMs;
+    }
+    if (previous && previous.plan_tier !== undefined) {
+      record.plan_tier = previous.plan_tier;
+    } else if (incoming.plan_tier !== undefined) {
+      record.plan_tier = incoming.plan_tier;
     }
   }
-  if (input.context_window !== undefined) {
-    result.context_window = input.context_window;
+
+  // 2. Model: string or { id }
+  let modelVal;
+  if (typeof incoming.model === 'string') {
+    modelVal = { id: incoming.model };
+  } else if (incoming.model && typeof incoming.model === 'object' && !Array.isArray(incoming.model)) {
+    if (incoming.model.id !== undefined) {
+      modelVal = { id: incoming.model.id };
+    }
   }
-  if (input.conversation_id !== undefined) {
-    result.conversation_id = input.conversation_id;
-  }
-  if (input.version !== undefined) {
-    result.version = input.version;
+  if (modelVal !== undefined) {
+    record.model = modelVal;
+  } else if (previous && previous.model !== undefined) {
+    record.model = previous.model;
   }
 
-  return result;
+  // 3. Context window
+  if (incoming.context_window !== undefined && incoming.context_window !== null && typeof incoming.context_window === 'object' && !Array.isArray(incoming.context_window)) {
+    record.context_window = incoming.context_window;
+  } else if (previous && previous.context_window !== undefined) {
+    record.context_window = previous.context_window;
+  }
+
+  // 4. Conversation ID
+  if (incoming.conversation_id !== undefined && incoming.conversation_id !== null) {
+    record.conversation_id = incoming.conversation_id;
+  } else if (previous && previous.conversation_id !== undefined) {
+    record.conversation_id = previous.conversation_id;
+  }
+
+  // 5. Version
+  if (incoming.version !== undefined && incoming.version !== null) {
+    record.version = incoming.version;
+  } else if (previous && previous.version !== undefined) {
+    record.version = previous.version;
+  }
+
+  // Persisting policy write decision:
+  // Write only if merged record differs from stored one ignoring capturedAtMs and quotaCapturedAtMs,
+  // OR stored capturedAtMs is older than 30 000 ms.
+  let shouldWrite = false;
+  if (!previous) {
+    shouldWrite = true;
+  } else {
+    const hasChanged = !recordsEqualIgnoringCapturedAt(previous, record);
+    const isStale = typeof previous.capturedAtMs === 'number' && (nowMs - previous.capturedAtMs) >= 30000;
+    shouldWrite = hasChanged || isStale;
+  }
+
+  return {
+    record,
+    shouldWrite,
+  };
+}
+
+/**
+ * Extracts ONLY allowlisted fields from a single payload (for direct standalone extraction).
+ */
+function extractQuotaPayload(input, nowMs = Date.now()) {
+  const { record } = mergeQuotaRecord(null, input, nowMs);
+  return record || { capturedAtMs: nowMs };
 }
 
 /**
@@ -88,6 +242,25 @@ function extractQuotaPayload(input) {
  */
 function getHomeDir(env = process.env) {
   return env.WMUX_QUOTA_SINK_HOME || env.USERPROFILE || env.HOME || os.homedir();
+}
+
+/**
+ * Reads existing quota record from <homeDir>/.wmux/quota/agy.json if available.
+ */
+function readQuotaFile(homeDir = getHomeDir()) {
+  try {
+    const dest = path.join(homeDir, '.wmux', 'quota', 'agy.json');
+    if (fs.existsSync(dest)) {
+      const raw = fs.readFileSync(dest, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    }
+  } catch {
+    // ignore read/parse errors
+  }
+  return null;
 }
 
 /**
@@ -139,24 +312,37 @@ function writeQuotaFile(data, homeDir = getHomeDir()) {
 
 /**
  * Resolves the original command to chain to, if any.
- * Checks WMUX_AGY_ORIGINAL_STATUSLINE env var first, then trailing CLI args.
+ * Checks WMUX_AGY_ORIGINAL_STATUSLINE env var first, then --chain-b64 argument.
+ * Positional chain arguments are dropped.
  */
 function resolveOriginalCommand(argv = process.argv, env = process.env) {
   if (typeof env.WMUX_AGY_ORIGINAL_STATUSLINE === 'string' && env.WMUX_AGY_ORIGINAL_STATUSLINE.trim().length > 0) {
     return env.WMUX_AGY_ORIGINAL_STATUSLINE.trim();
   }
   if (Array.isArray(argv)) {
-    if (argv[2] === 'agy') {
-      if (argv.length === 4) {
-        return argv[3].trim() || null;
+    for (let i = 0; i < argv.length; i++) {
+      const arg = argv[i];
+      if (arg === '--chain-b64' && i + 1 < argv.length) {
+        const rawB64 = argv[i + 1];
+        try {
+          const decoded = Buffer.from(rawB64, 'base64url').toString('utf8');
+          if (decoded.trim().length > 0) {
+            return decoded.trim();
+          }
+        } catch {
+          return null;
+        }
+      } else if (typeof arg === 'string' && arg.startsWith('--chain-b64=')) {
+        const rawB64 = arg.slice('--chain-b64='.length);
+        try {
+          const decoded = Buffer.from(rawB64, 'base64url').toString('utf8');
+          if (decoded.trim().length > 0) {
+            return decoded.trim();
+          }
+        } catch {
+          return null;
+        }
       }
-      if (argv.length > 4) {
-        return argv.slice(3).join(' ').trim() || null;
-      }
-    } else if (argv.length === 3) {
-      return argv[2].trim() || null;
-    } else if (argv.length > 3) {
-      return argv.slice(2).join(' ').trim() || null;
     }
   }
   return null;
@@ -209,8 +395,12 @@ function runQuotaSink() {
 
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     try {
-      const extracted = extractQuotaPayload(payload);
-      writeQuotaFile(extracted);
+      const homeDir = getHomeDir();
+      const previous = readQuotaFile(homeDir);
+      const { record, shouldWrite } = mergeQuotaRecord(previous, payload, Date.now());
+      if (shouldWrite && record) {
+        writeQuotaFile(record, homeDir);
+      }
     } catch {
       // Do not let write failure abort statusLine hook or block chaining
     }
@@ -226,11 +416,17 @@ function runQuotaSink() {
 module.exports = {
   extractQuotaPayload,
   getHomeDir,
+  readQuotaFile,
   writeQuotaFile,
   renameWithRetry,
   resolveOriginalCommand,
   runChainCommand,
   runQuotaSink,
+  mergeQuotaRecord,
+  isDeepEqual,
+  recordsEqualIgnoringCapturedAt,
+  hasQuota,
+  hasAnyAllowlistedField,
 };
 
 if (require.main === module) {
