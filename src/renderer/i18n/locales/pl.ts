@@ -1171,6 +1171,10 @@ export const pl = {
   'settings.roleBindingHintNoGrammar':
     'wmux nie ma zweryfikowanej flagi --model dla {agent}, więc model jest ignorowany. Dodatkowe argumenty nadal obowiązują.',
   'settings.roleBindingHintInert': 'Dodaj model lub dodatkowe argumenty — sam agent nic nie wymusza.',
+  'settings.roleBindingEffortLabel': 'Effort: {role}',
+  'settings.roleBindingEffortDefault': 'Effort: domyślny',
+  'settings.roleBindingSkipPermissions': 'Pomijaj uprawnienia',
+  'settings.roleBindingRefreshModels': 'Odśwież modele',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Wymuszone uruchomienie: {binding}',
   'pane.enforcedLaunch': 'Uruchomienie wymuszone rolą: {binding}',

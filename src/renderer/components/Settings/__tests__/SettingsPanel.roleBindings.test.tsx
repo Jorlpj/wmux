@@ -88,10 +88,11 @@ describe('RoleBindingsView render', () => {
   });
 
   // P2-4 — a <select> of Claude aliases could not express a valid codex model.
-  it('renders the model field as a free-text combobox with a datalist', () => {
+  it('renders the model field as a free-text combobox', () => {
     const html = render();
-    expect(html).toContain('<datalist id="role-binding-models-Builder">');
-    expect(html).toContain('list="role-binding-models-Builder"');
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('aria-label="Builder model"');
+    expect(html).not.toContain('<datalist');
   });
 
   // agy is a known launcher, but fan-out cannot start it with a positional
@@ -102,9 +103,25 @@ describe('RoleBindingsView render', () => {
     expect(html).not.toContain('<option value="agy">');
   });
 
-  it('suggests claude aliases only when the row is bound to claude', () => {
-    expect(render({ Builder: { agent: 'claude' } })).toContain('Haiku 4.5');
-    expect(render({ Builder: { agent: 'codex' } })).not.toContain('Haiku 4.5');
+  it('offers the agent\'s own launch options once an agent is bound', () => {
+    const claude = render({ Builder: { agent: 'claude' } });
+    expect(claude).toContain('data-role-binding-options="Builder"');
+    expect(claude).toContain('Skip permissions');
+    expect(claude).toContain('aria-label="Builder effort"');
+    const agy = render({ Builder: { agent: 'agy' } });
+    expect(agy).toContain('Skip permissions');
+    // Not offered until a task-dispatch path honours it.
+    expect(claude).not.toContain('Fresh context per task');
+    expect(render()).not.toContain('data-role-binding-options');
+  });
+
+  it('previews the launch the binding produces', () => {
+    const html = render({
+      Reviewer: { agent: 'codex', model: 'gpt-6-sol', effort: 'low', skipPermissions: true },
+    });
+    expect(html).toContain(
+      'codex --model gpt-6-sol -c model_reasoning_effort=low --dangerously-bypass-approvals-and-sandbox',
+    );
   });
 
   it('keeps a typed codex model id in the field (free text, not a fixed list)', () => {
@@ -151,7 +168,7 @@ describe('RoleBindingsView render', () => {
     });
     const modelInput = findByAriaLabel(tree, 'Builder model');
     expect(modelInput).toBeDefined();
-    modelInput?.props.onChange({ target: { value: 'haiku' } });
+    (modelInput?.props.onChange as unknown as (v: string) => void)('haiku');
     expect(onChange).toHaveBeenCalledWith('Builder', {
       agent: 'claude',
       args: '--verbose',

@@ -699,6 +699,10 @@ export const ko = {
   'settings.orchestratorEffortDesc':
     '턴마다 오케스트레이터가 생각하는 양(claude --effort). 낮을수록 빠르고 토큰을 덜 씁니다. 다음 명령부터 적용됩니다.',
   'settings.orchestratorEffortDefault': '기본 (CLI 설정)',
+  'settings.roleBindingEffortLabel': '{role} effort',
+  'settings.roleBindingEffortDefault': 'Effort: 기본',
+  'settings.roleBindingSkipPermissions': '권한 확인 건너뛰기',
+  'settings.roleBindingRefreshModels': '모델 새로고침',
   'settings.orchestratorFullPower': '풀파워 모드',
   'settings.orchestratorFullPowerDesc':
     'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',

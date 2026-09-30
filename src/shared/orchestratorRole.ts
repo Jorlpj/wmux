@@ -1,4 +1,5 @@
 import { launcherStem, tokenize } from './agentResume';
+import { EFFORT_TOKEN_RE, launchGrammarFor } from './agentLaunchOptions';
 
 // Orchestrator pane role (soft, operator-assigned "preferred role").
 //
@@ -89,6 +90,14 @@ export interface RoleBinding {
   model?: string;
   /** Extra launch args appended verbatim (advanced). Normalized/capped. */
   args?: string;
+  /** Reasoning effort, spliced with the agent's own grammar
+   *  (agentLaunchOptions). Ignored for agy, whose effort is the model id suffix. */
+  effort?: string;
+  /** Launch with the agent's own skip-permission-prompts flag. */
+  skipPermissions?: boolean;
+  /** Start each dispatched task with the agent's fresh-context command
+   *  (`/clear`, `/new`). Read by dispatchers, never spliced into a launch. */
+  freshContext?: boolean;
 }
 
 /** Operator-level, cross-workspace. Keyed by role name (ORCH_ROLES ∪ custom). */
@@ -302,7 +311,10 @@ function normalizeArgsField(input: unknown): string | undefined {
  *  load), or undefined when the result carries no usable field. */
 export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const src = input as { agent?: unknown; model?: unknown; args?: unknown };
+  const src = input as {
+    agent?: unknown; model?: unknown; args?: unknown;
+    effort?: unknown; skipPermissions?: unknown; freshContext?: unknown;
+  };
   const binding: RoleBinding = {};
   // Agent normalizes to a launcher stem so it compares cleanly against a live
   // command's stem (drops a path/extension a hand-edited value might carry).
@@ -313,7 +325,14 @@ export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   if (agent) binding.agent = agent;
   if (model) binding.model = model;
   if (args) binding.args = args;
-  if (binding.agent === undefined && binding.model === undefined && binding.args === undefined) {
+  if (typeof src.effort === 'string' && EFFORT_TOKEN_RE.test(src.effort)) binding.effort = src.effort;
+  // Strict booleans only: a hand-edited "true" string does not switch it on.
+  if (src.skipPermissions === true) binding.skipPermissions = true;
+  if (src.freshContext === true) binding.freshContext = true;
+  if (
+    binding.agent === undefined && binding.model === undefined && binding.args === undefined &&
+    binding.effort === undefined && !binding.skipPermissions && !binding.freshContext
+  ) {
     return undefined;
   }
   return binding;
@@ -499,7 +518,8 @@ export function applyRoleBinding(
   if (!binding) return unchanged;
   const model = binding.model?.trim() || undefined;
   const args = binding.args?.trim() || undefined;
-  if (!model && !args) return unchanged;
+  const effort = binding.effort && EFFORT_TOKEN_RE.test(binding.effort) ? binding.effort : undefined;
+  if (!model && !args && !effort && !binding.skipPermissions) return unchanged;
 
   const tokens = tokenize(command);
   if (tokens.length === 0) return unchanged;
@@ -536,10 +556,27 @@ export function applyRoleBinding(
     }
   }
 
+  // Launch options (effort, skip permissions) use the agent's verified grammar
+  // and, like the model, need the binding to name the agent. A flag already on
+  // the line wins (D-4 for options).
+  const launch = binding.agent ? launchGrammarFor(stem) : undefined;
+  const optionTokens: string[] = [];
+  if (effort && launch?.effortFlag && !tokens.some((t) => launch.hasEffort?.(t.value))) {
+    optionTokens.push(...launch.effortFlag(effort));
+  }
+  if (binding.skipPermissions && launch?.skipPermissionsFlag) {
+    const spellings = [launch.skipPermissionsFlag, ...(launch.skipPermissionsAliases ?? [])];
+    if (!tokens.some((t) => spellings.includes(t.value))) optionTokens.push(launch.skipPermissionsFlag);
+  }
+
   let out = command;
-  if (injectModel && grammar) {
-    const at = tokens[0].end;
-    out = `${command.slice(0, at)} ${grammar.flag(model as string)}${command.slice(at)}`;
+  const at = tokens[0].end;
+  const inserted = [
+    ...(injectModel && grammar ? [grammar.flag(model as string)] : []),
+    ...optionTokens,
+  ];
+  if (inserted.length > 0) {
+    out = `${command.slice(0, at)} ${inserted.join(' ')}${command.slice(at)}`;
   }
   // Append extra args verbatim, but only when not already trailing (idempotence).
   if (args && !alreadyEndsWithArgs(out, args)) {

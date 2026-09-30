@@ -1189,7 +1189,11 @@ export const en = {
     'Pick an agent too — a model on its own is not enforced (wmux can’t tell whose --model flag it is).',
   'settings.roleBindingHintNoGrammar':
     'wmux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
-  'settings.roleBindingHintInert': 'Add a model or extra args — an agent alone enforces nothing.',
+  'settings.roleBindingHintInert': 'Add a model, an effort, an option or extra args — an agent alone enforces nothing.',
+  'settings.roleBindingEffortLabel': '{role} effort',
+  'settings.roleBindingEffortDefault': 'Effort: default',
+  'settings.roleBindingSkipPermissions': 'Skip permissions',
+  'settings.roleBindingRefreshModels': 'Refresh models',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
   'pane.enforcedLaunch': 'Role-enforced launch: {binding}',
