@@ -38,6 +38,7 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import type { RpcMethod } from '../../../shared/rpc';
+import { teardownWorkspaceDeckState, surfaceStrandedWork } from '../../deck/deckWorkspaceTeardown';
 
 /** Positive allow-list — only channel/principal-mutating methods may ride the
  *  renderer trust path. Reads and every other RPC are rejected so this surface
@@ -153,7 +154,30 @@ export function registerChannelLocalHandlers(getDaemonClient: () => DaemonClient
 
       const dc = getDaemonClient();
       if (!dc) throw new Error('Daemon not connected');
-      return dc.rpc(method as RpcMethod, p);
+      const result = await dc.rpc(method as RpcMethod, p);
+
+      // Whole-workspace removal teardown: when purgeMembership is called for an entire
+      // workspace (both memberId and principalId are absent), tear down its Deck stores.
+      // Must run AFTER the daemon call has been made, and must never fail the RPC.
+      if (
+        method === 'a2a.channel.purgeMembership' &&
+        typeof p.workspaceId === 'string' &&
+        p.workspaceId.trim().length > 0 &&
+        p.memberId === undefined &&
+        p.principalId === undefined
+      ) {
+        try {
+          const wsId = p.workspaceId.trim();
+          await teardownWorkspaceDeckState(wsId, {
+            onStrandedWork: (work) => surfaceStrandedWork(wsId, work, 'cleared'),
+          });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[channelLocal] workspace deck teardown failed for ${p.workspaceId}:`, err);
+        }
+      }
+
+      return result;
     }),
   );
 

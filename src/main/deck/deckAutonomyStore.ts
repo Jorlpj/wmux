@@ -274,6 +274,25 @@ export async function setWorkspaceAutonomy(
   return next;
 }
 
+/**
+ * Delete a workspace's stored autonomy entry (the workspace-removal teardown).
+ * Uses the same atomic write and listener notification as setWorkspaceAutonomy.
+ * Does NOT re-derive or re-create a default entry: if the workspace is absent
+ * or invalid, no write happens and returns false.
+ */
+export async function deleteWorkspaceAutonomy(
+  workspaceId: string,
+  dir?: string,
+): Promise<boolean> {
+  if (!WORKSPACE_ID_RE.test(workspaceId)) return false;
+  const all = loadAll(dir);
+  if (!(workspaceId in all)) return false;
+  delete all[workspaceId];
+  await atomicWriteJSON(getDeckAutonomyPath(dir), all);
+  emitAutonomyWritten();
+  return true;
+}
+
 /** Set a workspace's MODE and write the mode-derived caps together (the atomic
  *  "one knob" operation). Returns the resolved entry. A bad workspaceId or an
  *  unknown mode is a no-op returning DEFAULT (never writes a bad key/mode).
