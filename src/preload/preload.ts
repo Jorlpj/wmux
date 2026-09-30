@@ -639,6 +639,13 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.AUTOMATION_OPEN_RUN, listener); };
     },
   },
+  agentModels: {
+    /** Models an agent CLI reports; `refresh` bypasses main's cache. */
+    list: (agent: string, refresh = false) =>
+      ipcRenderer.invoke(IPC.AGENT_MODELS_LIST, { agent, refresh }) as Promise<
+        import('../shared/modelCatalog').ModelCatalogResult
+      >,
+  },
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace
     // whose brain it addresses. `model` is the orchestrator model override
