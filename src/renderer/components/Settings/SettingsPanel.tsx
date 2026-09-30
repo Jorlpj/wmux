@@ -30,7 +30,7 @@ import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
-import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
+import { ORCH_ROLES, applyRoleBinding, launcherSupportsModelFlag, type RoleBinding } from '../../../shared/orchestratorRole';
 import {
   DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
   FANOUT_WORKER_PERMISSION_MODES,
@@ -51,6 +51,16 @@ import {
 import { shortcutPressGuard } from '../../utils/shortcutBindings';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from '../../../shared/claudeModels';
+import {
+  agyEffortOf,
+  agyFamilyOf,
+  CATALOG_AGENTS,
+  staticClaudeModels,
+  type CatalogModel,
+  type ModelCatalogResult,
+} from '../../../shared/modelCatalog';
+import { launchGrammarFor } from '../../../shared/agentLaunchOptions';
+import ModelCombobox from './ModelCombobox';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
@@ -644,14 +654,16 @@ const ROLE_BINDING_FIELD_CLASS = 'settings-input font-mono';
 /** The one honest thing to say about a row's current state, or none when the
  *  row does exactly what it appears to. Keeps a mis-set binding from looking
  *  bound while enforcing nothing. */
-export function roleBindingHint(b: { agent?: string; model?: string; args?: string }):
+export function roleBindingHint(b: RoleBinding):
   | { key: string; params?: Record<string, string> }
   | undefined {
   if (b.model && !b.agent) return { key: 'settings.roleBindingHintNoAgent' };
   if (b.model && b.agent && !launcherSupportsModelFlag(b.agent)) {
     return { key: 'settings.roleBindingHintNoGrammar', params: { agent: b.agent } };
   }
-  if (b.agent && !b.model && !b.args) return { key: 'settings.roleBindingHintInert' };
+  if (b.agent && !b.model && !b.args && !b.effort && !b.skipPermissions && !b.freshContext) {
+    return { key: 'settings.roleBindingHintInert' };
+  }
   return undefined;
 }
 
@@ -707,16 +719,45 @@ function DraftTextInput({
 }
 
 export interface RoleBindingsViewProps {
-  bindings: Record<string, { agent?: string; model?: string; args?: string }>;
+  bindings: Record<string, RoleBinding>;
   /** Called with the FULL next binding for a role (the view merges the patch). */
-  onChange: (role: string, next: { agent?: string; model?: string; args?: string }) => void;
+  onChange: (role: string, next: RoleBinding) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
+  /** Discovered models per agent (ModelCatalog); absent = none loaded yet. */
+  catalog?: Record<string, ModelCatalogResult>;
+  /** Re-run an agent's model discovery (the refresh button). */
+  onRefreshModels?: (agent: string) => void;
+}
+
+/** Models to offer for an agent: the discovered list, or claude's static one. */
+function modelsFor(agent: string | undefined, catalog: RoleBindingsViewProps['catalog']): CatalogModel[] {
+  if (!agent) return [];
+  return catalog?.[agent]?.models ?? (agent === 'claude' ? staticClaudeModels() : []);
+}
+
+/** Effort choices for a binding, per agent grammar. agy: the suffixes its
+ *  catalog offers for the chosen model family (the effort IS the id suffix). */
+export function effortChoicesFor(b: RoleBinding, models: readonly CatalogModel[]): string[] {
+  if (b.agent === 'claude') return [...CLAUDE_EFFORT_LEVELS];
+  if (b.agent === 'codex') {
+    const m = models.find((x) => x.id === b.model);
+    if (m?.efforts?.length) return m.efforts;
+    const all = new Set(models.flatMap((x) => x.efforts ?? []));
+    return all.size ? [...all] : ['low', 'medium', 'high', 'xhigh'];
+  }
+  if (b.agent === 'agy' && b.model && agyEffortOf(b.model)) {
+    const family = agyFamilyOf(b.model);
+    return models
+      .filter((x) => agyFamilyOf(x.id) === family && agyEffortOf(x.id))
+      .map((x) => agyEffortOf(x.id) as string);
+  }
+  return [];
 }
 
 /** Presentational half — the container below owns the store. Split so the view
  *  is renderable (and assertable) without a live store, matching NotificationsView. */
-export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProps) {
-  const update = (role: string, patch: { agent?: string; model?: string; args?: string }) => {
+export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshModels }: RoleBindingsViewProps) {
+  const update = (role: string, patch: Partial<RoleBinding>) => {
     onChange(role, { ...(bindings[role] ?? {}), ...patch });
   };
 
@@ -725,7 +766,14 @@ export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProp
       {ORCH_ROLES.map((role) => {
         const b = bindings[role] ?? {};
         const hint = roleBindingHint(b);
-        const listId = `role-binding-models-${role}`;
+        const models = modelsFor(b.agent, catalog);
+        const efforts = effortChoicesFor(b, models);
+        const grammar = launchGrammarFor(b.agent);
+        // agy's effort is the model id suffix: show it as the selected effort.
+        const effortValue =
+          b.agent === 'agy' ? (b.model ? agyEffortOf(b.model) ?? '' : '') : b.effort ?? '';
+        // What a bare launch of the bound agent becomes (machine evidence, mono).
+        const preview = b.agent ? applyRoleBinding(b.agent, b, { spawnedProcess: true }).command : '';
         return (
           <div key={role} className="settings-row" data-role-binding-row={role}>
             <div className="flex items-center gap-2">
@@ -741,24 +789,16 @@ export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProp
                   <option key={a} value={a}>{a}</option>
                 ))}
               </Select>
-              <DraftTextInput
+              {/* Discovered models (ModelCatalog); free text stays allowed. */}
+              <ModelCombobox
                 aria-label={t('settings.roleBindingModelLabel', { role })}
-                type="text"
-                list={listId}
                 value={b.model ?? ''}
+                models={models}
                 placeholder={t('settings.roleBindingModelPlaceholder')}
-                onChange={(e) => update(role, { model: e.target.value })}
+                onChange={(model) => update(role, { model })}
                 className={ROLE_BINDING_FIELD_CLASS}
-                style={{ width: 132 }}
+                style={{ width: 200 }}
               />
-              {/* Suggestions only — free text is required for codex model ids.
-                  We only know claude's aliases, so that is all we suggest. */}
-              <datalist id={listId}>
-                {b.agent === 'claude' &&
-                  MODEL_OPTIONS.filter((o) => o.value).map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-              </datalist>
               <DraftTextInput
                 aria-label={t('settings.roleBindingArgsLabel', { role })}
                 type="text"
@@ -768,6 +808,61 @@ export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProp
                 className={`flex-1 min-w-0 ${ROLE_BINDING_FIELD_CLASS}`}
               />
             </div>
+            {b.agent && (
+              <div className="flex items-center gap-3 mt-1.5 pl-[84px]" data-role-binding-options={role}>
+                {efforts.length > 0 && (
+                  <Select
+                    aria-label={t('settings.roleBindingEffortLabel', { role })}
+                    value={effortValue}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (b.agent === 'agy' && b.model) {
+                        update(role, { model: `${agyFamilyOf(b.model)}-${next}` });
+                      } else {
+                        update(role, { effort: next || undefined });
+                      }
+                    }}
+                    className="settings-role-effort"
+                  >
+                    {b.agent !== 'agy' && <option value="">{t('settings.roleBindingEffortDefault')}</option>}
+                    {efforts.map((e) => (
+                      <option key={e} value={e}>{e}</option>
+                    ))}
+                  </Select>
+                )}
+                {grammar?.skipPermissionsFlag && (
+                  <label className="flex items-center gap-1.5 text-[12px] text-[var(--text-sub)]">
+                    <Checkbox
+                      checked={!!b.skipPermissions}
+                      onCheckedChange={(v) => update(role, { skipPermissions: v || undefined })}
+                      aria-label={t('settings.roleBindingSkipPermissions')}
+                    />
+                    {t('settings.roleBindingSkipPermissions')}
+                  </label>
+                )}
+                {/* freshContext is stored and normalized, but no task-dispatch path
+                    reads it yet (input.send sees every message, not tasks), so
+                    it is not offered until one does. */}
+                {onRefreshModels && b.agent !== 'claude' && (
+                  <button
+                    type="button"
+                    className="ml-auto text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
+                    onClick={() => onRefreshModels(b.agent as string)}
+                    data-role-binding-refresh={role}
+                  >
+                    {t('settings.roleBindingRefreshModels')}
+                  </button>
+                )}
+              </div>
+            )}
+            {preview && (
+              <p
+                className="ui-code m-0 mt-1 pl-[84px] text-[11px] text-[var(--text-sub)]"
+                data-role-binding-preview={role}
+              >
+                {preview}
+              </p>
+            )}
             {hint && (
               <p
                 className="ui-field-description m-0 mt-1 pl-[84px]"
@@ -787,7 +882,31 @@ function RoleBindingEditor() {
   const t = useT();
   const bindings = useStore((s) => s.orchestratorRoleBindings);
   const setBinding = useStore((s) => s.setOrchestratorRoleBinding);
-  return <RoleBindingsView bindings={bindings} onChange={setBinding} t={t} />;
+  const [catalog, setCatalog] = useState<Record<string, ModelCatalogResult>>({});
+  const load = useCallback((agent: string, refresh = false) => {
+    window.electronAPI.agentModels
+      ?.list(agent, refresh)
+      .then((r) => setCatalog((c) => ({ ...c, [agent]: r })))
+      .catch(() => undefined); // free text still works without a list
+  }, []);
+  // Discover only for the agents a role actually uses.
+  const agentsKey = [...new Set(Object.values(bindings).map((b) => b.agent).filter((a): a is string => !!a))]
+    .sort()
+    .join(',');
+  useEffect(() => {
+    for (const a of agentsKey.split(',')) {
+      if ((CATALOG_AGENTS as readonly string[]).includes(a)) load(a);
+    }
+  }, [agentsKey, load]);
+  return (
+    <RoleBindingsView
+      bindings={bindings}
+      onChange={setBinding}
+      t={t}
+      catalog={catalog}
+      onRefreshModels={(a) => load(a, true)}
+    />
+  );
 }
 
 function OrchestratorSection() {
