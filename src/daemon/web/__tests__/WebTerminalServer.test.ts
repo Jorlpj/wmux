@@ -4076,6 +4076,180 @@ describe('WebTerminalServer', () => {
     expect(lifecycleCalls.at(-1)).toMatchObject({op:'create',arg:{agentLaunch:{agent:'claude',model:'opus',effort:'high'}}});
   });
 
+  describe('per-pane account and handoff lineage (contract v-next item 4)', () => {
+    /** A desktop that answers `accounts.envForAccount` from `accounts`; `announce` is what it registered with. */
+    const accountDesktop = (announce: string[] | undefined, accounts: Record<string, unknown>, calls: unknown[] = []) => {
+      desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+        const data = (raw as {data:{requestId:string;command:string;payload:Record<string,unknown>}}).data;
+        calls.push({command:data.command,payload:data.payload});
+        const workspaceEnv = {CLAUDE_CONFIG_DIR:'/ws/claude',CODEX_HOME:'/ws/codex'};
+        const reply = data.command === 'accounts.env'
+          ? {ok:true,result:data.payload.typed === true ? {ok:true,env:workspaceEnv} : workspaceEnv}
+          : data.command === 'accounts.envForAccount' && announce
+            ? {ok:true,result:accounts[data.payload.accountId as string] ?? {ok:false,error:'unknown-account'}}
+            // An old desktop throws on a command it does not know; the envelope says only "failed".
+            : {ok:false};
+        queueMicrotask(() => desktopBridge!.complete('main',{requestId:data.requestId,...reply}));
+        return true;
+      });
+      desktopBridge.register('main',announce);
+      return calls;
+    };
+    const second = {ok:true,vendor:'codex',env:{CODEX_HOME:'/acct/second'}};
+    const startBoth = () => server.start({port:0,host:'127.0.0.1',allowInput:true,allowTranscript:true,allowUpload:false});
+    const post = (headers: Record<string,string>, body: unknown) => fetch(`${base()}/api/sessions`,{method:'POST',headers,body:JSON.stringify(body)});
+
+    it('an old desktop (command unknown) refuses the create and never spawns on the workspace env', async () => {
+      accountDesktop(undefined,{c2:second});
+      const headers = bearer((await startBoth()).token as string);
+      expect(await (await fetch(`${base()}/api/config`,{headers})).json()).not.toHaveProperty('paneAccount');
+      const before = lifecycleCalls.length;
+      const refused = await post(headers,{workspaceId:'ws-1',accountId:'c2'});
+      expect(refused.status).toBe(503);
+      expect(await refused.json()).toEqual({error:'desktop-unavailable',effect:'none'});
+      // A desktop that announced the command but fails it is refused the same way.
+      accountDesktop(['accounts.envForAccount'],{c2:{ok:false,error:'boom'}});
+      expect((await post(headers,{workspaceId:'ws-1',accountId:'c2'})).status).toBe(503);
+      desktopBridge = null;
+      expect((await post(headers,{workspaceId:'ws-1',accountId:'c2'})).status).toBe(503);
+      expect(lifecycleCalls).toHaveLength(before);
+    });
+
+    it('refuses unknown and foreign ids alike, a missing workspace, a missing grant, and a vendor mismatch', async () => {
+      accountDesktop(['accounts.envForAccount'],{c2:second});
+      const headers = bearer((await startBoth()).token as string);
+      const before = lifecycleCalls.length;
+      const unknown = await (await post(headers,{workspaceId:'ws-1',accountId:'nope'})).json();
+      const foreign = await (await post(headers,{workspaceId:'ws-1',accountId:'3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90'})).json();
+      expect(unknown).toEqual({error:'unknown-account',effect:'none'});
+      expect(foreign).toEqual(unknown);
+      const noWorkspace = await post(headers,{accountId:'c2'});
+      expect(noWorkspace.status).toBe(400);
+      expect(await noWorkspace.json()).toEqual({error:'workspace-required',effect:'none'});
+      expect(await (await post(headers,{workspaceId:'ws-1',accountId:'../x'})).json()).toEqual({error:'invalid-account-id',effect:'none'});
+      const mismatch = await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'claude'}});
+      expect(mismatch.status).toBe(400);
+      expect(await mismatch.text()).toBe(JSON.stringify({error:'account-vendor-mismatch',effect:'none'}));
+      // Any other agent is a mismatch too, not only the other known vendor.
+      expect(await (await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'opencode'}})).json()).toEqual({error:'account-vendor-mismatch',effect:'none'});
+      expect(lifecycleCalls).toHaveLength(before);
+      await server.stop();
+      const rw = await startRW();
+      const noTranscript = await post(bearer(rw.token as string),{workspaceId:'ws-1',accountId:'c2'});
+      expect(noTranscript.status).toBe(403);
+      expect(lifecycleCalls).toHaveLength(before);
+    });
+
+    it('spawns with the chosen account, echoes the id, and never returns the path', async () => {
+      const calls = accountDesktop(['accounts.envForAccount'],{c2:second});
+      const headers = bearer((await startBoth()).token as string);
+      expect(await (await fetch(`${base()}/api/config`,{headers})).json()).toMatchObject({paneAccount:true,paneHandoff:true});
+      const created = await post(headers,{workspaceId:'ws-1',accountId:'c2'});
+      expect(created.status).toBe(201);
+      const text = await created.text();
+      expect(JSON.parse(text)).toMatchObject({accountId:'c2'});
+      expect(text).not.toContain('/acct/second');
+      expect(lifecycleCalls.at(-1)).toMatchObject({op:'create',arg:{workspaceId:'ws-1',account:{vendor:'codex',dir:'/acct/second'}}});
+      expect(calls).toEqual([{command:'accounts.envForAccount',payload:{workspaceId:'ws-1',accountId:'c2'}}]);
+    });
+
+    it('validates the launch catalog against the chosen account', async () => {
+      const claude = {ok:true,vendor:'claude',env:{CLAUDE_CONFIG_DIR:'/acct/claude-2'}};
+      accountDesktop(['accounts.envForAccount'],{c2:second,k2:claude});
+      const headers = bearer((await startBoth()).token as string);
+      expect((await fetch(`${base()}/api/agent-launch-options?workspaceId=ws-1&accountId=c2`,{headers})).status).toBe(200);
+      expect(agentLaunchEnv?.CODEX_HOME).toBe('/acct/second');
+      expect((await fetch(`${base()}/api/agent-launch-options?workspaceId=ws-1&accountId=k2`,{headers})).status).toBe(200);
+      expect(agentLaunchEnv?.CODEX_HOME).toBe('/ws/codex');
+      expect(agentLaunchEnv?.CLAUDE_CONFIG_DIR).toBe('/acct/claude-2');
+      const unknown = await fetch(`${base()}/api/agent-launch-options?workspaceId=ws-1&accountId=nope`,{headers});
+      expect(unknown.status).toBe(400);
+      expect(await unknown.json()).toEqual({error:'unknown-account',effect:'none'});
+      expect(await (await fetch(`${base()}/api/agent-launch-options?accountId=c2`,{headers})).json()).toEqual({error:'workspace-required',effect:'none'});
+      expect((await post(headers,{workspaceId:'ws-1',accountId:'k2',agentLaunch:{agent:'claude',model:'opus'}})).status).toBe(201);
+      expect(agentLaunchEnv?.CLAUDE_CONFIG_DIR).toBe('/acct/claude-2');
+    });
+
+    it('stores handoff lineage with verified, and refuses a malformed one', async () => {
+      const headers = bearer((await startBoth()).token as string);
+      const before = lifecycleCalls.length;
+      for (const handoffFrom of [{sessionId:'s1',extra:1},{sessionId:'a b'},'s1',{sessionId:'s1',agentSessionId:''}]) {
+        const bad = await post(headers,{handoffFrom});
+        expect(bad.status).toBe(400);
+        expect(await bad.json()).toEqual({error:'invalid-handoff',effect:'none'});
+      }
+      expect(lifecycleCalls).toHaveLength(before);
+      const live = await post(headers,{handoffFrom:{sessionId:'s1'}});
+      expect(live.status).toBe(201);
+      expect(await live.json()).toMatchObject({handoffFrom:{sessionId:'s1',verified:true}});
+      expect(lifecycleCalls.at(-1)).toMatchObject({arg:{handoffFrom:{sessionId:'s1',verified:true}}});
+      const gone = await post(headers,{handoffFrom:{sessionId:'gone-pane',agentSessionId:'conv-1'}});
+      expect(lifecycleCalls.at(-1)).toMatchObject({arg:{handoffFrom:{sessionId:'gone-pane',agentSessionId:'conv-1',verified:false}}});
+      // The row names a source only when this reader may attach it.
+      const goneRow = (await gone.json()) as {handoffFrom:Record<string,unknown>};
+      expect(goneRow.handoffFrom).toEqual({verified:false,at:expect.any(Number)});
+    });
+
+    it('re-checks the credential after a slow body, before answering anything about accounts', async () => {
+      accountDesktop(['accounts.envForAccount'],{c2:second});
+      await startBoth();
+      const phone = await pairDevice('Slow phone');
+      const before = lifecycleCalls.length;
+      const status = await new Promise<{status:number;text:string}>((resolve,reject) => {
+        const req = httpReq({host:'127.0.0.1',port:server.status().port,path:'/api/sessions',method:'POST',
+          headers:{Authorization:`Bearer ${phone.token}`,'Content-Type':'application/json'}},(res) => {
+          let text = ''; res.on('data',(c) => { text += c; }); res.on('end',() => resolve({status:res.statusCode ?? 0,text}));
+        });
+        req.on('error',reject);
+        const body = JSON.stringify({workspaceId:'ws-1',accountId:'nope'});
+        req.write(body.slice(0,10));
+        setTimeout(() => { deviceRoster.get(phone.deviceId)!.revoked = true; req.end(body.slice(10)); },50);
+      });
+      expect(status.status).toBe(401);
+      expect(status.text).not.toContain('unknown-account');
+      expect(lifecycleCalls).toHaveLength(before);
+    });
+
+    it('a broken binding for the chosen vendor does not block the pane; one for the other vendor is named', async () => {
+      const calls: unknown[] = [];
+      desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+        const data = (raw as {data:{requestId:string;command:string;payload:Record<string,unknown>}}).data;
+        calls.push({command:data.command,payload:data.payload});
+        // The workspace's claude binding points at a directory that is gone.
+        const result = data.command === 'accounts.envForAccount' ? {ok:true,vendor:'claude',env:{CLAUDE_CONFIG_DIR:'/acct/claude-2'}}
+          : data.payload.omitVendor === 'claude' ? {ok:true,env:{CODEX_HOME:'/ws/codex'}}
+          : {ok:false,error:'workspace-account-missing'};
+        queueMicrotask(() => desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result}));
+        return true;
+      });
+      desktopBridge.register('main',['accounts.envForAccount']);
+      const headers = bearer((await startBoth()).token as string);
+      const created = await post(headers,{workspaceId:'ws-1',accountId:'k2',agentLaunch:{agent:'claude'}});
+      expect(created.status).toBe(201);
+      expect(calls).toContainEqual({command:'accounts.env',payload:{workspaceId:'ws-1',typed:true,omitVendor:'claude'}});
+      const missing = await post(headers,{workspaceId:'ws-1',agentLaunch:{agent:'claude'}});
+      expect(missing.status).toBe(409);
+      expect(await missing.json()).toEqual({error:'workspace-account-missing',effect:'none'});
+    });
+
+    it('a desktop that detaches mid-lookup answers desktop-unavailable, never invalid-agent-launch', async () => {
+      desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+        const data = (raw as {data:{requestId:string;command:string}}).data;
+        if (data.command === 'accounts.envForAccount') queueMicrotask(() => desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result:second}));
+        else queueMicrotask(() => desktopBridge!.disconnect('main'));
+        return true;
+      });
+      desktopBridge.register('main',['accounts.envForAccount']);
+      const headers = bearer((await startBoth()).token as string);
+      const before = lifecycleCalls.length;
+      const detached = await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'codex'}});
+      // (codex is not in this fixture's catalog: a 400 here would mean the bridge failure became invalid-agent-launch.)
+      expect(detached.status).toBe(503);
+      expect(await detached.json()).toEqual({error:'desktop-unavailable',effect:'none'});
+      expect(lifecycleCalls).toHaveLength(before);
+    });
+  });
+
   it('serves workspace-scoped browser captures and restricts browser writes', async () => {
     managed.meta.env = { WMUX_WORKSPACE_ID: 'ws-1' };
     const calls: unknown[] = [];
