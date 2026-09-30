@@ -5,6 +5,7 @@ import os from 'node:os';
 import {
   reconcileOrphanDeckState,
   collectDeckWorkspaceIds,
+  collectDeckWorkspaceFiles,
   tryStartupDeckReconcile,
   __resetStartupDeckReconcileForTest,
   PARKED_WORK_TTL_HOURS,
@@ -117,11 +118,38 @@ describe('deckOrphanReconcile', () => {
     expect(collected.has('ws-orphan3')).toBe(true);
     expect(collected.has('ws-live')).toBe(true);
 
+    const fileMap = collectDeckWorkspaceFiles(dir);
+    expect(fileMap.get('ws-orphan1')).toEqual([
+      'deck-commander.json',
+      'deck-decisions.json',
+      'deck-loop-state.json',
+      'deck-work.json',
+    ]);
+    expect(fileMap.get('ws-orphan2')).toEqual([
+      'deck-autonomy.json',
+      'deck-commander.json',
+      'deck-work.json',
+    ]);
+    expect(fileMap.get('ws-orphan3')).toEqual([
+      'deck-autonomy.json',
+      'deck-loop-state.json',
+      'deck-schedules.json',
+    ]);
+    expect(fileMap.get('ws-live')).toEqual([
+      'deck-autonomy.json',
+      'deck-commander.json',
+      'deck-decisions.json',
+      'deck-loop-state.json',
+      'deck-schedules.json',
+      'deck-work.json',
+    ]);
+
     // Run reconcile with only 'ws-live' as live
     const report = await reconcileOrphanDeckState(['ws-live'], { dir });
 
     expect(report.orphans).toEqual(['ws-orphan1', 'ws-orphan2', 'ws-orphan3']);
     expect(report.archived.sort()).toEqual(['ws-orphan1', 'ws-orphan2']);
+    expect(report.tornDown?.sort()).toEqual(['ws-orphan1', 'ws-orphan2', 'ws-orphan3']);
 
     // Check archive holds orphan work records
     const archived = loadArchivedDeckWorks(dir);

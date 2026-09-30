@@ -33,7 +33,9 @@ const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 export interface OrphanReport {
   orphans: string[];
   archived: string[];
+  tornDown?: string[];
   skipped?: string;
+  skippedIds?: string[];
 }
 
 export interface OrphanReconcileOptions {
@@ -46,7 +48,7 @@ export interface OrphanReconcileOptions {
 
 /**
  * Collect every workspace ID matching WORKSPACE_ID_RE present across all six
- * Deck store files:
+ * Deck store files, along with the list of store file names it appears in:
  *   1. deck-work.json (keys in active)
  *   2. deck-loop-state.json (keys in map)
  *   3. deck-autonomy.json (keys in map)
@@ -54,8 +56,17 @@ export interface OrphanReconcileOptions {
  *   5. deck-decisions.json (keys in map)
  *   6. deck-schedules.json (workspaceId of each schedule)
  */
-export function collectDeckWorkspaceIds(dir?: string): Set<string> {
-  const ids = new Set<string>();
+export function collectDeckWorkspaceFiles(dir?: string): Map<string, string[]> {
+  const map = new Map<string, Set<string>>();
+
+  const addId = (id: string, file: string) => {
+    let set = map.get(id);
+    if (!set) {
+      set = new Set<string>();
+      map.set(id, set);
+    }
+    set.add(file);
+  };
 
   // 1. deck-work.json
   try {
@@ -64,7 +75,7 @@ export function collectDeckWorkspaceIds(dir?: string): Set<string> {
       const active = (raw as Record<string, unknown>).active;
       if (active && typeof active === 'object' && !Array.isArray(active)) {
         for (const k of Object.keys(active)) {
-          if (WORKSPACE_ID_RE.test(k)) ids.add(k);
+          if (WORKSPACE_ID_RE.test(k)) addId(k, 'deck-work.json');
         }
       }
     }
@@ -77,7 +88,7 @@ export function collectDeckWorkspaceIds(dir?: string): Set<string> {
     const raw = atomicReadJSONSync<unknown>(getDeckLoopStatePath(dir));
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       for (const k of Object.keys(raw as Record<string, unknown>)) {
-        if (WORKSPACE_ID_RE.test(k)) ids.add(k);
+        if (WORKSPACE_ID_RE.test(k)) addId(k, 'deck-loop-state.json');
       }
     }
   } catch {
@@ -89,7 +100,7 @@ export function collectDeckWorkspaceIds(dir?: string): Set<string> {
     const raw = atomicReadJSONSync<unknown>(getDeckAutonomyPath(dir));
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       for (const k of Object.keys(raw as Record<string, unknown>)) {
-        if (WORKSPACE_ID_RE.test(k)) ids.add(k);
+        if (WORKSPACE_ID_RE.test(k)) addId(k, 'deck-autonomy.json');
       }
     }
   } catch {
@@ -104,7 +115,7 @@ export function collectDeckWorkspaceIds(dir?: string): Set<string> {
       if (sessions && typeof sessions === 'object' && !Array.isArray(sessions)) {
         for (const k of Object.keys(sessions as Record<string, unknown>)) {
           const candidate = k.includes('::') ? k.split('::')[0] : k;
-          if (WORKSPACE_ID_RE.test(candidate)) ids.add(candidate);
+          if (WORKSPACE_ID_RE.test(candidate)) addId(candidate, 'deck-commander.json');
         }
       }
     }
@@ -117,7 +128,7 @@ export function collectDeckWorkspaceIds(dir?: string): Set<string> {
     const raw = atomicReadJSONSync<unknown>(getDeckDecisionPath(dir));
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       for (const k of Object.keys(raw as Record<string, unknown>)) {
-        if (WORKSPACE_ID_RE.test(k)) ids.add(k);
+        if (WORKSPACE_ID_RE.test(k)) addId(k, 'deck-decisions.json');
       }
     }
   } catch {
@@ -132,7 +143,7 @@ export function collectDeckWorkspaceIds(dir?: string): Set<string> {
         if (s && typeof s === 'object') {
           const wsId = (s as Record<string, unknown>).workspaceId;
           if (typeof wsId === 'string' && WORKSPACE_ID_RE.test(wsId)) {
-            ids.add(wsId);
+            addId(wsId, 'deck-schedules.json');
           }
         }
       }
@@ -141,7 +152,19 @@ export function collectDeckWorkspaceIds(dir?: string): Set<string> {
     // Missing or corrupt file is fine
   }
 
-  return ids;
+  const result = new Map<string, string[]>();
+  for (const [id, set] of map.entries()) {
+    result.set(id, Array.from(set).sort());
+  }
+  return result;
+}
+
+/**
+ * Collect every workspace ID matching WORKSPACE_ID_RE present across all six
+ * Deck store files.
+ */
+export function collectDeckWorkspaceIds(dir?: string): Set<string> {
+  return new Set(collectDeckWorkspaceFiles(dir).keys());
 }
 
 /**
@@ -166,6 +189,8 @@ export async function reconcileOrphanDeckState(
   const emptyReport: OrphanReport = {
     orphans: [],
     archived: [],
+    tornDown: [],
+    skippedIds: [],
   };
 
   try {
@@ -173,7 +198,7 @@ export async function reconcileOrphanDeckState(
     if (!liveWorkspaceIds || liveWorkspaceIds.length === 0) {
       const skipped = 'skipped: workspace list not loaded';
       log(skipped);
-      return { orphans: [], archived: [], skipped };
+      return { orphans: [], archived: [], tornDown: [], skippedIds: [], skipped };
     }
 
     const liveSet = new Set<string>();
@@ -186,7 +211,7 @@ export async function reconcileOrphanDeckState(
     if (liveSet.size === 0) {
       const skipped = 'skipped: workspace list not loaded';
       log(skipped);
-      return { orphans: [], archived: [], skipped };
+      return { orphans: [], archived: [], tornDown: [], skippedIds: [], skipped };
     }
 
     const dir = opts?.dir;
@@ -200,10 +225,12 @@ export async function reconcileOrphanDeckState(
       .sort();
 
     if (opts?.dryRun) {
-      return { orphans, archived: [] };
+      return { orphans, archived: [], tornDown: [], skippedIds: [] };
     }
 
     const archived: string[] = [];
+    const tornDown: string[] = [];
+    const skippedIds: string[] = [];
     const activeWorks = loadActiveDeckWorks(dir);
 
     for (const id of orphans) {
@@ -215,6 +242,7 @@ export async function reconcileOrphanDeckState(
           const workTs = work.updatedAt || work.startedAt || 0;
           const ageMs = now - workTs;
           if (ageMs < ttlMs) {
+            skippedIds.push(id);
             log(
               `skipping orphan ${id}: parked work is ${Math.round(ageMs / 3600000)}h old (< ${ttlHours}h TTL)`,
             );
@@ -241,13 +269,14 @@ export async function reconcileOrphanDeckState(
           },
           log,
         });
+        tornDown.push(id);
         log(`torn down orphan workspace ${id}`);
       } catch (err) {
         log(`failed to teardown orphan workspace ${id}: ${String(err)}`);
       }
     }
 
-    return { orphans, archived };
+    return { orphans, archived, tornDown, skippedIds };
   } catch (err) {
     log(`unexpected error during orphan reconcile: ${String(err)}`);
     return emptyReport;
