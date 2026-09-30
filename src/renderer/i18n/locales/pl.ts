@@ -1147,6 +1147,10 @@ export const pl = {
   'settings.orchestratorModelDesc':
     'Model Claude, na którym działa orkiestrator Command Deck. Zmiany obowiązują od następnego polecenia; rozmowa przechodzi dalej.',
   'settings.orchestratorModelDefault': 'Domyślny (model subskrypcji)',
+  'settings.orchestratorEffort': 'Effort orkiestratora',
+  'settings.orchestratorEffortDesc':
+    'Ile orkiestrator myśli w każdej turze (claude --effort). Niżej = szybciej i mniej tokenów. Działa od następnego polecenia.',
+  'settings.orchestratorEffortDefault': 'Domyślny (ustawienie CLI)',
   'settings.orchestratorFullPower': 'Tryb pełnej mocy',
   'settings.orchestratorFullPowerDesc':
     'Wczytaj Twoje skille Claude Code, CLAUDE.md i hooki do tur orkiestratora. Twoje hooki uruchamiają się wewnątrz tur mózgu (Twój własny kod, poza jakimkolwiek sandboxem wmuxa), wywołania narzędzi mogą być wolniejsze, a mózg nie może zapisywać swoich notatek pamięci, gdy to jest włączone. Obowiązuje od następnej tury mózgu.',

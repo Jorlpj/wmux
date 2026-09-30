@@ -1233,6 +1233,10 @@ export const zh = {
   'settings.orchestratorModel': '编排器模型',
   'settings.orchestratorModelDesc': '命令控制台编排器运行的 Claude 模型。更改从你的下一条命令开始生效；对话会延续。',
   'settings.orchestratorModelDefault': '默认（订阅模型）',
+  'settings.orchestratorEffort': '编排器 effort',
+  'settings.orchestratorEffortDesc':
+    '编排器每轮的思考量（claude --effort）。越低越快、越省 token。从下一条命令开始生效。',
+  'settings.orchestratorEffortDefault': '默认（CLI 设置）',
   'settings.orchestratorFullPower': '全功率模式',
   'settings.orchestratorFullPowerDesc': '将你的 Claude Code skills、CLAUDE.md 和钩子加载进编排器回合。你的钩子在大脑回合内运行（你自己的代码，位于任何 wmux 沙箱之外），工具调用可能变慢，且大脑无法写入外部集成。',
   'settings.orchestratorFullPowerSdkOnly': '仅适用于 Claude Code（SDK）大脑。终端大脑已经运行你自己的 Claude Code 环境，Hermes 会忽略此标志 — 请在上方切换编排器大脑来改变此项。',

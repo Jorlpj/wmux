@@ -695,6 +695,10 @@ export const ko = {
   'settings.orchestratorModelDesc':
     '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
+  'settings.orchestratorEffort': '오케스트레이터 effort',
+  'settings.orchestratorEffortDesc':
+    '턴마다 오케스트레이터가 생각하는 양(claude --effort). 낮을수록 빠르고 토큰을 덜 씁니다. 다음 명령부터 적용됩니다.',
+  'settings.orchestratorEffortDefault': '기본 (CLI 설정)',
   'settings.orchestratorFullPower': '풀파워 모드',
   'settings.orchestratorFullPowerDesc':
     'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',
