@@ -8,6 +8,7 @@ describe('isolateDataDir setup', () => {
   const origHome = process.env.HOME;
   const origUserProfile = process.env.USERPROFILE;
   const origDataSuffix = process.env.WMUX_DATA_SUFFIX;
+  const origIsolated = process.env.WMUX_TEST_ISOLATED;
 
   afterEach(() => {
     if (origHome === undefined) delete process.env.HOME;
@@ -18,6 +19,9 @@ describe('isolateDataDir setup', () => {
 
     if (origDataSuffix === undefined) delete process.env.WMUX_DATA_SUFFIX;
     else process.env.WMUX_DATA_SUFFIX = origDataSuffix;
+
+    if (origIsolated === undefined) delete process.env.WMUX_TEST_ISOLATED;
+    else process.env.WMUX_TEST_ISOLATED = origIsolated;
   });
 
   it('inside the suite os.homedir() is under os.tmpdir() and WMUX_DATA_SUFFIX is -vitest', () => {
@@ -49,5 +53,20 @@ describe('isolateDataDir setup', () => {
 
     expect(() => getWmuxHomeDir()).toThrow('Refusing to touch the live wmux data dir from a test');
     expect(() => getWmuxDir()).toThrow('Refusing to touch the live wmux data dir from a test');
+  });
+
+  it('without the isolate marker (a runner that bypassed the config) any home is refused when the suffix is empty', () => {
+    expect(process.env.WMUX_TEST_ISOLATED).toBe('1');
+    delete process.env.WMUX_TEST_ISOLATED;
+    delete process.env.WMUX_DATA_SUFFIX;
+    // HOME still points at the temp dir: the missing marker alone must be enough.
+    expect(() => getWmuxHomeDir()).toThrow('Refusing to touch the live wmux data dir');
+    expect(() => getWmuxDir()).toThrow('Refusing to touch the live wmux data dir');
+  });
+
+  it('without the isolate marker a non-empty data suffix is still allowed (rig lanes spawn with their own suffix)', () => {
+    delete process.env.WMUX_TEST_ISOLATED;
+    process.env.WMUX_DATA_SUFFIX = '-rig';
+    expect(getWmuxHomeDir()).toMatch(/\.wmux-rig$/);
   });
 });

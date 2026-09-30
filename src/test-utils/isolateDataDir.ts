@@ -13,6 +13,9 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-test-'));
 process.env.HOME = tempDir;
 process.env.USERPROFILE = tempDir;
 process.env.WMUX_DATA_SUFFIX ??= '-vitest';
+// Read by assertNotLiveWmuxDataDir: without this marker a vitest run refuses the
+// live data dir even when HOME was never overridden.
+process.env.WMUX_TEST_ISOLATED = '1';
 
 // Register best-effort removal of the temp dir on process exit (never throw).
 process.once('exit', () => {

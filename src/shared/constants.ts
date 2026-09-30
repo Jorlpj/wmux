@@ -848,10 +848,15 @@ export function getTcpPortPath(): string {
 
 /**
  * Fail-closed safety guard: refuses to touch the live wmux data directory from a test.
- * Active when running under vitest with WMUX_TEST_REAL_HOME set, the given home matches
- * the real user home (case-insensitive, \// normalized), and dataSuffix() is empty.
+ * Active under vitest when dataSuffix() is empty and either
+ *   - the isolate setup (src/test-utils/isolateDataDir.ts) did not run, i.e. a runner
+ *     bypassed vitest.config.ts (a config in a parent folder, `--config` elsewhere), or
+ *   - the given home matches the real user home (case-insensitive, \// normalized).
  */
 export function assertNotLiveWmuxDataDir(home: string): void {
+  if (process.env.VITEST && dataSuffix() === '' && process.env.WMUX_TEST_ISOLATED !== '1') {
+    throw new Error('Refusing to touch the live wmux data dir from a test (isolate setup did not run)');
+  }
   if (
     process.env.VITEST &&
     process.env.WMUX_TEST_REAL_HOME &&
