@@ -165,8 +165,13 @@ describe('canConnectBrokerPipe', () => {
 });
 
 describe('selectedTargets — opt-in agy target', () => {
-  it('leaves agy out when no --target is given', () => {
+  it('leaves agy out of a target-less register', () => {
     expect(selectedTargets(['register'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini']);
+  });
+
+  it('covers agy on a target-less check and unregister, so an opt-in entry can be removed', () => {
+    expect(selectedTargets(['unregister'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy']);
+    expect(selectedTargets(['check'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy']);
   });
 
   it('acts on agy only when it is named', () => {

@@ -53,7 +53,7 @@ SUBCOMMANDS
 
 OPTIONS
   --target <id>  Limit to one agent: claude | codex | gemini | agy
-                 (default: all except opt-in agy).
+                 (default: all; register leaves out opt-in agy).
   --profile <p>  register only. Tool surface the registered server launches
                  with: full | core (default: full).
                    full  every tool, including the browser family.
@@ -74,8 +74,10 @@ function homeDir(): string {
 // ALL targets — a `--target codxe` typo must NOT unregister everything).
 export function selectedTargets(args: string[]): McpTarget[] | null {
   const i = args.indexOf('--target');
-  // Opt-in targets (autoRegister false) are only ever acted on when named.
-  if (i === -1) return MCP_TARGETS.filter((t) => t.autoRegister);
+  // Opt-in targets (autoRegister false) are only WRITTEN when named. check and
+  // unregister still cover them, so a plain `unregister` removes an agy entry
+  // added earlier with `register --target agy` (as Settings → Unregister does).
+  if (i === -1) return args[0] === 'register' ? MCP_TARGETS.filter((t) => t.autoRegister) : [...MCP_TARGETS];
   const id = args[i + 1];
   const t = MCP_TARGETS.find((x) => x.id === id);
   return t ? [t] : null;
