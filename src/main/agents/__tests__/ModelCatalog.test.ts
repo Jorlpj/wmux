@@ -124,4 +124,54 @@ describe('ModelCatalog', () => {
   it('reports an unknown agent as unavailable', async () => {
     expect((await make(vi.fn()).list('opencode')).status).toBe('unavailable');
   });
+
+  it('never resolves an Object.prototype key as an agent', async () => {
+    const run = vi.fn(async () => AGY);
+    const catalog = make(run);
+    for (const agent of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      expect((await catalog.list(agent)).status).toBe('unavailable');
+    }
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('drops invalid cached entries on read and re-discovers them', async () => {
+    const cachePath = path.join(dir, 'model-catalog.json');
+    const good = { agent: 'agy', status: 'ok', models: [{ id: 'gemini-x-low', label: 'Gemini X' }], fetchedAt: clock };
+    const write = (data: unknown) => fs.writeFileSync(cachePath, JSON.stringify(data));
+    const bad: unknown[] = [
+      { status: 'unavailable', models: [], fetchedAt: clock },
+      { status: 'ok', models: 'x', fetchedAt: clock },
+      { status: 'ok', models: [{ label: 'no id' }], fetchedAt: clock },
+      { status: 'ok', models: [{ id: 'm' }], fetchedAt: clock }, // no label
+      { status: 'ok', models: [{ id: 'm', label: 'M', efforts: 'high' }], fetchedAt: clock },
+      { status: 'ok', models: [null], fetchedAt: clock },
+      { status: 'ok', models: [], fetchedAt: 'yesterday' },
+      { status: 'ok', models: [], fetchedAt: null },
+      'garbage',
+    ];
+    for (const entry of bad) {
+      write({ agy: good, codex: entry });
+      const run = vi.fn(async () => CODEX);
+      const catalog = make(run);
+      expect((await catalog.list('agy')).models).toEqual(good.models);
+      const codex = await catalog.list('codex');
+      expect(codex.status).toBe('ok');
+      expect(codex.models.length).toBeGreaterThan(0);
+      expect(run).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('keeps a __proto__ key in the cache file from re-prototyping the cache', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'model-catalog.json'),
+      '{"__proto__":{"status":"ok","models":[],"fetchedAt":1000000},"constructor":{"status":"ok","models":[],"fetchedAt":1000000}}',
+    );
+    const run = vi.fn(async () => AGY);
+    const catalog = make(run);
+    expect((await catalog.list('__proto__')).status).toBe('unavailable');
+    expect((await catalog.list('agy')).status).toBe('ok');
+    expect(run).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(fs.readFileSync(path.join(dir, 'model-catalog.json'), 'utf8'));
+    expect(Object.keys(persisted)).toEqual(['agy']);
+  });
 });

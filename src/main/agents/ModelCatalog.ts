@@ -46,13 +46,39 @@ export interface ModelCatalogDeps {
   cachePath?: string;
 }
 
-type CacheFile = Record<string, ModelCatalogResult>;
+/** A discovery source for this agent, own keys only: `constructor` or
+ *  `__proto__` must never resolve to something on Object.prototype. */
+function sourceFor(agent: string): Source | undefined {
+  return Object.hasOwn(SOURCES, agent) ? SOURCES[agent] : undefined;
+}
+
+const EFFORT_RE = /^[a-z]{1,16}$/;
+
+function isCatalogModel(m: unknown): m is CatalogModel {
+  if (m === null || typeof m !== 'object' || Array.isArray(m)) return false;
+  const { id, label, efforts } = m as Record<string, unknown>;
+  if (typeof id !== 'string' || typeof label !== 'string') return false;
+  return efforts === undefined || (Array.isArray(efforts) && efforts.every((e) => typeof e === 'string' && EFFORT_RE.test(e)));
+}
+
+/** A persisted entry, re-checked on read: model-catalog.json is a plain file in
+ *  the wmux dir, and a hand-edited `models: "x"` or an entry without an id would
+ *  otherwise crash the Settings combobox. Only successes are ever persisted, so
+ *  anything else is dropped and simply re-discovered. */
+function validCachedEntry(agent: string, raw: unknown): ModelCatalogResult | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const { status, models, fetchedAt } = raw as Record<string, unknown>;
+  if (status !== 'ok' || typeof fetchedAt !== 'number' || !Number.isFinite(fetchedAt)) return undefined;
+  if (!Array.isArray(models) || !models.every(isCatalogModel)) return undefined;
+  return { agent, status, models, fetchedAt };
+}
 
 export class ModelCatalog {
   private readonly run: (command: string, args: string[]) => Promise<string>;
   private readonly now: () => number;
   private readonly cachePath: string;
-  private cache: CacheFile | null = null;
+  // A Map, not a plain object: agent names come from the renderer and the file.
+  private cache: Map<string, ModelCatalogResult> | null = null;
   private readonly inflight = new Map<string, Promise<ModelCatalogResult>>();
 
   constructor(deps: ModelCatalogDeps = {}) {
@@ -69,11 +95,11 @@ export class ModelCatalog {
     if (agent === 'claude') {
       return { agent, status: 'static', models: staticClaudeModels(), fetchedAt: this.now() };
     }
-    const source = SOURCES[agent];
+    const source = sourceFor(agent);
     if (!source) return { agent, status: 'unavailable', models: [], fetchedAt: this.now() };
 
     if (!opts.refresh) {
-      const cached = this.readCache()[agent];
+      const cached = this.readCache().get(agent);
       if (cached && this.fresh(cached)) return cached;
     }
     const pending = this.inflight.get(agent);
@@ -106,25 +132,30 @@ export class ModelCatalog {
       fetchedAt: this.now(),
     };
     const cache = this.readCache();
-    cache[agent] = result;
+    cache.set(agent, result);
     // Only successes are persisted; a failure is remembered in memory for
     // FAILURE_TTL_MS, so a restart always tries again. A failed write only
     // costs a re-discovery next launch.
     if (result.status === 'ok') {
-      const persisted = Object.fromEntries(Object.entries(cache).filter(([, v]) => v.status === 'ok'));
+      const persisted = Object.fromEntries([...cache].filter(([, v]) => v.status === 'ok'));
       await atomicWriteJSON(this.cachePath, persisted).catch(() => undefined);
     }
     return result;
   }
 
-  private readCache(): CacheFile {
+  private readCache(): Map<string, ModelCatalogResult> {
     if (this.cache) return this.cache;
-    let loaded: CacheFile = {};
+    const loaded = new Map<string, ModelCatalogResult>();
     try {
       const raw = atomicReadJSONSync<unknown>(this.cachePath);
-      if (raw && typeof raw === 'object' && !Array.isArray(raw)) loaded = raw as CacheFile;
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        for (const [agent, entry] of Object.entries(raw)) {
+          const valid = sourceFor(agent) ? validCachedEntry(agent, entry) : undefined;
+          if (valid) loaded.set(agent, valid);
+        }
+      }
     } catch {
-      loaded = {};
+      loaded.clear();
     }
     this.cache = loaded;
     return loaded;
