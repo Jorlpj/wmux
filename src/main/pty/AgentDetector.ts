@@ -353,10 +353,12 @@ const AGENT_PATTERNS: AgentPattern[] = [
   // The trust screen shows before the banner in an untrusted folder.
   // As with Codex, the trust phrase is part of the gate: when it arrives
   // before any banner, the same line opens the gate and emits awaiting_input.
+  // Only as a whole row (anchored both ends), so prose or source that quotes
+  // the question mid-line cannot claim the pane for agy.
   {
     agent: 'Antigravity CLI',
     slug: 'agy',
-    gate: /Antigravity\s*CLI|Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*project\?/,
+    gate: /Antigravity\s*CLI|^\s*Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*project\?\s*$/,
     patterns: [
       { regex: /^\s*Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*project\?/, status: 'awaiting_input', message: 'Project trust prompt' },
       { regex: /^\s*esc\s*to\s*cancel/,                                        status: 'running',        message: 'Working' },

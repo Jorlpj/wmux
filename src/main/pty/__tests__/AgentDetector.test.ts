@@ -470,6 +470,13 @@ describe('AgentDetector', () => {
       expect(cb.mock.calls.map((c) => c[0].status)).toContain('awaiting_input');
     });
 
+    it('does not open on the trust question quoted inside another line', () => {
+      const det = new AgentDetector();
+      det.feed(`det.feed('Do you trust the contents of this project?\\n');\n`);
+      det.feed('agy asks "Do you trust the contents of this project?" on first run\n');
+      expect(det.getLastAgent()).toBeNull();
+    });
+
     it('reads the footer: esc to cancel is running, ? for shortcuts is waiting', () => {
       const { det, cb } = agyGated();
       cb.mockClear();
