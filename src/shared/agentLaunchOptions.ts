@@ -31,8 +31,9 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
   claude: {
     effortFlag: (e) => ['--effort', e],
     hasEffort: (t) => t === '--effort' || t.startsWith('--effort='),
+    // No alias: `--allow-dangerously-skip-permissions` only makes bypass
+    // available as an option (claude --help), it does not switch it on.
     skipPermissionsFlag: '--dangerously-skip-permissions',
-    skipPermissionsAliases: ['--allow-dangerously-skip-permissions'],
   },
   codex: {
     effortFlag: (e) => ['-c', `model_reasoning_effort=${e}`],
@@ -47,7 +48,7 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
 };
 
 export function launchGrammarFor(agent: string | undefined): AgentLaunchGrammar | undefined {
-  return agent ? LAUNCH_GRAMMAR_BY_AGENT[agent] : undefined;
+  return agent && Object.hasOwn(LAUNCH_GRAMMAR_BY_AGENT, agent) ? LAUNCH_GRAMMAR_BY_AGENT[agent] : undefined;
 }
 
 /** Effort levels that are safe as a single CLI token. */

@@ -567,15 +567,17 @@ export function applyRoleBinding(
 
   // Launch options (effort, skip permissions) use the agent's verified grammar
   // and, like the model, need the binding to name the agent. A flag already on
-  // the line wins (D-4 for options).
+  // the line OR in the binding's own args wins (D-4 for options): the args are
+  // appended below, so checking the line alone put two `--effort` on it.
   const launch = binding.agent ? launchGrammarFor(stem) : undefined;
+  const present = [...tokens, ...(args ? tokenize(args) : [])].map((t) => t.value);
   const optionTokens: string[] = [];
-  if (effort && launch?.effortFlag && !tokens.some((t) => launch.hasEffort?.(t.value))) {
+  if (effort && launch?.effortFlag && !present.some((v) => launch.hasEffort?.(v))) {
     optionTokens.push(...launch.effortFlag(effort));
   }
   if (skipPermissions && launch?.skipPermissionsFlag) {
     const spellings = [launch.skipPermissionsFlag, ...(launch.skipPermissionsAliases ?? [])];
-    if (!tokens.some((t) => spellings.includes(t.value))) optionTokens.push(launch.skipPermissionsFlag);
+    if (!present.some((v) => spellings.includes(v))) optionTokens.push(launch.skipPermissionsFlag);
   }
 
   let out = command;

@@ -548,6 +548,42 @@ describe('role binding launch options (effort, skip permissions)', () => {
     expect(applyRoleBinding(once, b).command).toBe(once);
   });
 
+  it('lets a flag in the binding\'s own args win over effort / skip (claude)', () => {
+    expect(applyRoleBinding('claude', { agent: 'claude', effort: 'low', args: '--effort high' }).command).toBe(
+      'claude --effort high',
+    );
+    expect(
+      applyRoleBinding('claude', { agent: 'claude', skipPermissions: true, args: '--dangerously-skip-permissions' })
+        .command,
+    ).toBe('claude --dangerously-skip-permissions');
+    // --effort=<level> spelling in args counts too.
+    expect(applyRoleBinding('claude', { agent: 'claude', effort: 'low', args: '--effort=max' }).command).toBe(
+      'claude --effort=max',
+    );
+  });
+
+  it('lets a flag in the binding\'s own args win over effort / skip (codex)', () => {
+    const b = {
+      agent: 'codex', effort: 'low', skipPermissions: true,
+      args: '-c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox',
+    };
+    const once = applyRoleBinding('codex', b).command;
+    expect(once).toBe('codex -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox');
+    expect(applyRoleBinding(once, b).command).toBe(once);
+    expect(applyRoleBinding('codex', { agent: 'codex', skipPermissions: true, args: '--yolo' }).command).toBe(
+      'codex --yolo',
+    );
+  });
+
+  // `--allow-dangerously-skip-permissions` only makes bypass available; it does
+  // not enable it, so it must not count as the skip flag already being there.
+  it('does not treat --allow-dangerously-skip-permissions as skip', () => {
+    expect(
+      applyRoleBinding('claude --allow-dangerously-skip-permissions', { agent: 'claude', skipPermissions: true })
+        .command,
+    ).toBe('claude --dangerously-skip-permissions --allow-dangerously-skip-permissions');
+  });
+
   it('suppressSkipPermissions withholds only the skip flag (explicit per-launch OFF)', () => {
     const b = { agent: 'claude', model: 'opus', effort: 'low', skipPermissions: true };
     // A fresh launch still gets the role's skip flag.
