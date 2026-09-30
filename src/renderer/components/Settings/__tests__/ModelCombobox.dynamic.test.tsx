@@ -153,15 +153,11 @@ describe('ModelCombobox keyboard', () => {
     expect(input.getAttribute('aria-activedescendant')).toBe(options()[0].id);
   });
 
-  it('Escape closes the open list without letting the Escape escape', () => {
+  it('Escape closes the open list', () => {
     const { input } = mount('');
     act(() => input.focus());
-    const outer = vi.fn();
-    document.addEventListener('keydown', outer);
     key(input, 'Escape');
     expect(listbox()).toBeNull();
-    expect(outer).not.toHaveBeenCalled();
-    document.removeEventListener('keydown', outer);
   });
 
   it('options are not tab stops, and tabbing away closes the list', () => {

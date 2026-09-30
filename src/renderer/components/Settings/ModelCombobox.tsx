@@ -112,8 +112,6 @@ export function ModelCombobox({
             e.preventDefault();
             move(e.key === 'ArrowDown' ? 1 : -1);
           } else if (e.key === 'Escape') {
-            // An open list takes the Escape; the Settings panel keeps it otherwise.
-            if (listOpen) e.stopPropagation();
             close();
           } else if (e.key === 'Enter') {
             e.preventDefault();
