@@ -762,7 +762,7 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
   };
 
   return (
-    <SettingsSection id="roles" title={t('settings.roleBindings')} description={t('settings.roleBindingsDesc')}>
+    <SettingsSection id="roles" title={t('settings.roleBindings')} description={t('settings.roleBindingsDesc')} overflowVisible>
       {ORCH_ROLES.map((role) => {
         const b = bindings[role] ?? {};
         const hint = roleBindingHint(b);
@@ -844,14 +844,15 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                     reads it yet (input.send sees every message, not tasks), so
                     it is not offered until one does. */}
                 {onRefreshModels && b.agent !== 'claude' && (
-                  <button
-                    type="button"
-                    className="ml-auto text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
+                  <UiButton
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto"
                     onClick={() => onRefreshModels(b.agent as string)}
                     data-role-binding-refresh={role}
                   >
                     {t('settings.roleBindingRefreshModels')}
-                  </button>
+                  </UiButton>
                 )}
               </div>
             )}

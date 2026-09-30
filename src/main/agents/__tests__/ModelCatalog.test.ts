@@ -98,11 +98,30 @@ describe('ModelCatalog', () => {
     });
     const catalog = make(run);
     expect((await catalog.list('codex')).status).toBe('unavailable');
-    await catalog.list('codex');
-    expect(run).toHaveBeenCalledTimes(1);
-    clock += FAILURE_TTL_MS;
+    expect(run).toHaveBeenCalledTimes(2); // first try + one retry
     await catalog.list('codex');
     expect(run).toHaveBeenCalledTimes(2);
+    clock += FAILURE_TTL_MS;
+    await catalog.list('codex');
+    expect(run).toHaveBeenCalledTimes(4);
+  });
+
+  it('retries once before giving up, and never persists a failure', async () => {
+    let calls = 0;
+    const flaky = make(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('transient');
+      return AGY;
+    });
+    expect((await flaky.list('agy')).status).toBe('ok');
+    expect(calls).toBe(2);
+
+    await make(async () => {
+      throw new Error('down');
+    }).list('codex');
+    const fresh = vi.fn(async () => CODEX);
+    expect((await make(fresh).list('codex')).status).toBe('ok');
+    expect(fresh).toHaveBeenCalledTimes(1);
   });
 
   it('reports an unknown agent as unavailable', async () => {

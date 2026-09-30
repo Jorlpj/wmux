@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Input from '../ui/Input';
+import Popover from '../ui/Popover';
 import type { CatalogModel } from '../../../shared/modelCatalog';
 
 export interface ModelComboboxProps {
@@ -84,11 +85,12 @@ export function ModelCombobox({
         }}
       />
       {open && shown.length > 0 && (
-        <div
+        // The quiet popover panel from ui/ (DESIGN.md). The roles section opts
+        // into overflowVisible so the list is not clipped by the group.
+        <Popover
           role="listbox"
           aria-label={ariaLabel}
-          className="absolute left-0 top-full mt-1 z-50 min-w-full max-h-64 overflow-y-auto rounded-md border py-1 shadow-lg bg-[var(--bg-surface)]"
-          style={{ borderColor: 'var(--border-soft)' }}
+          className="absolute left-0 top-full mt-1 z-50 min-w-[340px] max-h-64 overflow-y-auto"
         >
           {shown.map((m) => (
             <button
@@ -102,15 +104,15 @@ export function ModelCombobox({
                 onChange(m.id);
                 close();
               }}
-              className={`flex items-center justify-between gap-3 w-full px-2.5 py-1 text-left text-[11px] ${
+              className={`flex items-center justify-between gap-3 w-full px-2.5 py-1 rounded-md text-left text-[12px] hover:bg-[var(--surface-fill-hover)] ${
                 m.id === value ? 'text-[var(--text-main)] font-semibold' : 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
               }`}
             >
-              <span className="font-mono">{m.id}</span>
+              <span className="font-mono whitespace-nowrap">{m.id}</span>
               <span className="opacity-70 whitespace-nowrap">{m.label}</span>
             </button>
           ))}
-        </div>
+        </Popover>
       )}
     </div>
   );
