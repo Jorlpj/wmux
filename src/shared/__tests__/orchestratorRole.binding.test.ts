@@ -3,6 +3,8 @@ import {
   applyRoleAgent,
   applyRoleBinding,
   bindingEnforcesModel,
+  bindingEnforcesSkipPermissions,
+  bindingSkipPermissionsFlag,
   launcherSupportsModelFlag,
   KNOWN_AGENT_STEMS,
   normalizeRoleBinding,
@@ -622,5 +624,291 @@ describe('role binding launch options (effort, skip permissions)', () => {
     expect(normalizeRoleBindings({ Builder: { agent: 'claude', freshContext: true } })).toEqual({
       Builder: { agent: 'claude' },
     });
+  });
+});
+
+// #1681 — owner decision: an explicit, user-stated permission choice wins over
+// the role's skip, whether the skip comes from `skipPermissions` or `args`.
+describe('role skip permissions versus an explicit permission choice (#1681)', () => {
+  const fixpoint = (cmd: string, b: RoleBinding, opts?: Parameters<typeof applyRoleBinding>[2]): string => {
+    const once = applyRoleBinding(cmd, b, opts).command;
+    expect(applyRoleBinding(once, b, opts).command).toBe(once);
+    return once;
+  };
+
+  it('still injects the role skip on a normal fresh launch', () => {
+    expect(fixpoint('claude', { agent: 'claude', skipPermissions: true })).toBe(
+      'claude --dangerously-skip-permissions',
+    );
+    expect(fixpoint('codex', { agent: 'codex', skipPermissions: true })).toBe(
+      'codex --dangerously-bypass-approvals-and-sandbox',
+    );
+    expect(fixpoint('claude "fix the login flow"', { agent: 'claude', skipPermissions: true })).toBe(
+      'claude --dangerously-skip-permissions "fix the login flow"',
+    );
+  });
+
+  it('suppressSkipPermissions also drops the skip flag from the role args, keeping the rest', () => {
+    const b: RoleBinding = { agent: 'claude', model: 'haiku', args: '--verbose --dangerously-skip-permissions --add-dir "/tmp/x"' };
+    expect(fixpoint('claude --permission-mode plan --resume S', b, { suppressSkipPermissions: true })).toBe(
+      'claude --model haiku --permission-mode plan --resume S --verbose --add-dir "/tmp/x"',
+    );
+    // Args that were only the skip flag leave nothing to append.
+    expect(
+      fixpoint('claude --continue', { agent: 'claude', skipPermissions: true, args: '--dangerously-skip-permissions' }, {
+        suppressSkipPermissions: true,
+      }),
+    ).toBe('claude --continue');
+    // Toggle ON (no suppression) keeps the args as written.
+    expect(fixpoint('claude --continue', { agent: 'claude', args: '--dangerously-skip-permissions' })).toBe(
+      'claude --continue --dangerously-skip-permissions',
+    );
+  });
+
+  it('drops the args skip under suppression even when the binding names no agent', () => {
+    expect(fixpoint('claude --continue', { args: '--dangerously-skip-permissions --verbose' }, {
+      suppressSkipPermissions: true,
+    })).toBe('claude --continue --verbose');
+  });
+
+  it('a --permission-mode typed on the line withholds the role skip (both spellings)', () => {
+    const b: RoleBinding = { agent: 'claude', model: 'haiku', skipPermissions: true };
+    for (const line of ['claude --permission-mode plan', 'claude --permission-mode=plan', 'claude "--permission-mode=plan"']) {
+      const r = applyRoleBinding(line, b);
+      expect(r.command).toBe(line.replace('claude', 'claude --model haiku'));
+      expect(r.note).toMatch(/own permission choice/);
+      expect(fixpoint(line, b)).toBe(r.command);
+    }
+  });
+
+  it('a --permission-mode typed on the line also drops the skip from the role args', () => {
+    const b: RoleBinding = { agent: 'claude', args: '--dangerously-skip-permissions --verbose' };
+    const r = applyRoleBinding('claude --permission-mode plan', b);
+    expect(r.command).toBe('claude --permission-mode plan --verbose');
+    expect(r.note).toMatch(/own permission choice/);
+    expect(fixpoint('claude --permission-mode plan', b)).toBe(r.command);
+  });
+
+  it('a --permission-mode in the role args is the role config: no injected skip, args kept', () => {
+    const b: RoleBinding = { agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits' };
+    const r = applyRoleBinding('claude', b);
+    expect(r.command).toBe('claude --permission-mode acceptEdits');
+    expect(r.note).toBeUndefined();
+    expect(fixpoint('claude', b)).toBe('claude --permission-mode acceptEdits');
+  });
+
+  it('a role-args run already on the line is not read as the user\'s choice (re-apply)', () => {
+    const b: RoleBinding = { agent: 'claude', args: '--permission-mode acceptEdits --dangerously-skip-permissions' };
+    expect(fixpoint('claude', b)).toBe('claude --permission-mode acceptEdits --dangerously-skip-permissions');
+  });
+
+  it('codex: the approval policy and sandbox flags are explicit choices', () => {
+    const b: RoleBinding = { agent: 'codex', effort: 'high', skipPermissions: true };
+    for (const flags of ['-a never', '-anever', '--ask-for-approval on-request', '--ask-for-approval=never', '-s read-only', '--sandbox=read-only', '--approve-for-me']) {
+      const r = applyRoleBinding(`codex ${flags}`, b);
+      expect(r.command).toBe(`codex -c model_reasoning_effort=high ${flags}`);
+      expect(fixpoint(`codex ${flags}`, b)).toBe(r.command);
+    }
+    // ...and the codex skip spellings in the args are dropped for them.
+    expect(fixpoint('codex -s workspace-write', { agent: 'codex', args: '--yolo --search' })).toBe(
+      'codex -s workspace-write --search',
+    );
+  });
+
+  it('codex: an unrelated flag or a quoted sentence is not a permission choice', () => {
+    const b: RoleBinding = { agent: 'codex', skipPermissions: true };
+    expect(applyRoleBinding('codex --search', b).command).toBe(
+      'codex --dangerously-bypass-approvals-and-sandbox --search',
+    );
+    expect(applyRoleBinding('codex --add-dir /tmp', b).command).toBe(
+      'codex --dangerously-bypass-approvals-and-sandbox --add-dir /tmp',
+    );
+    expect(applyRoleBinding('codex "use -s read-only here"', b).command).toBe(
+      'codex --dangerously-bypass-approvals-and-sandbox "use -s read-only here"',
+    );
+  });
+
+  it('claude: --permission-prompts is not a permission mode', () => {
+    expect(applyRoleBinding('claude --permission-prompts none', { agent: 'claude', skipPermissions: true }).command).toBe(
+      'claude --dangerously-skip-permissions --permission-prompts none',
+    );
+  });
+});
+
+// #1681 — the caller learns which launch options were really spliced in.
+describe('applyRoleBinding — optionsInjected reports only what was added', () => {
+  it('reports effort and skip when both were injected', () => {
+    expect(applyRoleBinding('claude', { agent: 'claude', effort: 'low', skipPermissions: true }).optionsInjected)
+      .toEqual({ effort: 'low', skipPermissions: true });
+    expect(applyRoleBinding('codex', { agent: 'codex', effort: 'high' }).optionsInjected).toEqual({ effort: 'high' });
+    expect(applyRoleBinding('codex', { agent: 'codex', skipPermissions: true }).optionsInjected)
+      .toEqual({ skipPermissions: true });
+  });
+
+  it('is absent when nothing was injected', () => {
+    for (const [cmd, b, opts] of [
+      ['claude', { agent: 'claude', model: 'haiku' }, undefined],
+      ['claude --effort max --dangerously-skip-permissions', { agent: 'claude', effort: 'low', skipPermissions: true }, undefined],
+      ['claude', { agent: 'claude', skipPermissions: true, args: '--dangerously-skip-permissions' }, undefined],
+      ['claude --permission-mode plan', { agent: 'claude', skipPermissions: true }, undefined],
+      ['claude', { agent: 'claude', skipPermissions: true, args: '--verbose' }, { suppressSkipPermissions: true }],
+      ['agy', { agent: 'agy', effort: 'low' }, undefined],
+      ['claude', { effort: 'low', skipPermissions: true }, undefined],
+    ] as const) {
+      expect(applyRoleBinding(cmd, b as RoleBinding, opts).optionsInjected).toBeUndefined();
+    }
+  });
+
+  it('reports the effort alone when the skip was withheld by a permission flag', () => {
+    const r = applyRoleBinding('claude --permission-mode plan', { agent: 'claude', effort: 'low', skipPermissions: true });
+    expect(r.command).toBe('claude --effort low --permission-mode plan');
+    expect(r.optionsInjected).toEqual({ effort: 'low' });
+  });
+});
+
+// #1681 — the pane badge and fleet chip gate on this, like bindingEnforcesModel.
+describe('bindingEnforcesSkipPermissions / bindingSkipPermissionsFlag', () => {
+  it('is true for a named agent with a verified skip grammar', () => {
+    expect(bindingSkipPermissionsFlag({ agent: 'claude', skipPermissions: true })).toBe('--dangerously-skip-permissions');
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', skipPermissions: true }))
+      .toBe('--dangerously-bypass-approvals-and-sandbox');
+    expect(bindingSkipPermissionsFlag({ agent: 'agy', skipPermissions: true })).toBe('--dangerously-skip-permissions');
+    expect(bindingEnforcesSkipPermissions({ agent: 'claude', model: 'haiku', skipPermissions: true })).toBe(true);
+  });
+
+  it('counts a skip spelling in the role args', () => {
+    expect(bindingSkipPermissionsFlag({ agent: 'claude', args: '--verbose --dangerously-skip-permissions' }))
+      .toBe('--dangerously-skip-permissions');
+    // The spelling the args actually use, so the tooltip names what runs.
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', args: '--yolo' })).toBe('--yolo');
+    expect(bindingEnforcesSkipPermissions({ agent: 'claude', args: '--allow-dangerously-skip-permissions' })).toBe(false);
+  });
+
+  // Review of #1681: the badge said "bypass" on a launch the rewrite leaves in
+  // the role's own permission mode.
+  it('is undefined for a role skip when the role args make a permission choice', () => {
+    expect(bindingSkipPermissionsFlag({ agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits' }))
+      .toBeUndefined();
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', skipPermissions: true, args: '-s workspace-write' }))
+      .toBeUndefined();
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', skipPermissions: true, args: '-c approval_policy=never' }))
+      .toBeUndefined();
+    // ...but a skip spelling in the args still runs bypass beside that mode.
+    expect(bindingSkipPermissionsFlag({
+      agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits --dangerously-skip-permissions',
+    })).toBe('--dangerously-skip-permissions');
+  });
+
+  it('is false without an agent, without a skip grammar, or without a skip', () => {
+    expect(bindingEnforcesSkipPermissions(undefined)).toBe(false);
+    expect(bindingEnforcesSkipPermissions({ skipPermissions: true })).toBe(false);
+    expect(bindingEnforcesSkipPermissions({ args: '--dangerously-skip-permissions' })).toBe(false);
+    expect(bindingEnforcesSkipPermissions({ agent: 'gemini', skipPermissions: true })).toBe(false);
+    expect(bindingEnforcesSkipPermissions({ agent: 'claude', model: 'haiku' })).toBe(false);
+  });
+
+  it('agrees with applyRoleBinding on a fresh launch', () => {
+    const cases: RoleBinding[] = [
+      { agent: 'claude', skipPermissions: true },
+      { agent: 'codex', skipPermissions: true },
+      { agent: 'claude', args: '--dangerously-skip-permissions' },
+      { agent: 'codex', args: '--yolo' },
+      { agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits' },
+      { agent: 'codex', skipPermissions: true, args: '-s workspace-write' },
+      { agent: 'codex', skipPermissions: true, args: '--config sandbox_mode=read-only' },
+      { agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits --dangerously-skip-permissions' },
+      { skipPermissions: true },
+      { agent: 'gemini', skipPermissions: true },
+      { agent: 'claude', model: 'haiku' },
+    ];
+    for (const binding of cases) {
+      const stem = binding.agent ?? 'claude';
+      const flag = bindingSkipPermissionsFlag(binding);
+      const launched = applyRoleBinding(stem, binding).command.split(' ');
+      expect(launched.includes(flag ?? '\u0000')).toBe(flag !== undefined);
+    }
+  });
+});
+
+// Review of #1681 — codex permission choices made through config count like
+// `-a` / `-s`, in every spelling codex 0.158 accepts.
+describe('codex config permission choices (-c approval_policy / sandbox_mode)', () => {
+  const fixpoint = (cmd: string, b: RoleBinding): string => {
+    const once = applyRoleBinding(cmd, b).command;
+    expect(applyRoleBinding(once, b).command).toBe(once);
+    return once;
+  };
+  const spellings = [
+    '-c approval_policy=never', '-c=approval_policy=never', '-capproval_policy=never',
+    '--config approval_policy=on-request', '--config=sandbox_mode=read-only', '-c sandbox_mode=workspace-write',
+    '-c "approval_policy=never"',
+  ];
+
+  it('on the typed line: withholds the role bypass and drops the skip from the role args', () => {
+    for (const flags of spellings) {
+      const r = applyRoleBinding(`codex ${flags}`, { agent: 'codex', effort: 'high', skipPermissions: true });
+      expect(r.command).toBe(`codex -c model_reasoning_effort=high ${flags}`);
+      expect(r.optionsInjected).toEqual({ effort: 'high' });
+      expect(fixpoint(`codex ${flags}`, { agent: 'codex', skipPermissions: true, args: '--yolo --search' }))
+        .toBe(`codex ${flags} --search`);
+    }
+  });
+
+  it('in the role args: the role config, so no injected bypass', () => {
+    for (const flags of spellings) {
+      const b: RoleBinding = { agent: 'codex', skipPermissions: true, args: flags };
+      expect(fixpoint('codex', b)).toBe(`codex ${flags}`);
+    }
+  });
+
+  it('other config keys are not permission choices', () => {
+    for (const flags of ['-c model_reasoning_effort=high', '-c model="o3"', '--config features.x=true', '-c approval_policy_extra=1']) {
+      expect(applyRoleBinding(`codex ${flags}`, { agent: 'codex', skipPermissions: true }).command)
+        .toBe(`codex --dangerously-bypass-approvals-and-sandbox ${flags}`);
+    }
+  });
+});
+
+// Review of #1681 — a permission flag typed on the line beats one in the role
+// args: the args are appended after it, and the last one wins.
+describe('a typed permission flag drops the conflicting role-args permission flags', () => {
+  const fixpoint = (cmd: string, b: RoleBinding, opts?: Parameters<typeof applyRoleBinding>[2]): string => {
+    const once = applyRoleBinding(cmd, b, opts).command;
+    expect(applyRoleBinding(once, b, opts).command).toBe(once);
+    return once;
+  };
+
+  it('claude: --permission-mode in the args (both spellings) gives way, unrelated args stay', () => {
+    for (const roleMode of ['--permission-mode acceptEdits', '--permission-mode=acceptEdits']) {
+      const b: RoleBinding = { agent: 'claude', args: `--verbose ${roleMode} --dangerously-skip-permissions --add-dir /x` };
+      const r = applyRoleBinding('claude --permission-mode plan', b);
+      expect(r.command).toBe('claude --permission-mode plan --verbose --add-dir /x');
+      expect(r.note).toMatch(/own permission choice/);
+      expect(fixpoint('claude --permission-mode plan', b)).toBe(r.command);
+    }
+  });
+
+  it('codex: -a / -s / --approve-for-me / -c permission keys in the args give way', () => {
+    const b: RoleBinding = {
+      agent: 'codex', effort: 'low',
+      args: '-a on-request --search -s workspace-write --approve-for-me -c sandbox_mode=read-only -c model_verbosity=low',
+    };
+    expect(fixpoint('codex -a never', b)).toBe('codex -c model_reasoning_effort=low -a never --search -c model_verbosity=low');
+    expect(fixpoint('codex --config=approval_policy=never', b))
+      .toBe('codex -c model_reasoning_effort=low --config=approval_policy=never --search -c model_verbosity=low');
+  });
+
+  it('keeps the role args permission flags when the line makes no choice', () => {
+    const b: RoleBinding = { agent: 'claude', args: '--permission-mode acceptEdits' };
+    expect(fixpoint('claude', b)).toBe('claude --permission-mode acceptEdits');
+    // The toggle-OFF fallback has no captured mode: nothing typed to beat it.
+    expect(fixpoint('claude --continue', b, { suppressSkipPermissions: true }))
+      .toBe('claude --continue --permission-mode acceptEdits');
+  });
+
+  it('the resume chip OFF path restores the captured mode over the role args mode', () => {
+    const b: RoleBinding = { agent: 'claude', args: '--permission-mode acceptEdits --verbose' };
+    expect(fixpoint('claude --permission-mode plan --resume S', b, { suppressSkipPermissions: true }))
+      .toBe('claude --permission-mode plan --resume S --verbose');
   });
 });
