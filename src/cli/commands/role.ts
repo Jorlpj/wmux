@@ -17,7 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { dataSuffix, getWmuxHomeDir } from '../../shared/constants';
 import { ROLE_TOOL_SURFACES, resolveRoleName, roleMcpArgv } from '../../shared/roleSurfaces';
-import { applyRoleBinding, normalizeRoleBindings, type RoleBinding } from '../../shared/orchestratorRole';
+import { CORE_TOOL_SURFACE } from '../../shared/coreSurface';
+import { applyRoleBinding, normalizeRoleBindings, type RoleBinding, type WmuxTools } from '../../shared/orchestratorRole';
 import { tokenize } from '../../shared/agentResume';
 import { agyEffortOf } from '../../shared/modelCatalog';
 
@@ -51,7 +52,7 @@ export interface ResolvedRole {
   flags: string[];
   /** The role's wmux MCP surface. `argv` is opt-in: append it to the launch to
    *  narrow the agent's wmux tools (see src/shared/roleSurfaces.ts). */
-  mcp?: { tools: string[]; argv: string[] };
+  mcp?: { level: WmuxTools; tools: string[]; argv: string[] };
 }
 
 /** The stdio bundle the CLI configs register (McpRegistrar stabilizes it there). */
@@ -74,15 +75,26 @@ export function resolveRole(role: string, binding: RoleBinding, mcpEntry = defau
     freshContext: !!binding.freshContext,
     argv,
     flags: argv.slice(1),
-    ...mcpFor(role, agent, mcpEntry),
+    ...mcpFor(role, agent, binding.tools, mcpEntry),
   };
 }
 
-function mcpFor(role: string, agent: string | undefined, entry: string): Pick<ResolvedRole, 'mcp'> {
+/** Only when the binding picks a tool level (Settings > Token usage, or by
+ *  hand): an unset level means "leave the CLI's own wmux registration alone". */
+function mcpFor(
+  role: string,
+  agent: string | undefined,
+  tools: WmuxTools | undefined,
+  entry: string,
+): Pick<ResolvedRole, 'mcp'> {
+  if (!agent || !tools) return {};
   const known = resolveRoleName(role);
-  if (known.kind !== 'role' || !agent) return {};
-  const argv = roleMcpArgv(agent, known.role, entry);
-  return argv ? { mcp: { tools: [...ROLE_TOOL_SURFACES[known.role]], argv } } : {};
+  if (tools === 'role' && known.kind !== 'role') return {};
+  const orchRole = known.kind === 'role' ? known.role : undefined;
+  const argv = orchRole ? roleMcpArgv(agent, orchRole, entry, tools) : roleMcpArgv(agent, 'Planner', entry, tools);
+  if (!argv) return {};
+  const list = tools === 'role' && orchRole ? [...ROLE_TOOL_SURFACES[orchRole]] : tools === 'core' ? [...CORE_TOOL_SURFACE] : ['*'];
+  return { mcp: { level: tools, tools: list, argv } };
 }
 
 export interface RoleDeps {

@@ -645,6 +645,11 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.AGENT_MODELS_LIST, { agent, refresh }) as Promise<
         import('../shared/modelCatalog').ModelCatalogResult
       >,
+    /** Fan-out only: trust the task folder agy is about to launch in. */
+    trustAgyFolder: (folder: string) =>
+      ipcRenderer.invoke(IPC.AGY_TRUST_FOLDER, folder) as Promise<
+        import('../main/agents/agyTrust').AgyTrustResult
+      >,
   },
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace

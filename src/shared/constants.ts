@@ -216,6 +216,9 @@ export const IPC = {
   //                   static list), cached in main. `{ agent, refresh? }` →
   //                   ModelCatalogResult. Never rejects for a missing CLI.
   AGENT_MODELS_LIST: 'agents:models:list',
+  //   AGY_TRUST_FOLDER (invoke) renderer → main: list a fan-out task folder in
+  //   agy's trustedWorkspaces before agy launches there (main/agents/agyTrust).
+  AGY_TRUST_FOLDER: 'agents:agy:trust-folder',
   //   DECK_BRAIN_PTY  (send) main → renderer: the `claude-pty` brain just
   //                   spawned its interactive TUI in daemon session <ptyId>.
   //                   One-way and additive to DECK_STREAM (which carries only

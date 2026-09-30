@@ -95,14 +95,8 @@ describe('RoleBindingsView render', () => {
     expect(html).not.toContain('<datalist');
   });
 
-  // agy is offered for role-bound panes and `wmux role resolve`; fan-out cannot
-  // start it with a positional prompt, and the row must say so rather than hide it.
-  it('offers agy and states inline that fan-out keeps its default agent', () => {
+  it('offers agy as a role-binding agent', () => {
     expect(render()).toContain('<option value="agy">');
-    const html = render({ Builder: { agent: 'agy', model: 'gemini-3.8-flash-low' } });
-    expect(html).toContain('data-role-binding-hint="Builder"');
-    expect(html).toContain('Fan-out cannot start agy with a prompt');
-    expect(roleBindingHint({ agent: 'agy', model: 'gemini-3.8-flash-low' })?.key).toBe('settings.roleBindingHintNoFanout');
   });
 
   it('offers the agent\'s own launch options once an agent is bound', () => {

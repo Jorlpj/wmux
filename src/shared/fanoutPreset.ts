@@ -101,19 +101,16 @@ export const FANOUT_AGENTS: readonly FanoutAgentSpec[] = [
     unattendedFlags: '',
   },
   {
-    // Checked 2026-09-29 on Windows with agy 1.2.13. Two blockers, both on
-    // agy's side: a positional prompt is rejected ("Prompts are read only from
-    // -p/--print, -i/--prompt-interactive, or stdin"), and a fresh folder stops
-    // on "Do you trust the contents of this project?" even with
-    // --dangerously-skip-permissions. Trust is not inherited from a trusted
-    // parent and agy exposes no env or flag to pre-trust a folder, so a worker
-    // in a new worktree would wait on a screen only a keypress can answer.
+    // Verified 2026-09-30 on Windows with agy 1.2.14 in a real PTY, fresh git
+    // worktree. Both 1.2.13 blockers are handled by wmux: the first prompt goes
+    // through `-i` (applyRoleAgent, PROMPT_FLAG_BY_STEM), and the task folder is
+    // listed in agy's own trustedWorkspaces before launch (main/agents/agyTrust),
+    // which is exactly what answering its "Do you trust…" screen writes.
+    // `--model <full agy models id>` is verified (orchestratorRole grammar).
     stem: 'agy',
     label: 'Antigravity CLI',
-    selectable: false,
-    disabledReason: 'a fresh worktree stops on the project trust screen, and the first prompt needs -i',
-    disabledCode: 'unverified',
-    modelFlag: false,
+    selectable: true,
+    modelFlag: true,
     unattendedFlags: '--dangerously-skip-permissions',
   },
 ];

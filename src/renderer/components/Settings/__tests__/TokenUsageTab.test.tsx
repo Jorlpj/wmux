@@ -45,9 +45,11 @@ describe('TokenUsageView', () => {
     const html = render(BOUND);
     expect(html).toMatch(/data-testid="token-profile-current"[^>]*>Custom</);
     expect(html).toContain('data-testid="token-profile-apply"');
-    expect(html).toContain('Planner: claude-opus-5-5 · high → claude-sonnet-5-5 · medium');
-    expect(html).toContain('Builder: gemini-3.8-flash-high · high → gemini-3.8-flash-low · low');
-    expect(html).toContain('Reviewer: gpt-6-sol · high → gpt-6-sol · low');
+    expect(html).toContain('Planner: claude-opus-5-5 · high → claude-sonnet-5-5 · low · tools role');
+    expect(html).toContain('Builder: gemini-3.8-flash-high · high → gemini-3.8-flash-low · low · tools role');
+    expect(html).toContain('Reviewer: gpt-6-sol · high → gpt-6-sol · low · tools role');
+    expect(html).toContain('>Full<');
+    expect(html).toContain('>Coding<');
   });
 
   it('once applied, reads Minimal and has nothing to apply', () => {
@@ -58,11 +60,13 @@ describe('TokenUsageView', () => {
   });
 
   it('lists each role with its launch, tool surface size and the shared-pane note', () => {
-    const html = render(BOUND);
+    expect(render(BOUND)).toContain('wmux tools: CLI default');
+    const html = render(applyTokenProfile(BOUND, 'minimal'));
     expect(html).toContain('6 wmux tools'); // Planner
     expect(html).toContain('5 wmux tools'); // Reviewer
     expect(html).toContain('0 wmux tools'); // Builder / Tester
-    expect(html).toContain('agy --model gemini-3.8-flash-high --dangerously-skip-permissions');
+    expect(render(applyTokenProfile(BOUND, 'full'))).toContain('all wmux tools');
+    expect(html).toContain('agy --model gemini-3.8-flash-low --dangerously-skip-permissions');
     expect(html).toContain('Builder and Tester share one agy pane');
     // Permissions are shown, never offered as a profile lever.
     expect(html).not.toMatch(/Skip permissions/);

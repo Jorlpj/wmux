@@ -456,11 +456,12 @@ describe('applyRoleAgent — launcher swap for wmux-assembled launches', () => {
     expect(out.command).toBe(`codex ${PROMPT_ARG}`);
   });
 
-  it('never swaps in agy, which rejects a positional prompt (even from a hand-edited binding)', () => {
+  it('swaps in agy with -i before the prompt, since agy refuses a positional prompt', () => {
     const out = applyRoleAgent(`claude ${PROMPT_ARG}`, { agent: 'agy', model: 'gemini-3.8-flash-low' });
-    expect(out.changed).toBe(false);
-    expect(out.command).toBe(`claude ${PROMPT_ARG}`);
-    expect(out.note).toMatch(/"agy".*positional prompt/);
+    expect(out.changed).toBe(true);
+    expect(out.command).toBe(`agy -i ${PROMPT_ARG}`);
+    // An environment-only launch (no prompt) gets no -i.
+    expect(applyRoleAgent('claude', { agent: 'agy' }).command).toBe('agy');
   });
 
   it('leaves the prompt argument byte-identical', () => {

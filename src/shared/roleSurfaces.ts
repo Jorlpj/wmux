@@ -12,7 +12,7 @@
 // Builder / Tester are empty on purpose: those panes edit and test code and
 // never drive wmux, so the cheapest surface is no wmux tools at all.
 
-import type { OrchRole } from './orchestratorRole';
+import type { OrchRole, WmuxTools } from './orchestratorRole';
 
 export const ROLE_TOOL_SURFACES: Readonly<Record<OrchRole, readonly string[]>> = {
   Planner: [
@@ -34,32 +34,71 @@ export const ROLE_TOOL_SURFACES: Readonly<Record<OrchRole, readonly string[]>> =
   Tester: [],
 };
 
+/** Arguments for the `wmux` stdio server at a tool level. */
+export function wmuxServerArgs(entry: string, tools: WmuxTools, role?: OrchRole): string[] {
+  if (tools === 'core') return [entry, '--core'];
+  if (tools === 'role' && role) return [entry, `${ROLE_MODE_ARG_PREFIX}${role}`];
+  return [entry];
+}
+
+function surfaceIsEmpty(tools: WmuxTools, role?: OrchRole): boolean {
+  return tools === 'role' && !!role && ROLE_TOOL_SURFACES[role].length === 0;
+}
+
 /**
- * Launch tokens that point an agent CLI's `wmux` MCP server at a role surface,
- * keeping the server NAME "wmux" so it replaces the user-level registration
- * instead of adding a second one. Verified 2026-09-30:
- *   - claude 2.1.285: `--mcp-config <inline json>` with a server named `wmux`
- *     replaces the ~/.claude.json one (init lists one wmux, exactly the role's
- *     tools); other servers stay, so no `--strict-mcp-config`.
+ * Exec-ready tokens (no shell) that point an agent CLI's `wmux` MCP server at a
+ * tool level, keeping the server NAME "wmux" so it replaces the user-level
+ * registration instead of adding a second one. Verified 2026-09-30:
+ *   - claude 2.1.285: `--mcp-config <inline json or file>` with a server named
+ *     `wmux` replaces the ~/.claude.json one (init lists one wmux, exactly the
+ *     surface's tools); other servers stay, so no `--strict-mcp-config`.
  *   - codex 0.159.2: `-c mcp_servers.wmux.args=[...]` overrides the args
  *     (`codex mcp get wmux`), `-c mcp_servers.wmux.enabled=false` disables it.
  *   - agy: no MCP servers are registered, nothing to narrow.
  * `entry` is the stdio bundle the CLI configs already use (~/.wmux/mcp/index.js).
  * Returns null for agents with no verified grammar.
  */
-export function roleMcpArgv(agent: string, role: OrchRole, entry: string): string[] | null {
-  const serverArgs = [entry, `${ROLE_MODE_ARG_PREFIX}${role}`];
-  const empty = ROLE_TOOL_SURFACES[role].length === 0;
+export function roleMcpArgv(agent: string, role: OrchRole, entry: string, tools: WmuxTools = 'role'): string[] | null {
+  const serverArgs = wmuxServerArgs(entry, tools, role);
   switch (agent) {
     case 'claude':
       return ['--mcp-config', JSON.stringify({ mcpServers: { wmux: { command: 'node', args: serverArgs } } })];
     case 'codex':
       // JSON string escaping is valid TOML basic-string escaping.
-      return empty
+      return surfaceIsEmpty(tools, role)
         ? ['-c', 'mcp_servers.wmux.enabled=false']
         : ['-c', `mcp_servers.wmux.args=${JSON.stringify(serverArgs)}`];
     case 'agy':
       return [];
+    default:
+      return null;
+  }
+}
+
+/**
+ * The same, as text for a SHELL line (a pane's typed initial command, bash or
+ * PowerShell). No JSON on the line — PowerShell 5.1 mangles embedded double
+ * quotes on the way to a native exe — so claude gets a config FILE the caller
+ * wrote (`claudeConfigFile`, see wmuxServerArgs), and codex gets TOML literal
+ * strings ('...') inside one double-quoted argument. A path carrying a quote of
+ * either kind is refused (null) rather than escaped per shell.
+ */
+export function toolSurfaceShellFlags(
+  agent: string,
+  tools: WmuxTools,
+  entry: string,
+  role: OrchRole | undefined,
+  claudeConfigFile: string,
+): string | null {
+  if (/['"`$]/.test(entry) || /['"`$]/.test(claudeConfigFile)) return null;
+  switch (agent) {
+    case 'claude':
+      return `--mcp-config "${claudeConfigFile}"`;
+    case 'codex': {
+      if (surfaceIsEmpty(tools, role)) return '-c mcp_servers.wmux.enabled=false';
+      const list = wmuxServerArgs(entry, tools, role).map((a) => `'${a}'`).join(',');
+      return `-c "mcp_servers.wmux.args=[${list}]"`;
+    }
     default:
       return null;
   }

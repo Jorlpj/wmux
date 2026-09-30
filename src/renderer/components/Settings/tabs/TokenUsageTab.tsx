@@ -34,17 +34,31 @@ function effortOf(b: RoleBinding): string | undefined {
 }
 
 function describeBinding(b: RoleBinding): string {
-  return [b.model ?? 'default', effortOf(b) ? `· ${effortOf(b)}` : ''].filter(Boolean).join(' ');
+  return [b.model ?? 'default', effortOf(b) ? `· ${effortOf(b)}` : '', b.tools ? `· tools ${b.tools}` : '']
+    .filter(Boolean)
+    .join(' ');
 }
 
 function argvPreview(b: RoleBinding): string {
   return b.agent ? applyRoleBinding(b.agent, b, { spawnedProcess: true }).command : '';
 }
 
-function toolCount(role: string): number {
+/** What the role's pane sees from wmux at its binding's tool level. */
+function toolsLabel(role: string, b: RoleBinding, t: T): string {
+  if (!b.tools) return t('settings.tokenToolsCliDefault');
+  if (b.tools === 'full') return t('settings.tokenToolsAll');
   const surface = (ROLE_TOOL_SURFACES as Record<string, readonly string[] | undefined>)[role];
-  return surface ? surface.length : CORE_TOOL_SURFACE.length;
+  const n = b.tools === 'role' && surface ? surface.length : CORE_TOOL_SURFACE.length;
+  return t('settings.tokenRoleTools', { n });
 }
+
+const PROFILE_KEYS: Record<TokenProfile | 'custom', string> = {
+  full: 'settings.tokenProfileFull',
+  coding: 'settings.tokenProfileCoding',
+  balanced: 'settings.tokenProfileBalanced',
+  minimal: 'settings.tokenProfileMinimal',
+  custom: 'settings.tokenProfileCustom',
+};
 
 export interface TokenUsageViewProps {
   bindings: OrchestratorRoleBindings;
@@ -67,8 +81,7 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
   const sharedAgy = bindings.Builder?.agent && bindings.Builder.agent === bindings.Tester?.agent
     ? bindings.Builder.agent
     : undefined;
-  const label = (p: TokenProfile | 'custom') =>
-    t(p === 'balanced' ? 'settings.tokenProfileBalanced' : p === 'minimal' ? 'settings.tokenProfileMinimal' : 'settings.tokenProfileCustom');
+  const label = (p: TokenProfile | 'custom') => t(PROFILE_KEYS[p]);
 
   return (
     <div className="settings-page" data-testid="token-usage-tab">
@@ -86,7 +99,7 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
           </SettingRow>
         ) : (
           <>
-            <SettingRow label={t('settings.tokenProfile')}>
+            <SettingRow label={t('settings.tokenProfile')} description={t(`${PROFILE_KEYS[picked]}Desc`)}>
               <SegmentedControl<TokenProfile>
                 value={picked}
                 onValueChange={setPicked}
@@ -128,7 +141,7 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-[13px] font-medium">{role}</span>
                   <span className="text-[11px] text-[var(--text-sub)]">
-                    {b.agent ?? '—'} · {describeBinding(b)} · {t('settings.tokenRoleTools', { n: toolCount(role) })}
+                    {b.agent ?? '—'} · {describeBinding(b)} · {toolsLabel(role, b, t)}
                   </span>
                 </div>
                 {b.agent && (

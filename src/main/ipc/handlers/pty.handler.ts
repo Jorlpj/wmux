@@ -1,3 +1,4 @@
+import { applyWmuxToolsToCommand, isWmuxToolsHint } from '../../agents/toolSurfaceLaunch';
 import { WSL_RPC_TIMEOUT_MS } from '../../../shared/wsl';
 import { ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
@@ -124,8 +125,21 @@ type PtyCreateOptions = {
   fanoutTaskOf?: string;
   /** Fan-out task pane: who asked, stamped with the owner (sanitized there). */
   fanoutOrigin?: FanoutOrigin;
+  /** Role binding's wmux MCP tool level (main/agents/toolSurfaceLaunch). */
+  wmuxTools?: unknown;
 };
 
+
+/** Splice a role binding's wmux tool level into the typed launch line, then
+ *  drop the hint so it never reaches a spawn API. Invalid hints are ignored. */
+function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions | undefined {
+  if (!options || options.wmuxTools === undefined) return options;
+  const { wmuxTools, ...rest } = options;
+  if (!rest.initialCommand || !isWmuxToolsHint(wmuxTools)) return rest;
+  const initialCommand = applyWmuxToolsToCommand(rest.initialCommand, wmuxTools);
+  if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
+  return { ...rest, initialCommand };
+}
 
 /** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
  * Defense-in-depth — the schema already clamps wmux.json values, but the funnel
@@ -372,6 +386,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
+      options = withWmuxTools(options);
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -606,6 +621,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
+      options = withWmuxTools(options);
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user

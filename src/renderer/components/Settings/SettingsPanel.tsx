@@ -30,7 +30,7 @@ import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
-import { ORCH_ROLES, applyRoleBinding, launcherSupportsModelFlag, rejectsPositionalPrompt, type RoleBinding } from '../../../shared/orchestratorRole';
+import { ORCH_ROLES, applyRoleBinding, launcherSupportsModelFlag, type RoleBinding } from '../../../shared/orchestratorRole';
 import {
   DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
   FANOUT_WORKER_PERMISSION_MODES,
@@ -645,10 +645,8 @@ function disposeWorkspacePtys(ws: Workspace) {
 // but a row that cannot do what it looks like it does says so INLINE rather than
 // no-op'ing silently. Model entry is a datalist combobox, not a <select>: only
 // claude's aliases are known to us, and a codex model id (`gpt-5.5`) must be
-// typeable. agy is offered for role-bound panes and external launchers
-// (`wmux role resolve`); fan-out cannot start it with a positional prompt
-// (NO_POSITIONAL_PROMPT_STEMS), keeps its default agent for such a role, and
-// the row says so inline (roleBindingHint).
+// typeable. agy takes its fan-out prompt through `-i` (applyRoleAgent) and its
+// task folder is pre-trusted by main (main/agents/agyTrust).
 const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini', 'agy'] as const;
 
 // Model ids and CLI args are machine evidence, so the free-text fields are mono.
@@ -666,9 +664,6 @@ export function roleBindingHint(b: RoleBinding):
   }
   if (b.agent && !b.model && !b.args && !b.effort && !b.skipPermissions && !b.freshContext) {
     return { key: 'settings.roleBindingHintInert' };
-  }
-  if (rejectsPositionalPrompt(b.agent)) {
-    return { key: 'settings.roleBindingHintNoFanout', params: { agent: b.agent ?? '' } };
   }
   return undefined;
 }
