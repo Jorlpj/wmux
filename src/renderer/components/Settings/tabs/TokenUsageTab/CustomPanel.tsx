@@ -625,10 +625,6 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
       title={title}
       data-testid="token-custom-panel"
     >
-      <SettingNote>
-        {t('settings.tokenUsage.customNotice')}
-      </SettingNote>
-
       <CustomControls
         provider={provider}
         onProviderChange={handleProviderChange}

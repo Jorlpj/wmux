@@ -20,3 +20,6 @@
 
 - **Surface profiles state race conditions.** Resolved an issue where saving or previewing duplicate profile names or rapid successive requests could leave the surface profiles dialog in a stale state.
 - **Antigravity boolean handling and Windows quoting.** Corrected parsing and formatting of boolean values and single quotes in agy settings, and eliminated Windows command quotation errors in the status-line sensor installer.
+- **Codex quota without a running app-server.** The Codex card now falls back to the limits Codex records in its own session files, so the 5h and weekly windows show (with how old the reading is) even when Codex is closed.
+- **Refresh feedback on quota cards.** Each card shows when it was last checked, and a failed read is shown on the card instead of leaving it unchanged.
+- **Custom surface panel is easier to reach.** A Customize button opens the panel and scrolls it into view, and the leftover "not implemented yet" note is gone.

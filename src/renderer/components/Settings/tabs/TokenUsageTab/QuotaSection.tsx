@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   QUOTA_PROVIDERS,
   type AgySensorStatus,
@@ -12,6 +12,24 @@ import { ProviderQuotaCard } from './quota/ProviderQuotaCard';
 
 import type { ReactElement } from 'react';
 
+function failedReading(provider: QuotaProviderId, message: string): ProviderQuotaReading {
+  return {
+    quota: {
+      provider,
+      status: 'error',
+      windows: [],
+      planLabel: null,
+      creditsLabel: null,
+      capturedAtMs: null,
+      fetchedAtMs: Date.now(),
+      contextUsage: null,
+      avgTokensPerMessage: null,
+      message,
+    },
+    deltas: [],
+  };
+}
+
 export interface QuotaSectionProps {
   t?: (key: string, vars?: Record<string, string | number>) => string;
   activeProviders?: QuotaProviderId[];
@@ -21,6 +39,9 @@ export interface QuotaSectionProps {
 export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
   const defaultT = useT();
   const t = props.t ?? defaultT;
+  // Read through a ref so a caller's inline `t` never re-triggers the fetch below.
+  const tRef = useRef(t);
+  tRef.current = t;
   const activeList = props.providers ?? props.activeProviders;
   const active = useMemo<QuotaProviderId[]>(() => {
     return activeList !== undefined ? activeList : [...QUOTA_PROVIDERS];
@@ -62,8 +83,14 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
             return next;
           });
         }
-      } catch {
-        // Failed to read quota
+      } catch (err) {
+        // Shown on the card: a Refresh that fails must not look like a Refresh that did nothing.
+        const error = err instanceof Error ? err.message : String(err);
+        setReadings((prev) => {
+          const next = { ...prev };
+          for (const p of providers) next[p] = failedReading(p, tRef.current('settings.tokenUsage.readFailed', { error }));
+          return next;
+        });
       }
     },
     [],

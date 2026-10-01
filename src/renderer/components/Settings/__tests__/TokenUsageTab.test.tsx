@@ -117,9 +117,7 @@ describe('TokenUsageView', () => {
     });
     expect(badge.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('[data-testid="token-custom-panel"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="token-custom-panel"]')?.textContent).toContain(
-      'Per-provider MCP/tool/skill/plugin/hook editing is not implemented yet.',
-    );
+    expect(container.querySelector('[data-testid="token-custom-panel"]')?.textContent).not.toContain('not implemented');
 
     // Keyboard activation (Enter) to hide
     act(() => {
@@ -145,6 +143,47 @@ describe('TokenUsageView', () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it('opens the Custom panel from a real Customize button and scrolls it into view', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        createElement(TokenUsageView, {
+          bindings: BOUND,
+          onApply: () => undefined,
+          onOpenTab: () => undefined,
+          deckBrainModel: 'claude-sonnet-5-5',
+          deckBrainEffort: 'medium',
+          t,
+        }),
+      );
+    });
+
+    const button = container.querySelector('[data-testid="token-customize-button"]') as HTMLButtonElement;
+    expect(button.tagName).toBe('BUTTON');
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    await act(async () => {
+      button.click();
+    });
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-testid="token-custom-panel"]')).toBeTruthy();
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      button.click();
+    });
+    expect(container.querySelector('[data-testid="token-custom-panel"]')).toBeNull();
+
+    act(() => root.unmount());
+    container.remove();
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
   });
 
   it('toggles Custom panel when clicking the surface badge or using keyboard on it', () => {
