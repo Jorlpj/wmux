@@ -1,14 +1,27 @@
 import { useMemo } from 'react';
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
 import Badge from '../../../../ui/Badge';
+import Switch from '../../../../ui/Switch';
 
 export interface CustomMcpGroupProps {
   servers: SurfaceItem[];
   tools: SurfaceItem[];
   allServers?: SurfaceItem[];
+  allTools?: SurfaceItem[];
+  onToggle?: (itemId: string) => void;
+  stagedChanges?: Map<string, boolean>;
+  rejectedFlags?: Map<string, string>;
 }
 
-export function CustomMcpGroup({ servers, tools, allServers }: CustomMcpGroupProps) {
+export function CustomMcpGroup({
+  servers,
+  tools,
+  allServers,
+  allTools,
+  onToggle,
+  stagedChanges,
+  rejectedFlags,
+}: CustomMcpGroupProps) {
   const displayServers = useMemo(() => {
     const list: Array<{ server: SurfaceItem; dimmed: boolean }> = [];
     const seenServerNames = new Set<string>();
@@ -55,48 +68,102 @@ export function CustomMcpGroup({ servers, tools, allServers }: CustomMcpGroupPro
       <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
         {displayServers.map(({ server, dimmed }) => {
           const serverTools = tools.filter((t) => t.parent === server.name);
-          const isEnabled = server.enabled !== false;
+          const allServerTools = allTools ? allTools.filter((t) => t.parent === server.name) : serverTools;
+          const stagedToolsCount = allServerTools.filter((t) => stagedChanges?.has(t.id)).length;
+          const isServerStaged = stagedChanges?.has(server.id) ?? false;
+          const isServerEnabled = isServerStaged
+            ? stagedChanges!.get(server.id)!
+            : server.enabled !== false;
+          const isWmux = server.wmuxRequired || server.source === 'wmux';
+          const serverRejection = rejectedFlags?.get(server.id);
 
           return (
-            <div key={server.id} className="flex flex-col" data-testid={`mcp-server-${server.name}`}>
+            <div
+              key={server.id}
+              className="flex flex-col"
+              data-testid={`mcp-server-${server.name}`}
+              data-staged={isServerStaged ? 'true' : undefined}
+            >
               <div
                 className={`flex items-center justify-between px-3 py-2 text-[13px] ${dimmed ? 'opacity-60' : ''}`}
                 data-testid={`mcp-server-header-${server.name}`}
               >
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium text-[var(--text-main)]">{server.name}</span>
                   <Badge tone="neutral">{server.source}</Badge>
+                  {stagedToolsCount > 0 && (
+                    <span className="text-[11px] text-[var(--text-sub)]">
+                      {stagedToolsCount} staged {stagedToolsCount === 1 ? 'tool' : 'tools'}
+                    </span>
+                  )}
+                  {isWmux && (
+                    <Badge tone="warning">needed by wmux</Badge>
+                  )}
+                  {isServerStaged && <Badge tone="warning">staged</Badge>}
+                  {serverRejection && (
+                    <Badge tone="danger">{serverRejection}</Badge>
+                  )}
                   {server.readOnlyReason && (
                     <span className="text-[11px] text-[var(--text-sub)]">({server.readOnlyReason})</span>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge tone={isEnabled ? 'success' : 'neutral'}>
-                    {isEnabled ? 'Enabled' : 'Disabled'}
-                  </Badge>
+                  {server.toggleable && onToggle ? (
+                    <Switch
+                      checked={isServerEnabled}
+                      onCheckedChange={() => onToggle(server.id)}
+                      aria-label={`Toggle ${server.name}`}
+                      data-testid={`toggle-mcp-server-${server.name}`}
+                    />
+                  ) : (
+                    <Badge tone={isServerEnabled ? 'success' : 'neutral'}>
+                      {isServerEnabled ? 'Enabled' : 'Disabled'}
+                    </Badge>
+                  )}
                 </div>
               </div>
 
               {serverTools.length > 0 && (
                 <div className="pl-6 pr-3 pb-2 pt-0 flex flex-col gap-1">
                   {serverTools.map((tool) => {
-                    const toolEnabled = tool.enabled !== false;
+                    const isToolStaged = stagedChanges?.has(tool.id) ?? false;
+                    const toolEnabled = isToolStaged
+                      ? stagedChanges!.get(tool.id)!
+                      : tool.enabled !== false;
+                    const toolRejection = rejectedFlags?.get(tool.id);
+
                     return (
                       <div
                         key={tool.id}
                         className="flex items-center justify-between text-[11px] py-1 border-t border-[var(--border-hairline)]"
                         data-testid={`mcp-tool-${tool.name}`}
+                        data-staged={isToolStaged ? 'true' : undefined}
                       >
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-[var(--text-sub)]">↳</span>
                           <span className="ui-code text-[var(--text-main)]">{tool.name}</span>
+                          {isToolStaged && <Badge tone="warning">staged</Badge>}
+                          {toolRejection && (
+                            <Badge tone="danger">{toolRejection}</Badge>
+                          )}
                           {tool.readOnlyReason && (
                             <span className="text-[10px] text-[var(--text-sub)]">({tool.readOnlyReason})</span>
                           )}
                         </div>
-                        <Badge tone={toolEnabled ? 'success' : 'neutral'}>
-                          {toolEnabled ? 'Enabled' : 'Disabled'}
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          {tool.toggleable && onToggle ? (
+                            <Switch
+                              checked={toolEnabled}
+                              onCheckedChange={() => onToggle(tool.id)}
+                              aria-label={`Toggle ${tool.name}`}
+                              data-testid={`toggle-mcp-tool-${tool.name}`}
+                            />
+                          ) : (
+                            <Badge tone={toolEnabled ? 'success' : 'neutral'}>
+                              {toolEnabled ? 'Enabled' : 'Disabled'}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     );
                   })}

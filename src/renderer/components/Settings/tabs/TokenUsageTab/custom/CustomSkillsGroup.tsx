@@ -1,11 +1,20 @@
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
 import Badge from '../../../../ui/Badge';
+import Switch from '../../../../ui/Switch';
 
-interface CustomSkillsGroupProps {
+export interface CustomSkillsGroupProps {
   skills: SurfaceItem[];
+  onToggle?: (itemId: string) => void;
+  stagedChanges?: Map<string, boolean>;
+  rejectedFlags?: Map<string, string>;
 }
 
-export function CustomSkillsGroup({ skills }: CustomSkillsGroupProps) {
+export function CustomSkillsGroup({
+  skills,
+  onToggle,
+  stagedChanges,
+  rejectedFlags,
+}: CustomSkillsGroupProps) {
   if (skills.length === 0) return null;
 
   return (
@@ -15,15 +24,20 @@ export function CustomSkillsGroup({ skills }: CustomSkillsGroupProps) {
       </span>
       <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
         {skills.map((skill) => {
-          const isEnabled = skill.enabled !== false;
+          const isStaged = stagedChanges?.has(skill.id) ?? false;
+          const isEnabled = isStaged
+            ? stagedChanges!.get(skill.id)!
+            : skill.enabled !== false;
+          const rejectionReason = rejectedFlags?.get(skill.id);
 
           return (
             <div
               key={skill.id}
               className="flex items-center justify-between px-3 py-2 text-[13px]"
               data-testid={`skill-${skill.name}`}
+              data-staged={isStaged ? 'true' : undefined}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-[var(--text-main)]">{skill.name}</span>
                 <Badge tone="neutral">{skill.source}</Badge>
                 {skill.descriptionChars !== null && (
@@ -31,14 +45,27 @@ export function CustomSkillsGroup({ skills }: CustomSkillsGroupProps) {
                     {skill.descriptionChars} chars
                   </span>
                 )}
+                {isStaged && <Badge tone="warning">staged</Badge>}
+                {rejectionReason && (
+                  <Badge tone="danger">{rejectionReason}</Badge>
+                )}
                 {skill.readOnlyReason && (
                   <span className="text-[11px] text-[var(--text-sub)]">({skill.readOnlyReason})</span>
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <Badge tone={isEnabled ? 'success' : 'neutral'}>
-                  {isEnabled ? 'Enabled' : 'Disabled'}
-                </Badge>
+                {skill.toggleable && onToggle ? (
+                  <Switch
+                    checked={isEnabled}
+                    onCheckedChange={() => onToggle(skill.id)}
+                    aria-label={`Toggle ${skill.name}`}
+                    data-testid={`toggle-skill-${skill.name}`}
+                  />
+                ) : (
+                  <Badge tone={isEnabled ? 'success' : 'neutral'}>
+                    {isEnabled ? 'Enabled' : 'Disabled'}
+                  </Badge>
+                )}
               </div>
             </div>
           );

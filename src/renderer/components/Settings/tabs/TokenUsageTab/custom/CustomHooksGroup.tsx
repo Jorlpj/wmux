@@ -1,11 +1,20 @@
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
 import Badge from '../../../../ui/Badge';
+import Switch from '../../../../ui/Switch';
 
-interface CustomHooksGroupProps {
+export interface CustomHooksGroupProps {
   hooks: SurfaceItem[];
+  onToggle?: (itemId: string) => void;
+  stagedChanges?: Map<string, boolean>;
+  rejectedFlags?: Map<string, string>;
 }
 
-export function CustomHooksGroup({ hooks }: CustomHooksGroupProps) {
+export function CustomHooksGroup({
+  hooks,
+  onToggle,
+  stagedChanges,
+  rejectedFlags,
+}: CustomHooksGroupProps) {
   if (hooks.length === 0) return null;
 
   return (
@@ -15,17 +24,23 @@ export function CustomHooksGroup({ hooks }: CustomHooksGroupProps) {
       </span>
       <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
         {hooks.map((hook) => {
-          const isEnabled = hook.enabled !== false;
+          const isStaged = stagedChanges?.has(hook.id) ?? false;
+          const isEnabled = isStaged
+            ? stagedChanges!.get(hook.id)!
+            : hook.enabled !== false;
           const costTone =
             hook.hookCost === 'calls-model' || hook.hookCost === 'injects-context'
               ? 'warning'
               : 'neutral';
+          const isWmux = hook.wmuxRequired || hook.source === 'wmux';
+          const rejectionReason = rejectedFlags?.get(hook.id);
 
           return (
             <div
               key={hook.id}
               className="flex items-center justify-between px-3 py-2 text-[13px]"
               data-testid={`hook-${hook.name}`}
+              data-staged={isStaged ? 'true' : undefined}
             >
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-[var(--text-main)]">{hook.name}</span>
@@ -36,17 +51,30 @@ export function CustomHooksGroup({ hooks }: CustomHooksGroupProps) {
                 {hook.hookCost && (
                   <Badge tone={costTone}>{hook.hookCost}</Badge>
                 )}
-                {hook.wmuxRequired && (
-                  <span className="text-[11px] text-[var(--accent)] font-medium">wmux required</span>
+                {isWmux && (
+                  <Badge tone="warning">needed by wmux</Badge>
+                )}
+                {isStaged && <Badge tone="warning">staged</Badge>}
+                {rejectionReason && (
+                  <Badge tone="danger">{rejectionReason}</Badge>
                 )}
                 {hook.readOnlyReason && (
                   <span className="text-[11px] text-[var(--text-sub)]">({hook.readOnlyReason})</span>
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <Badge tone={isEnabled ? 'success' : 'neutral'}>
-                  {isEnabled ? 'Enabled' : 'Disabled'}
-                </Badge>
+                {hook.toggleable && onToggle ? (
+                  <Switch
+                    checked={isEnabled}
+                    onCheckedChange={() => onToggle(hook.id)}
+                    aria-label={`Toggle ${hook.name}`}
+                    data-testid={`toggle-hook-${hook.name}`}
+                  />
+                ) : (
+                  <Badge tone={isEnabled ? 'success' : 'neutral'}>
+                    {isEnabled ? 'Enabled' : 'Disabled'}
+                  </Badge>
+                )}
               </div>
             </div>
           );
