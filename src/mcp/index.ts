@@ -23,6 +23,9 @@ import { registerInspectionTools } from './playwright/tools/inspection';
 import { registerStateTools } from './playwright/tools/state';
 import { registerWaitTools } from './playwright/tools/wait';
 import { registerHelpTools } from './playwright/tools/help';
+import { randomUUID } from 'node:crypto';
+import { registerComputerTools } from './computer/tool';
+import { readComputerUseEnabled } from '../shared/computer/config';
 import { registerReplayTools } from './browser-replay/tool';
 import { ActionRing } from './browser-replay/actionRing';
 import { collectingServer, type CollectedTool } from './playwright/toolCollector';
@@ -1850,6 +1853,43 @@ registerPaneLifecycleTools(
 // binding — the gate is in resolveReplBrowser, because the sink holds browser
 // handlers even on a profile whose tools/list omits them.
 registerReplTools(server, MCP_CATALOG_OPTIONS, browserTools);
+
+// Desktop computer use: opt-in (~/.wmux/computer-use.json, Settings › Computer use),
+// full profile only, and appended after every other full-profile tool so the
+// default surface the probe pins is byte-identical for everyone who has not
+// opted in. Read once per server; main re-checks the switch on every call.
+const COMPUTER_CALLER_INSTANCE = randomUUID();
+// Main keys consent, the input lock and snapshot ownership on who is calling
+// (computer.rpc.ts callerName): our pane from the PID-map walk (hit only —
+// never the WMUX_PTY_ID env hint, which a child can inherit from another pane),
+// else this process's random instance id. Decided ONCE per server through one
+// shared promise and then fixed: concurrent first calls wait on the same walk,
+// and a MY_PTY_ID that another tool fills in later does not switch identities
+// mid-session — either would make main refuse this agent's own snapshot
+// (snapshot_unknown). A walk miss (or a transient failure) leaves the instance
+// id for the rest of this server's life; consistency beats re-attribution.
+let computerCallerIdentity: Promise<{ senderPtyId: string } | { callerInstance: string }> | null = null;
+function resolveComputerCallerIdentity(): Promise<{ senderPtyId: string } | { callerInstance: string }> {
+  computerCallerIdentity ??= (async () => {
+    if (!MY_PTY_ID) {
+      try {
+        await requireWorkspaceId();
+      } catch {
+        // No pane: the instance id keeps this caller to itself.
+      }
+    }
+    return MY_PTY_ID ? { senderPtyId: MY_PTY_ID } : { callerInstance: COMPUTER_CALLER_INSTANCE };
+  })();
+  return computerCallerIdentity;
+}
+registerComputerTools(server, MCP_CATALOG_OPTIONS, {
+  enabled: readComputerUseEnabled(),
+  rpc: async (method, params, timeoutMs) => {
+    if (method !== 'computer.getAppState' && method !== 'computer.act') return sendRpc(method, params, timeoutMs);
+    const identity = await resolveComputerCallerIdentity();
+    return sendRpc(method, { ...params, ...identity }, timeoutMs);
+  },
+});
 
 // === Commander-only registration lane ===
 // Tools that exist ONLY under --commander. They bypass the manifest filter on
