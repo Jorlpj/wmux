@@ -18,7 +18,9 @@ describe('parseAgyModels', () => {
     expect(models[0]).toEqual({
       id: 'gemini-3.8-flash-high',
       label: 'Gemini 3.8 Flash (High)',
+      defaultEffort: 'high',
     });
+    expect(models.find((m) => m.id === 'claude-sonnet-4-6')?.defaultEffort).toBeUndefined();
   });
 
   it('derives the family without the effort suffix', () => {
@@ -40,6 +42,7 @@ describe('parseCodexModels', () => {
     const sol = models.find((m) => m.id === 'gpt-6.1-sol');
     expect(sol?.label).toBe('GPT-6.1-Sol');
     expect(sol?.efforts).toContain('ultra');
+    expect(sol?.defaultEffort).toBe('low');
   });
 
   it('returns [] for invalid JSON or an unexpected shape', () => {

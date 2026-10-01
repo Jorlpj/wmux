@@ -15,6 +15,7 @@ import {
   readCodexHooksStatus,
 } from '../mcpRegistration';
 import { upsertCodexHooksToml } from '../configIO';
+import { getWmuxHomeDir } from '../constants';
 
 let home = '';
 const claudeTarget = getMcpTarget('claude')!;
@@ -437,7 +438,7 @@ describe('registerCodexHooks — the hooks lane (#1107)', () => {
     // stamp/log never touch the real ~/.wmux.
     prevUserProfile = process.env.USERPROFILE;
     process.env.USERPROFILE = home;
-    wmuxHome = path.join(home, '.wmux');
+    wmuxHome = getWmuxHomeDir();
   });
   afterEach(() => {
     if (prevUserProfile === undefined) delete process.env.USERPROFILE;

@@ -3,6 +3,29 @@ import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 import type {
+  AgySensorInstallResult,
+  AgySensorStatus,
+  QuotaReadRequest,
+  QuotaReadResult,
+} from '../shared/tokenUsage/quotaTypes';
+import type {
+  ProviderInventory,
+  SurfaceApplyResult,
+  SurfaceChangeRequest,
+  SurfaceInventoryRequest,
+  SurfacePreview,
+  SurfaceProviderId,
+} from '../shared/tokenUsage/surfaceTypes';
+import type {
+  ApplyProfileOptions,
+  ProfileApplyAggregateResult,
+  ProfilePreviewResult,
+  SaveProfileRequest,
+  SaveProfileResult,
+  SurfaceProfile,
+} from '../shared/tokenUsage/profileTypes';
+import type { SurfaceReconcileResult } from '../main/surfaces/reconcile';
+import type {
   FirstRunCheckResult,
   RegisterMcpResult,
   SampleTaskStartPayload,
@@ -49,8 +72,15 @@ export interface McpTargetStatusPayload {
   verified: boolean;
   wmux: { registered: boolean; path: string | null };
 }
-interface McpStatusPayload {
+export interface McpStatusPayload {
   targets: McpTargetStatusPayload[];
+}
+export interface McpRegisterTargetResult {
+  id: string;
+  success: boolean;
+  error?: string;
+  status: McpStatusPayload;
+  sensor?: { ok: boolean };
 }
 
 const chat: ChatBridgeApi = {
@@ -656,6 +686,11 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.AGENT_MODELS_LIST, { agent, refresh }) as Promise<
         import('../shared/modelCatalog').ModelCatalogResult
       >,
+    /** Fan-out only: trust the task folder agy is about to launch in. */
+    trustAgyFolder: (folder: string) =>
+      ipcRenderer.invoke(IPC.AGY_TRUST_FOLDER, folder) as Promise<
+        import('../main/agents/agyTrust').AgyTrustResult
+      >,
   },
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace
@@ -1219,6 +1254,38 @@ const electronAPI = {
     check: () => ipcRenderer.invoke(IPC.MCP_CHECK) as Promise<McpStatusPayload>,
     reregister: () => ipcRenderer.invoke(IPC.MCP_REREGISTER) as Promise<McpStatusPayload>,
     unregister: () => ipcRenderer.invoke(IPC.MCP_UNREGISTER) as Promise<McpStatusPayload>,
+    registerTarget: (targetId: string) =>
+      ipcRenderer.invoke(IPC.MCP_REGISTER_TARGET, targetId) as Promise<McpRegisterTargetResult>,
+  },
+  tokenUsage: {
+    readQuota: (request?: QuotaReadRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_READ, request) as Promise<QuotaReadResult>,
+    agySensorStatus: () => ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_STATUS) as Promise<AgySensorStatus>,
+    installAgySensor: () =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_INSTALL) as Promise<AgySensorInstallResult>,
+    readInventory: (request: SurfaceInventoryRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_INVENTORY, request) as Promise<ProviderInventory>,
+    previewChanges: (request: SurfaceChangeRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_PREVIEW, request) as Promise<SurfacePreview>,
+    applyChanges: (request: SurfaceChangeRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_APPLY, request) as Promise<SurfaceApplyResult>,
+    listProfiles: () =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_LIST) as Promise<SurfaceProfile[]>,
+    saveProfile: (nameOrRequest: string | SaveProfileRequest, maybeProviders?: SurfaceProviderId[]) => {
+      const payload: SaveProfileRequest =
+        typeof nameOrRequest === 'string'
+          ? { name: nameOrRequest, providers: maybeProviders }
+          : nameOrRequest;
+      return ipcRenderer.invoke(IPC.TOKEN_PROFILES_SAVE, payload) as Promise<SaveProfileResult>;
+    },
+    deleteProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_DELETE, { id }) as Promise<boolean>,
+    previewProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_PREVIEW, { id }) as Promise<ProfilePreviewResult>,
+    applyProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_APPLY, { id }) as Promise<ProfileApplyAggregateResult>,
+    reconcileSurface: (provider: SurfaceProviderId) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_RECONCILE, { provider }) as Promise<SurfaceReconcileResult>,
   },
   firstRun: {
     check: () => ipcRenderer.invoke(IPC.FIRST_RUN_CHECK) as Promise<FirstRunCheckResult>,

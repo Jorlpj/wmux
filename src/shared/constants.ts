@@ -216,6 +216,9 @@ export const IPC = {
   //                   static list), cached in main. `{ agent, refresh? }` →
   //                   ModelCatalogResult. Never rejects for a missing CLI.
   AGENT_MODELS_LIST: 'agents:models:list',
+  //   AGY_TRUST_FOLDER (invoke) renderer → main: list a fan-out task folder in
+  //   agy's trustedWorkspaces before agy launches there (main/agents/agyTrust).
+  AGY_TRUST_FOLDER: 'agents:agy:trust-folder',
   //   DECK_BRAIN_PTY  (send) main → renderer: the `claude-pty` brain just
   //                   spawned its interactive TUI in daemon session <ptyId>.
   //                   One-way and additive to DECK_STREAM (which carries only
@@ -559,6 +562,20 @@ export const IPC = {
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',
   MCP_UNREGISTER: 'mcp:unregister',
+  MCP_REGISTER_TARGET: 'mcp:register-target',
+  // Settings -> Token usage: quota (manual refresh only) and the CLI "surface" inventory / toggles.
+  TOKEN_QUOTA_READ: 'tokenUsage:quota:read',
+  TOKEN_QUOTA_SENSOR_STATUS: 'tokenUsage:quota:sensor-status',
+  TOKEN_QUOTA_SENSOR_INSTALL: 'tokenUsage:quota:sensor-install',
+  TOKEN_SURFACE_INVENTORY: 'tokenUsage:surface:inventory',
+  TOKEN_SURFACE_PREVIEW: 'tokenUsage:surface:preview',
+  TOKEN_SURFACE_APPLY: 'tokenUsage:surface:apply',
+  TOKEN_SURFACE_RECONCILE: 'tokenUsage:surface:reconcile',
+  TOKEN_PROFILES_LIST: 'tokenUsage:profiles:list',
+  TOKEN_PROFILES_SAVE: 'tokenUsage:profiles:save',
+  TOKEN_PROFILES_DELETE: 'tokenUsage:profiles:delete',
+  TOKEN_PROFILES_PREVIEW: 'tokenUsage:profiles:preview',
+  TOKEN_PROFILES_APPLY: 'tokenUsage:profiles:apply',
   // LanLink PR-3 control plane (renderer → main → daemon control pipe).
   LANLINK_STATUS: 'lanlink:status',
   LANLINK_CONFIGURE: 'lanlink:configure',
@@ -846,11 +863,35 @@ export function getTcpPortPath(): string {
   return `${home}/.wmux${dataSuffix()}-tcp-port`;
 }
 
+/**
+ * Fail-closed safety guard: refuses to touch the live wmux data directory from a test.
+ * Active under vitest when dataSuffix() is empty and either
+ *   - the isolate setup (src/test-utils/isolateDataDir.ts) did not run, i.e. a runner
+ *     bypassed vitest.config.ts (a config in a parent folder, `--config` elsewhere), or
+ *   - the given home matches the real user home (case-insensitive, \// normalized).
+ */
+export function assertNotLiveWmuxDataDir(home: string): void {
+  if (process.env.VITEST && dataSuffix() === '' && process.env.WMUX_TEST_ISOLATED !== '1') {
+    throw new Error('Refusing to touch the live wmux data dir from a test (isolate setup did not run)');
+  }
+  if (
+    process.env.VITEST &&
+    process.env.WMUX_TEST_REAL_HOME &&
+    dataSuffix() === ''
+  ) {
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (home && norm(home) === norm(process.env.WMUX_TEST_REAL_HOME)) {
+      throw new Error('Refusing to touch the live wmux data dir from a test');
+    }
+  }
+}
+
 // wmux user home directory — root for plugin-trust.json, pid-map/, and other
 // substrate state that needs to survive across wmux restarts. Single source
 // of truth so callers don't reimplement the USERPROFILE/HOME dance.
 export function getWmuxHomeDir(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
+  assertNotLiveWmuxDataDir(home);
   return `${home}/.wmux${dataSuffix()}`;
 }
 

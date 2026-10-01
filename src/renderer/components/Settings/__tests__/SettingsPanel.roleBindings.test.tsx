@@ -112,12 +112,8 @@ describe('RoleBindingsView render', () => {
     expect(html).not.toContain('<datalist');
   });
 
-  // agy is a known launcher, but fan-out cannot start it with a positional
-  // prompt, so the role list must not offer it.
-  it('does not offer agy as a role-binding agent', () => {
-    const html = render();
-    expect(html).toContain('<option value="gemini">');
-    expect(html).not.toContain('<option value="agy">');
+  it('offers agy as a role-binding agent', () => {
+    expect(render()).toContain('<option value="agy">');
   });
 
   it('offers the agent\'s own launch options once an agent is bound', () => {

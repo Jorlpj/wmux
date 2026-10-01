@@ -25,6 +25,7 @@
  * in-flight 중복=거부.
  */
 
+import { allowAgyTrustFor } from '../agents/agyTrust';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -843,6 +844,11 @@ export class FanOutService {
     // starts with the default one (the renderer swaps it), so key on the choice.
     const paneEnv = { ...taskEnv, ...firstRunEnvForAgent(ctx.agentChoice?.agent ?? ctx.agentCmd) };
     let workspaceId: string;
+    // The renderer resolves the final launcher (a role binding may make it agy)
+    // and asks main to pre-trust this folder for agy; main agrees only while
+    // this spawn is in flight (main/agents/agyTrust). Siblings that are gone are
+    // pruned from agy's list on the same write.
+    const releaseAgyTrust = allowAgyTrustFor(cwd, path.dirname(cwd));
     try {
       const spawned = await this.renderer.spawnWorkspace({
         name: wsName,
@@ -868,6 +874,8 @@ export class FanOutService {
     } catch (err) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, ...preserved };
+    } finally {
+      releaseAgyTrust();
     }
     base.workspaceId = workspaceId;
     // The renderer already stamped the lineage before the agent launched; this

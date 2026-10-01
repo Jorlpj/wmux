@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { sendRpc, setClientIdentity, setCommanderRole, setWorkspaceToken } from './wmux-client';
 import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../shared/commanderSurface';
 import { CORE_TOOL_SURFACE } from '../shared/coreSurface';
+import { ROLE_TOOL_SURFACES, resolveRoleName } from '../shared/roleSurfaces';
 import type { RpcMethod } from '../shared/rpc';
 import { EXECUTE_SEND_CLIENT_TIMEOUT_MS } from '../shared/executeApprovalBounds';
 import { NEW_TASK_SEND_CLIENT_TIMEOUT_MS, TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../shared/freshContext';
@@ -67,6 +68,9 @@ export interface WmuxServerCtx {
   /** --core surface filter flag (from argv / shim handshake). An optimization
    *  profile, not a role: it narrows tools/list and nothing else. */
   coreMode: boolean;
+  /** --role=<Role> value (from argv / shim handshake), unvalidated. Narrows the
+   *  core surface to that role's tools (src/shared/roleSurfaces.ts). */
+  roleSurface?: string;
   /** The pid identity walks start from (self pid, or the shim's pid). */
   callerPid: number;
   /** That pid's parent when already known (process.ppid); null → resolve lazily. */
@@ -474,6 +478,20 @@ if (COMMANDER_MODE && ctx.coreMode) {
     '[wmux-mcp] both --commander and --core were given; using the commander surface (--core ignored)',
   );
 }
+// --role=<Role>: the core profile narrowed to one role's tools. Commander wins
+// over it for the same reason it wins over --core; an unknown role falls back
+// to plain core (still narrower than full) and says so.
+const ROLE_ARG = resolveRoleName(ctx.roleSurface);
+if (COMMANDER_MODE && ROLE_ARG.kind !== 'none') {
+  console.error('[wmux-mcp] both --commander and --role were given; using the commander surface (--role ignored)');
+} else if (ROLE_ARG.kind === 'unknown') {
+  console.error(`[wmux-mcp] unknown --role=${ROLE_ARG.value}; using the core surface`);
+}
+const ROLE_SURFACE: readonly string[] | null =
+  !COMMANDER_MODE && ROLE_ARG.kind === 'role' ? ROLE_TOOL_SURFACES[ROLE_ARG.role] : null;
+// Any --role (known or not) runs on core; folded into ctx so the profile
+// derivation below keeps its pinned shape (workspaceRouting.test.ts).
+if (ROLE_ARG.kind !== 'none' && !ctx.coreMode) ctx = { ...ctx, coreMode: true };
 const SURFACE_PROFILE: WmuxToolProfile = COMMANDER_MODE
   ? 'commander'
   : ctx.coreMode
@@ -584,6 +602,22 @@ if (LEGACY_SURFACE) {
     }
     return (registerTool as (...a: unknown[]) => ReturnType<typeof registerTool>)(name, ...rest);
   }) as typeof server.tool;
+}
+// Role surface: a second name filter on top of core, over BOTH registration
+// paths (legacy server.tool and the catalog's server.registerTool), so a tool
+// migrated to the catalog cannot slip past it.
+if (ROLE_SURFACE) {
+  const allowed = new Set(ROLE_SURFACE);
+  const tool = server.tool.bind(server);
+  const registerTool = server.registerTool.bind(server);
+  (server as { tool: typeof server.tool }).tool = ((name: string, ...rest: unknown[]) => {
+    if (!allowed.has(name)) return undefined as unknown as ReturnType<typeof tool>;
+    return (tool as (...a: unknown[]) => ReturnType<typeof tool>)(name, ...rest);
+  }) as typeof server.tool;
+  (server as { registerTool: typeof server.registerTool }).registerTool = ((name: string, ...rest: unknown[]) => {
+    if (!allowed.has(name)) return undefined as unknown as ReturnType<typeof registerTool>;
+    return (registerTool as (...a: unknown[]) => ReturnType<typeof registerTool>)(name, ...rest);
+  }) as typeof server.registerTool;
 }
 
 // Detect an RPC outcome that means our cached workspace identity is stale

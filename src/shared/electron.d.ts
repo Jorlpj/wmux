@@ -1,4 +1,27 @@
-import type { ElectronAPI, McpTargetStatusPayload } from '../preload/preload';
+import type { ElectronAPI, McpRegisterTargetResult, McpTargetStatusPayload } from '../preload/preload';
+import type {
+  AgySensorInstallResult,
+  AgySensorStatus,
+  QuotaReadRequest,
+  QuotaReadResult,
+} from './tokenUsage/quotaTypes';
+import type {
+  ProviderInventory,
+  SurfaceApplyResult,
+  SurfaceChangeRequest,
+  SurfaceInventoryRequest,
+  SurfacePreview,
+  SurfaceProviderId,
+} from './tokenUsage/surfaceTypes';
+import type {
+  ApplyProfileOptions,
+  ProfileApplyAggregateResult,
+  ProfilePreviewResult,
+  SaveProfileRequest,
+  SaveProfileResult,
+  SurfaceProfile,
+} from './tokenUsage/profileTypes';
+import type { SurfaceReconcileResult } from '../main/surfaces/reconcile/types';
 import type {
   RemoteInboxItem,
   LanLinkStatus,
@@ -45,6 +68,24 @@ declare global {
         check: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         reregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         unregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
+        registerTarget: (targetId: string) => Promise<McpRegisterTargetResult>;
+      };
+      tokenUsage?: {
+        readQuota: (request?: QuotaReadRequest) => Promise<QuotaReadResult>;
+        agySensorStatus: () => Promise<AgySensorStatus>;
+        installAgySensor: () => Promise<AgySensorInstallResult>;
+        readInventory: (request: SurfaceInventoryRequest) => Promise<ProviderInventory>;
+        previewChanges: (request: SurfaceChangeRequest) => Promise<SurfacePreview>;
+        applyChanges: (request: SurfaceChangeRequest) => Promise<SurfaceApplyResult>;
+        listProfiles: () => Promise<SurfaceProfile[]>;
+        saveProfile: (
+          nameOrRequest: string | SaveProfileRequest,
+          providers?: SurfaceProviderId[],
+        ) => Promise<SaveProfileResult>;
+        deleteProfile: (id: string) => Promise<boolean>;
+        previewProfile: (id: string) => Promise<ProfilePreviewResult>;
+        applyProfile: (id: string, options?: ApplyProfileOptions) => Promise<ProfileApplyAggregateResult>;
+        reconcileSurface: (provider: SurfaceProviderId) => Promise<SurfaceReconcileResult>;
       };
       firstRun?: {
         check: () => Promise<FirstRunCheckResult>;

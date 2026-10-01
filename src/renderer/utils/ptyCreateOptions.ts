@@ -1,9 +1,13 @@
 import type { SpawnKind } from '../../shared/spawnKind';
 import type { DeadPaneRecovery } from '../../shared/ptyRecovery';
 import type { FanoutOrigin } from '../../shared/fanoutOrigin';
-import { applyRoleBinding, type RoleBinding } from '../../shared/orchestratorRole';
+import { applyRoleBinding, type RoleBinding, type WmuxTools } from '../../shared/orchestratorRole';
+import { commandLauncherStem } from '../../shared/fanoutPreset';
 
 export interface PtyCreateOptions {
+  /** A role binding's wmux MCP tool level; main splices the flags into
+   *  initialCommand (it knows where the bundle lives) and drops the hint. */
+  wmuxTools?: { tools: WmuxTools; role?: string };
   shell?: string;
   cwd?: string;
   /** Known-dead session cwd candidates. Main validates them in order and
@@ -138,6 +142,8 @@ export function withRoleBinding<T extends PtyCreateOptions>(
   if (!binding) return options;
   const next = { ...options };
   let touched = false;
+  // The tool level only means something for the agent the binding names, so it
+  // rides along only when the launch line (after the rewrite below) runs it.
   for (const field of ['initialCommand', 'exec'] as const) {
     const before = options[field];
     if (before === undefined) continue;
@@ -155,6 +161,11 @@ export function withRoleBinding<T extends PtyCreateOptions>(
     // to carry a note (unlike input.send, which reports `enforcedModel` back to
     // the caller), so the rewrite would otherwise be invisible.
     console.log('[wmux:role-binding] seed command rewritten', { role, field, before, after: command });
+  }
+  const launch = next.initialCommand;
+  if (binding.tools && binding.agent && launch && commandLauncherStem(launch) === binding.agent) {
+    next.wmuxTools = { tools: binding.tools, ...(role ? { role } : {}) };
+    touched = true;
   }
   return touched ? next : options;
 }
