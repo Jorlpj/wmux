@@ -50,10 +50,10 @@ export function createCodexWriter(): SurfaceWriter {
       if (!isPathSafe(configPath, ctx.deps.homeDir, ctx.deps.projectDir)) {
         return {
           provider: 'codex',
-          ok: true,
+          ok: false,
           appliedItemIds: [],
           backups: [],
-          error: null,
+          error: 'Refused to modify configuration outside allowed directories.',
         };
       }
 
@@ -71,10 +71,10 @@ export function createCodexWriter(): SurfaceWriter {
       if (safeChanges.length === 0) {
         return {
           provider: 'codex',
-          ok: true,
+          ok: false,
           appliedItemIds: [],
           backups: [],
-          error: null,
+          error: 'Refused to modify configuration outside allowed directories.',
         };
       }
 

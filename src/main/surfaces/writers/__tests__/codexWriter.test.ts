@@ -651,7 +651,7 @@ describe('Codex surface writer', () => {
         inventory: inv,
         changes: [{ item: escapedSkill, enabled: false }],
       });
-      expect(applyResult.ok).toBe(true);
+      expect(applyResult.ok).toBe(false);
       expect(applyResult.appliedItemIds).toEqual([]);
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true });
