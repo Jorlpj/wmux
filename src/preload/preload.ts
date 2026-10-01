@@ -14,7 +14,16 @@ import type {
   SurfaceChangeRequest,
   SurfaceInventoryRequest,
   SurfacePreview,
+  SurfaceProviderId,
 } from '../shared/tokenUsage/surfaceTypes';
+import type {
+  ApplyProfileOptions,
+  ProfileApplyAggregateResult,
+  ProfilePreviewResult,
+  SaveProfileRequest,
+  SaveProfileResult,
+  SurfaceProfile,
+} from '../shared/tokenUsage/profileTypes';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -1247,6 +1256,21 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.TOKEN_SURFACE_PREVIEW, request) as Promise<SurfacePreview>,
     applyChanges: (request: SurfaceChangeRequest) =>
       ipcRenderer.invoke(IPC.TOKEN_SURFACE_APPLY, request) as Promise<SurfaceApplyResult>,
+    listProfiles: () =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_LIST) as Promise<SurfaceProfile[]>,
+    saveProfile: (nameOrRequest: string | SaveProfileRequest, maybeProviders?: SurfaceProviderId[]) => {
+      const payload: SaveProfileRequest =
+        typeof nameOrRequest === 'string'
+          ? { name: nameOrRequest, providers: maybeProviders }
+          : nameOrRequest;
+      return ipcRenderer.invoke(IPC.TOKEN_PROFILES_SAVE, payload) as Promise<SaveProfileResult>;
+    },
+    deleteProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_DELETE, { id }) as Promise<boolean>,
+    previewProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_PREVIEW, { id }) as Promise<ProfilePreviewResult>,
+    applyProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_APPLY, { id }) as Promise<ProfileApplyAggregateResult>,
   },
   firstRun: {
     check: () => ipcRenderer.invoke(IPC.FIRST_RUN_CHECK) as Promise<FirstRunCheckResult>,
