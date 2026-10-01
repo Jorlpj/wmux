@@ -1,10 +1,16 @@
+import * as path from 'path';
 import type { ProviderQuota, QuotaWindow } from '../../shared/tokenUsage/quotaTypes';
 import { loadClaudeCredential, type LoadResult } from '../claude/claudeCredential';
 import { fetchUsage, UsageApiException, type UsageSnapshot } from '../claude/UsageApi';
+import { scanClaudeTranscripts, type TranscriptScanDeps, type TranscriptScanResult } from './transcripts';
 
 export interface ClaudeAdapterDeps {
   now?: () => number;
   configDir?: string;
+  homeDir?: string;
+  projectsDir?: string;
+  scanTranscripts?: (dir: string, deps?: TranscriptScanDeps) => Promise<TranscriptScanResult>;
+  transcriptScanDeps?: TranscriptScanDeps;
   loadCredential?: (configDir?: string) => Promise<LoadResult>;
   fetchClaude?: (token: string) => Promise<UsageSnapshot>;
 }
@@ -14,13 +20,28 @@ export async function readClaudeQuota(deps: ClaudeAdapterDeps = {}): Promise<Pro
   const loadCred = deps.loadCredential ?? loadClaudeCredential;
   const fetchApi = deps.fetchClaude ?? fetchUsage;
 
+  let avgTokensPerMessage: number | null = null;
+  let scanDetails: { sampleSize?: number; partial?: boolean } | undefined;
+  try {
+    const home = deps.homeDir ?? process.env.USERPROFILE ?? process.env.HOME ?? '';
+    const projectsDir = deps.projectsDir ?? path.join(home, '.claude', 'projects');
+    const scanFn = deps.scanTranscripts ?? scanClaudeTranscripts;
+    const scanResult = await scanFn(projectsDir, deps.transcriptScanDeps);
+    if (scanResult && scanResult.sampleSize > 0 && scanResult.average !== null) {
+      avgTokensPerMessage = Math.round(scanResult.average);
+      scanDetails = { sampleSize: scanResult.sampleSize, partial: scanResult.partial };
+    }
+  } catch {
+    avgTokensPerMessage = null;
+  }
+
   const base: Omit<ProviderQuota, 'status' | 'windows' | 'planLabel' | 'message'> = {
     provider: 'claude',
     creditsLabel: null,
     capturedAtMs: null,
     fetchedAtMs: now(),
     contextUsage: null,
-    avgTokensPerMessage: null,
+    avgTokensPerMessage,
   };
 
   let loadResult: LoadResult;
@@ -99,7 +120,7 @@ export async function readClaudeQuota(deps: ClaudeAdapterDeps = {}): Promise<Pro
       }
     }
 
-    return {
+    const result: ProviderQuota = {
       ...base,
       status: 'ok',
       windows,
@@ -107,6 +128,10 @@ export async function readClaudeQuota(deps: ClaudeAdapterDeps = {}): Promise<Pro
       fetchedAtMs: snapshot.fetchedAtMs || base.fetchedAtMs,
       message: null,
     };
+    if (scanDetails) {
+      Object.assign(result, scanDetails);
+    }
+    return result;
   } catch (err) {
     if (err instanceof UsageApiException) {
       if (err.detail.kind === 'unauthorized') {

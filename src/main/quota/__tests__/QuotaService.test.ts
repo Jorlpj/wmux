@@ -713,5 +713,126 @@ describe('QuotaService', () => {
       expect(agyReading?.deltas[0].deltaPct).toBe(30); // 40 - 10
       expect(agyReading?.deltas[0].previousCheckedAtMs).toBe(1000);
     });
+
+    it('fills avgTokensPerMessage for Claude and Codex using injected directories, agy stays null', async () => {
+      // Setup Claude transcript in tmpHome/.claude/projects/myproj/s1.jsonl
+      const claudeProjDir = path.join(tmpHome, '.claude', 'projects', 'myproj');
+      fs.mkdirSync(claudeProjDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(claudeProjDir, 's1.jsonl'),
+        JSON.stringify({
+          type: 'assistant',
+          message: { id: 'm1', usage: { input_tokens: 120, output_tokens: 80 } },
+        }) + '\n',
+        'utf8',
+      );
+
+      // Setup Codex transcript in tmpHome/.codex/sessions/s1.jsonl
+      const codexSessDir = path.join(tmpHome, '.codex', 'sessions');
+      fs.mkdirSync(codexSessDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(codexSessDir, 's1.jsonl'),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: { input_tokens: 300, output_tokens: 100 },
+              total_token_usage: { total_tokens: 400 },
+            },
+          },
+        }) + '\n',
+        'utf8',
+      );
+
+      // Setup Agy quota file
+      setupAgySettings();
+      setupAgyQuota({
+        version: 1,
+        buckets: [{ name: 'standard', remaining_fraction: 0.8, resets_at: 1760000000000 }],
+        last_updated: 1759000000000,
+      });
+
+      const service = new QuotaService({
+        homeDir: tmpHome,
+        loadClaudeCred: async () => ({
+          ok: true,
+          credential: {
+            accessToken: SECRET_TOKEN,
+            subscriptionType: 'pro',
+            rateLimitTier: 'tier-1',
+            expiresAtMs: 1770000000000,
+          },
+        }),
+        fetchClaude: async () => ({
+          sessionPct: 10,
+          sessionResetEpochSec: 1760000000,
+          weeklyPct: 20,
+          weeklyResetEpochSec: 1760600000,
+          fetchedAtMs: 1759000000000,
+        }),
+        readCodex: async () => ({
+          auth: { state: 'signed-in', method: 'chatgpt' },
+          rateLimits: {
+            ordinaryUsageAllowed: true,
+            planType: 'plus',
+            buckets: [
+              {
+                limitId: 'codex',
+                limitName: null,
+                primary: { usedPercent: 15, resetsAt: 1760000000000, windowMinutes: 300 },
+                secondary: null,
+                reachedType: null,
+              },
+            ],
+          },
+          fetchedAt: 1759000000000,
+          cached: false,
+        }),
+      });
+
+      const res = await service.readQuota({ providers: ['claude', 'codex', 'agy'] });
+
+      const claude = res.readings.find((r) => r.quota.provider === 'claude');
+      expect(claude?.quota.avgTokensPerMessage).toBe(200); // 120 + 80
+
+      const codex = res.readings.find((r) => r.quota.provider === 'codex');
+      expect(codex?.quota.avgTokensPerMessage).toBe(400); // 300 + 100
+
+      const agy = res.readings.find((r) => r.quota.provider === 'agy');
+      expect(agy?.quota.avgTokensPerMessage).toBeNull();
+    });
+
+    it('scan failure yields null and never fails the provider reading', async () => {
+      const service = new QuotaService({
+        homeDir: tmpHome,
+        scanClaudeTranscripts: async () => {
+          throw new Error('Disk read error');
+        },
+        loadClaudeCred: async () => ({
+          ok: true,
+          credential: {
+            accessToken: SECRET_TOKEN,
+            subscriptionType: 'pro',
+            rateLimitTier: 'tier-1',
+            expiresAtMs: 1770000000000,
+          },
+        }),
+        fetchClaude: async () => ({
+          sessionPct: 10,
+          sessionResetEpochSec: 1760000000,
+          weeklyPct: 20,
+          weeklyResetEpochSec: 1760600000,
+          fetchedAtMs: 1759000000000,
+        }),
+      });
+
+      const res = await service.readQuota({ providers: ['claude'] });
+      expect(res.readings).toHaveLength(1);
+      const claude = res.readings[0];
+      expect(claude.quota.status).toBe('ok');
+      expect(claude.quota.avgTokensPerMessage).toBeNull();
+    });
   });
 });
+
