@@ -42,6 +42,10 @@ const bridges = [
     src: join(repoRoot, 'integrations', 'opencode', 'plugins', 'wmux.js'),
     dest: 'wmux-opencode-plugin.js',
   },
+  {
+    src: join(repoRoot, 'integrations', 'agy', 'bin', 'quota-sink.js'),
+    dest: 'quota-sink.js',
+  },
 ];
 
 mkdirSync(destDir, { recursive: true });
