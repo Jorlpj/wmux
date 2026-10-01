@@ -5,6 +5,7 @@ export type CliRunner = (command: string, args: readonly string[]) => Promise<st
 export interface InventoryDeps {
   homeDir: string;
   projectDir?: string;
+  surfacesStorePath?: string;
   run?: CliRunner;
   now?: () => number;
   readFile?: (path: string, encoding: 'utf8') => Promise<string>;
