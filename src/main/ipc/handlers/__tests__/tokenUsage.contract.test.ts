@@ -61,13 +61,22 @@ describe('token usage IPC contract', () => {
     cleanup();
   });
 
-  it('skeleton inventory is read-only and empty', async () => {
-    const cleanup = registerTokenUsageSurfaceHandlers();
+  it('inventory handler returns reader result and rejects unknown provider', async () => {
+    const mockDeps = {
+      homeDir: '/tmp/nonexistent-test-home',
+      run: async () => '1.2.14',
+    };
+    const cleanup = registerTokenUsageSurfaceHandlers(mockDeps);
     const map = await handlers();
     const inv = (await map.get(IPC.TOKEN_SURFACE_INVENTORY)!({}, { provider: 'agy' })) as ProviderInventory;
     expect(inv.provider).toBe('agy');
-    expect(inv.writable).toBe(false);
-    expect(inv.items).toEqual([]);
+    expect(inv.versionSupported).toBe(true);
+    expect(inv.writable).toBe(true);
+
+    await expect(
+      map.get(IPC.TOKEN_SURFACE_INVENTORY)!({}, { provider: 'unknown' as any }),
+    ).rejects.toThrow('Unknown provider');
+
     cleanup();
   });
 });
