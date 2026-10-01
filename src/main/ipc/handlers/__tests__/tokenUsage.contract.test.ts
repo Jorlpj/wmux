@@ -18,7 +18,8 @@ import { IPC } from '../../../../shared/constants';
 import { registerTokenUsageQuotaHandlers } from '../tokenUsageQuota.handler';
 import { registerTokenUsageSurfaceHandlers } from '../tokenUsageSurface.handler';
 import { SURFACE_CAPABILITIES, capabilityFor } from '../../../../shared/tokenUsage/capabilities';
-import type { QuotaReadResult } from '../../../../shared/tokenUsage/quotaTypes';
+import type { QuotaReadRequest, QuotaReadResult } from '../../../../shared/tokenUsage/quotaTypes';
+import type { QuotaService } from '../../../quota/QuotaService';
 import type { ProviderInventory } from '../../../../shared/tokenUsage/surfaceTypes';
 
 const CHANNELS = [
@@ -29,6 +30,14 @@ const CHANNELS = [
   IPC.TOKEN_SURFACE_PREVIEW,
   IPC.TOKEN_SURFACE_APPLY,
 ];
+
+function fakeQuotaService(): QuotaService {
+  return {
+    readQuota: vi.fn(async () => ({ readings: [] })),
+    getAgySensorStatus: vi.fn(),
+    installAgySensor: vi.fn(),
+  } as unknown as QuotaService;
+}
 
 async function handlers() {
   const electron = (await import('electron')) as unknown as {
@@ -43,21 +52,21 @@ describe('token usage IPC contract', () => {
   });
 
   it('registers every channel and removes them on cleanup', async () => {
-    const cleanups = [registerTokenUsageQuotaHandlers(), registerTokenUsageSurfaceHandlers()];
+    const cleanups = [registerTokenUsageQuotaHandlers(fakeQuotaService()), registerTokenUsageSurfaceHandlers()];
     const map = await handlers();
     for (const channel of CHANNELS) expect(map.has(channel)).toBe(true);
     for (const cleanup of cleanups) cleanup();
     for (const channel of CHANNELS) expect(map.has(channel)).toBe(false);
   });
 
-  it('skeleton quota read returns one unavailable reading per active provider', async () => {
-    const cleanup = registerTokenUsageQuotaHandlers();
+  it('quota read delegates to the injected service and never builds a default one', async () => {
+    const service = fakeQuotaService();
+    const cleanup = registerTokenUsageQuotaHandlers(service);
     const map = await handlers();
-    const all = (await map.get(IPC.TOKEN_QUOTA_READ)!({}, undefined)) as QuotaReadResult;
-    expect(all.readings.map((r) => r.quota.provider)).toEqual(['claude', 'codex', 'agy']);
-    const one = (await map.get(IPC.TOKEN_QUOTA_READ)!({}, { providers: ['codex'] })) as QuotaReadResult;
-    expect(one.readings).toHaveLength(1);
-    expect(one.readings[0].quota.status).toBe('unavailable');
+    const request: QuotaReadRequest = { providers: ['codex'] };
+    const result = (await map.get(IPC.TOKEN_QUOTA_READ)!({}, request)) as QuotaReadResult;
+    expect(service.readQuota).toHaveBeenCalledWith(request);
+    expect(result.readings).toEqual([]);
     cleanup();
   });
 
