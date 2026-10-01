@@ -106,6 +106,7 @@ import { getProjectConfigStore } from './project/ProjectConfigStore';
 import { createWorkspaceFactsPublisher, invalidateAutonomyCache } from './workspace/workspaceFactsFeed';
 import { getTaskLedger } from './deck/taskLedgerHost';
 import { onAutonomyWritten } from './deck/deckAutonomyStore';
+import { sweepOrphanAtomicTemps } from '../daemon/util/atomicWrite';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { getWorkspaceMirror } from './workspace/WorkspaceMirror';
@@ -1100,6 +1101,13 @@ onAutonomyWritten(() => {
 // getDaemonClient: the `claude-pty` brain vendor spawns its interactive TUI as
 // a daemon session, so it needs the live client (a getter, because the deck
 // handler registers before the daemon connects).
+// WMX-06: Sweep orphaned atomic write temp files before deck stores are first read
+try {
+  sweepOrphanAtomicTemps(getWmuxDir());
+} catch (err) {
+  console.warn('[Main] sweepOrphanAtomicTemps failed at startup:', err);
+}
+
 const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
   getDaemonClient: () => daemonClient,
 });

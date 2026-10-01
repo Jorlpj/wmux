@@ -29,6 +29,7 @@ import type { CustomThemeColors, NotificationCategory, Workspace, XtermThemeColo
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import type { ChromePreset } from '../../../shared/chromePresets';
+import { ROLE_PRESET_SPECS, applyRolePreset, hasRolePreset, rolePresetApplied } from '../../../shared/rolePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, applyRoleBinding, launcherSupportsModelFlag, type RoleBinding } from '../../../shared/orchestratorRole';
 import {
@@ -644,9 +645,9 @@ function disposeWorkspacePtys(ws: Workspace) {
 // but a row that cannot do what it looks like it does says so INLINE rather than
 // no-op'ing silently. Model entry is a datalist combobox, not a <select>: only
 // claude's aliases are known to us, and a codex model id (`gpt-5.5`) must be
-// typeable. agy is left out: a role binding feeds fan-out, which cannot launch
-// agy with a positional prompt (see NO_POSITIONAL_PROMPT_STEMS).
-const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini'] as const;
+// typeable. agy takes its fan-out prompt through `-i` (applyRoleAgent) and its
+// task folder is pre-trusted by main (main/agents/agyTrust).
+const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini', 'agy'] as const;
 
 // Model ids and CLI args are machine evidence, so the free-text fields are mono.
 const ROLE_BINDING_FIELD_CLASS = 'settings-input font-mono';
@@ -872,6 +873,21 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                     {t('settings.roleBindingRefreshModels')}
                   </UiButton>
                 )}
+              </div>
+            )}
+            {hasRolePreset(role) && (
+              <div className="mt-1.5 pl-[84px]" data-role-binding-preset={role}>
+                <UiButton
+                  variant="secondary"
+                  size="sm"
+                  disabled={rolePresetApplied(role, bindings)}
+                  title={t('settings.rolePresetTooltip', { tier: ROLE_PRESET_SPECS[role].tier })}
+                  onClick={() => onChange(role, applyRolePreset(role, bindings[role]))}
+                >
+                  {rolePresetApplied(role, bindings)
+                    ? t('settings.rolePresetApplied', { role })
+                    : t('settings.rolePresetApply', { role })}
+                </UiButton>
               </div>
             )}
             {preview && (
