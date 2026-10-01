@@ -192,12 +192,13 @@ export function createClaudeWriter(): SurfaceWriter {
           // Store failure must not fail apply
         }
 
+        const unapplied = changes.some((c) => !appliedItemIds.includes(c.item.id));
         return {
           provider: 'claude',
-          ok: true,
+          ok: !unapplied,
           appliedItemIds,
           backups,
-          error: null,
+          error: unapplied ? 'Some changes could not be applied.' : null,
         };
       } catch (err: unknown) {
         if (err instanceof Error) {
