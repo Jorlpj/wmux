@@ -3,6 +3,7 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
 import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
+import { getDefaultQuotaService } from './tokenUsageQuota.handler';
 
 /**
  * Serializable shape returned to the renderer. Mirrors {@link McpRegistrarStatus}
@@ -27,6 +28,16 @@ export interface McpTargetStatusPayload {
 export interface McpStatusPayload {
   targets: McpTargetStatusPayload[];
 }
+
+export interface McpRegisterTargetResult {
+  id: string;
+  success: boolean;
+  error?: string;
+  status: McpStatusPayload;
+  sensor?: { ok: boolean };
+}
+
+export type AgySensorInstaller = () => Promise<{ ok: boolean }>;
 
 function serialize(status: McpRegistrarStatus): McpStatusPayload {
   return {
@@ -58,7 +69,10 @@ function serialize(status: McpRegistrarStatus): McpStatusPayload {
 export function registerMcpHandlers(
   registrar: McpRegistrar,
   getAuthToken: () => string | null,
+  installAgySensor?: AgySensorInstaller,
 ): () => void {
+  const sensorInstaller = installAgySensor ?? (() => getDefaultQuotaService().installAgySensor());
+
   // wrapHandler is variadic and treats its first argument (the IpcMainInvokeEvent)
   // as transport plumbing; we can omit the parameter entirely on the inner
   // handler since none of these read renderer/sender info.
@@ -103,9 +117,49 @@ export function registerMcpHandlers(
     }),
   );
 
+  ipcMain.removeHandler(IPC.MCP_REGISTER_TARGET);
+  ipcMain.handle(
+    IPC.MCP_REGISTER_TARGET,
+    wrapHandler(
+      IPC.MCP_REGISTER_TARGET,
+      async (_event, targetId: unknown): Promise<McpRegisterTargetResult> => {
+        if (typeof targetId !== 'string' || !targetId.trim()) {
+          throw new Error('Invalid target id for MCP registration');
+        }
+        const token = getAuthToken();
+        if (!token) {
+          throw new Error('MCP registration unavailable: auth token not ready (pipe server still starting)');
+        }
+        const reregisterSkip = externalRegistrationSkipReason();
+        if (reregisterSkip) throw new Error(reregisterSkip);
+
+        const normalizedId = targetId.trim();
+        const targetResult = await registrar.registerTarget(token, normalizedId);
+        let sensor: { ok: boolean } | undefined;
+        if (normalizedId === 'agy' && targetResult.success) {
+          try {
+            const sensorResult = await sensorInstaller();
+            sensor = { ok: Boolean(sensorResult?.ok) };
+          } catch {
+            sensor = { ok: false };
+          }
+        }
+
+        return {
+          id: targetResult.id,
+          success: targetResult.success,
+          ...(targetResult.error ? { error: targetResult.error } : {}),
+          status: serialize(registrar.getStatus()),
+          ...(sensor !== undefined ? { sensor } : {}),
+        };
+      },
+    ),
+  );
+
   return () => {
     ipcMain.removeHandler(IPC.MCP_CHECK);
     ipcMain.removeHandler(IPC.MCP_REREGISTER);
     ipcMain.removeHandler(IPC.MCP_UNREGISTER);
+    ipcMain.removeHandler(IPC.MCP_REGISTER_TARGET);
   };
 }
