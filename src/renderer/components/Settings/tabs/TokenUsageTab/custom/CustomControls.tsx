@@ -13,7 +13,16 @@ interface CustomControlsProps {
   onOnlyChangedChange: (val: boolean) => void;
   onRefresh: () => void;
   loading: boolean;
+  providers?: SurfaceProviderId[];
 }
+
+const ALL_PROVIDER_OPTIONS: Record<SurfaceProviderId, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  agy: 'Antigravity',
+};
+
+const ORDERED_PROVIDERS: readonly SurfaceProviderId[] = ['claude', 'codex', 'agy'] as const;
 
 export function CustomControls({
   provider,
@@ -24,12 +33,13 @@ export function CustomControls({
   onOnlyChangedChange,
   onRefresh,
   loading,
+  providers,
 }: CustomControlsProps) {
-  const providerOptions = [
-    { value: 'claude' as const, label: 'Claude Code' },
-    { value: 'codex' as const, label: 'Codex' },
-    { value: 'agy' as const, label: 'Antigravity' },
-  ];
+  const allowed = providers && providers.length > 0 ? new Set(providers) : new Set(ORDERED_PROVIDERS);
+  const providerOptions = ORDERED_PROVIDERS.filter((p) => allowed.has(p)).map((p) => ({
+    value: p,
+    label: ALL_PROVIDER_OPTIONS[p] ?? p,
+  }));
 
   return (
     <div className="flex flex-col gap-3 my-3" data-testid="token-custom-controls">

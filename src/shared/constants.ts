@@ -570,6 +570,7 @@ export const IPC = {
   TOKEN_SURFACE_INVENTORY: 'tokenUsage:surface:inventory',
   TOKEN_SURFACE_PREVIEW: 'tokenUsage:surface:preview',
   TOKEN_SURFACE_APPLY: 'tokenUsage:surface:apply',
+  TOKEN_SURFACE_RECONCILE: 'tokenUsage:surface:reconcile',
   TOKEN_PROFILES_LIST: 'tokenUsage:profiles:list',
   TOKEN_PROFILES_SAVE: 'tokenUsage:profiles:save',
   TOKEN_PROFILES_DELETE: 'tokenUsage:profiles:delete',

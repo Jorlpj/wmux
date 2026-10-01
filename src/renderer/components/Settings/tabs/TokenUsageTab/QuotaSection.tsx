@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   QUOTA_PROVIDERS,
   type AgySensorStatus,
   type ProviderQuotaReading,
   type QuotaProviderId,
 } from '../../../../../shared/tokenUsage/quotaTypes';
-import { SettingsSection } from '../../SettingsLayout';
+import { SettingNote, SettingsSection } from '../../SettingsLayout';
 import Button from '../../../ui/Button';
 import { ProviderQuotaCard } from './quota/ProviderQuotaCard';
 
@@ -14,12 +14,15 @@ import type { ReactElement } from 'react';
 export interface QuotaSectionProps {
   t?: (key: string, vars?: Record<string, string | number>) => string;
   activeProviders?: QuotaProviderId[];
+  providers?: QuotaProviderId[];
 }
 
 export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
-  const { t, activeProviders } = props;
-  const active: QuotaProviderId[] =
-    activeProviders && activeProviders.length > 0 ? activeProviders : [...QUOTA_PROVIDERS];
+  const { t } = props;
+  const activeList = props.providers ?? props.activeProviders;
+  const active = useMemo<QuotaProviderId[]>(() => {
+    return activeList !== undefined ? activeList : [...QUOTA_PROVIDERS];
+  }, [activeList]);
 
   const [readings, setReadings] = useState<Partial<Record<QuotaProviderId, ProviderQuotaReading>>>({});
   const [loading, setLoading] = useState<Record<QuotaProviderId, boolean>>({
@@ -65,6 +68,7 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
   );
 
   const handleUpdateAll = useCallback(async () => {
+    if (active.length === 0) return;
     setLoadingAll(true);
     setLoading((prev) => {
       const next = { ...prev };
@@ -119,8 +123,10 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
   }, [fetchQuota, fetchAgySensorStatus]);
 
   useEffect(() => {
-    void handleUpdateAll();
-  }, []);
+    if (active.length > 0) {
+      void handleUpdateAll();
+    }
+  }, [active.length, handleUpdateAll]);
 
   const title = t && t('settings.tokenQuota') !== 'settings.tokenQuota'
     ? t('settings.tokenQuota')
@@ -135,7 +141,7 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
           variant="secondary"
           size="sm"
           onClick={handleUpdateAll}
-          disabled={loadingAll}
+          disabled={loadingAll || active.length === 0}
           data-testid="quota-update-all"
         >
           {loadingAll ? 'Updating...' : 'Update all'}
@@ -144,18 +150,24 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
       data-testid="token-quota-section"
     >
       <div className="flex flex-col gap-3 p-3">
-        {active.map((provider) => (
-          <ProviderQuotaCard
-            key={provider}
-            provider={provider}
-            reading={readings[provider]}
-            loading={loading[provider]}
-            onRefresh={() => handleRefresh(provider)}
-            agySensorStatus={provider === 'agy' ? agySensorStatus : undefined}
-            onInstallSensor={provider === 'agy' ? handleInstallAgySensor : undefined}
-            installingSensor={installingAgy}
-          />
-        ))}
+        {active.length === 0 ? (
+          <SettingNote data-testid="token-quota-empty">
+            No supported agent is bound to a role
+          </SettingNote>
+        ) : (
+          active.map((provider) => (
+            <ProviderQuotaCard
+              key={provider}
+              provider={provider}
+              reading={readings[provider]}
+              loading={loading[provider]}
+              onRefresh={() => handleRefresh(provider)}
+              agySensorStatus={provider === 'agy' ? agySensorStatus : undefined}
+              onInstallSensor={provider === 'agy' ? handleInstallAgySensor : undefined}
+              installingSensor={installingAgy}
+            />
+          ))
+        )}
       </div>
     </SettingsSection>
   );

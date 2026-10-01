@@ -6,12 +6,13 @@
 // selected profile is DERIVED from the bindings, and Apply writes bindings.
 // Permissions are the operator's and are never touched here.
 
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../../stores';
 import { useT } from '../../../hooks/useT';
 import { applyRoleBinding, type OrchestratorRoleBindings, type RoleBinding } from '../../../../shared/orchestratorRole';
 import { ROLE_TOOL_SURFACES } from '../../../../shared/roleSurfaces';
 import { CORE_TOOL_SURFACE } from '../../../../shared/coreSurface';
+import { activeProviders } from '../../../../shared/activeProviders';
 import { SettingNote, SettingRow, SettingsSection } from '../SettingsLayout';
 import Button from '../../ui/Button';
 import { QuotaSection } from './TokenUsageTab/QuotaSection';
@@ -46,6 +47,49 @@ export interface TokenUsageViewProps {
 
 export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, deckBrainEffort, t }: TokenUsageViewProps) {
   const [showCustom, setShowCustom] = useState(false);
+  const [surfaceBadgeText, setSurfaceBadgeText] = useState('Surface: default');
+  const surfaceReqIdRef = useRef(0);
+
+  const providers = useMemo(() => activeProviders(bindings), [bindings]);
+
+  const refreshSurfaceState = useCallback(async () => {
+    if (typeof window === 'undefined' || !window.electronAPI?.tokenUsage?.readInventory) {
+      return;
+    }
+    const reqId = ++surfaceReqIdRef.current;
+    try {
+      const results = await Promise.allSettled(
+        providers.map((p) => window.electronAPI.tokenUsage.readInventory({ provider: p }))
+      );
+      if (reqId !== surfaceReqIdRef.current) return;
+      let disabledCount = 0;
+      let failedCount = 0;
+      for (const res of results) {
+        if (res.status === 'fulfilled') {
+          const val = res.value;
+          if (val && Array.isArray(val.items)) {
+            for (const item of val.items) {
+              const isWmux = Boolean(item.wmuxRequired || item.source === 'wmux' || item.parent === 'wmux');
+              if (!isWmux && item.enabled === false) {
+                disabledCount++;
+              }
+            }
+          }
+        } else {
+          failedCount++;
+        }
+      }
+      const baseText = disabledCount === 0 ? 'Surface: default' : `Surface: ${disabledCount} off`;
+      setSurfaceBadgeText(failedCount > 0 ? `${baseText} (some unavailable)` : baseText);
+    } catch {
+      // ignore
+    }
+  }, [providers]);
+
+  useEffect(() => {
+    refreshSurfaceState();
+  }, [refreshSurfaceState]);
+
   const roles = [
     ...ROLE_ORDER.filter((r) => bindings[r]),
     ...Object.keys(bindings).filter((r) => !ROLE_ORDER.includes(r)),
@@ -57,7 +101,7 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
 
   return (
     <div className="settings-page" data-testid="token-usage-tab">
-      <QuotaSection t={t} />
+      <QuotaSection t={t} providers={providers} />
 
       {/* Catalog search jump anchor: <SettingsSection id="tokenprofile" */}
       <ProfileSection
@@ -67,9 +111,11 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
         t={t}
         showCustom={showCustom}
         onToggleCustom={() => setShowCustom((v) => !v)}
+        surfaceBadgeText={surfaceBadgeText}
+        onProfileApplied={refreshSurfaceState}
       />
 
-      {showCustom && <CustomPanel t={t} />}
+      {showCustom && <CustomPanel t={t} providers={providers} onApplied={refreshSurfaceState} />}
 
       <SettingsSection id="tokenroles" title={t('settings.tokenRoles')} description={t('settings.tokenRolesDesc')}>
         {!bound && <SettingNote>{t('settings.tokenProfileNoRoles')}</SettingNote>}

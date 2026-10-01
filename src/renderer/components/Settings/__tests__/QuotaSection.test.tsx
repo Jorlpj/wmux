@@ -305,4 +305,39 @@ describe('QuotaSection UI', () => {
     // Re-reads quota and sensor status after install
     expect(mockReadQuota).toHaveBeenCalledWith({ providers: ['agy'] });
   });
+
+  it('renders note "No supported agent is bound to a role" and fetches nothing when activeProviders is empty', async () => {
+    await act(async () => {
+      root.render(<QuotaSection activeProviders={[]} />);
+    });
+
+    expect(container.textContent).toContain('No supported agent is bound to a role');
+    expect(container.querySelector('[data-testid="token-quota-empty"]')).toBeTruthy();
+    expect(mockReadQuota).not.toHaveBeenCalled();
+    expect(mockAgySensorStatus).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('[data-testid^="quota-card-"]')).toHaveLength(0);
+    const updateAllBtn = container.querySelector('[data-testid="quota-update-all"]') as HTMLButtonElement;
+    expect(updateAllBtn.disabled).toBe(true);
+  });
+
+  it('renders note "No supported agent is bound to a role" and fetches nothing when providers prop is empty array', async () => {
+    await act(async () => {
+      root.render(<QuotaSection providers={[]} />);
+    });
+
+    expect(container.textContent).toContain('No supported agent is bound to a role');
+    expect(container.querySelector('[data-testid="token-quota-empty"]')).toBeTruthy();
+    expect(mockReadQuota).not.toHaveBeenCalled();
+    expect(mockAgySensorStatus).not.toHaveBeenCalled();
+  });
+
+  it('falls back to all providers ONLY when neither providers nor activeProviders is passed', async () => {
+    mockReadQuota.mockResolvedValue({ readings: [] });
+
+    await act(async () => {
+      root.render(<QuotaSection />);
+    });
+
+    expect(mockReadQuota).toHaveBeenCalledWith({ providers: ['claude', 'codex', 'agy'] });
+  });
 });
