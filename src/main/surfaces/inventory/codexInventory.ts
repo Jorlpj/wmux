@@ -21,6 +21,7 @@ import {
   makeItem,
   type InventoryDeps,
 } from './types';
+import { listWmuxToolNames, resolveEffectiveWmuxServer, wmuxToolItems, type WmuxServerDeclaration } from './wmuxTools';
 
 export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderInventory> {
   const warnings: string[] = [];
@@ -49,6 +50,7 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
   const hooksStateMap = new Map<string, boolean>();
 
   let hasMcpServers = false;
+  const wmuxDeclarations: WmuxServerDeclaration[] = [];
 
   if (parsed && typeof parsed === 'object') {
     // 1. MCP servers
@@ -61,21 +63,20 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
         const source: SurfaceSource = isWmux ? 'wmux' : 'user';
         const enabled = conf.enabled !== false;
 
-        addItem(
-          makeItem({
-            provider: 'codex',
-            kind: 'mcp-server',
-            name: serverName,
-            source,
-            enabled,
-            effect: 'removes',
-            toggleable: true,
-            originPath: configPath,
-            wmuxRequired: isWmux,
-          }),
-        );
+        const serverItem = makeItem({
+          provider: 'codex',
+          kind: 'mcp-server',
+          name: serverName,
+          source,
+          enabled,
+          effect: 'removes',
+          toggleable: true,
+          originPath: configPath,
+          wmuxRequired: isWmux,
+        });
+        addItem(serverItem);
 
-        if (Array.isArray(conf.disabled_tools)) {
+        if (!isWmux && Array.isArray(conf.disabled_tools)) {
           for (const tool of conf.disabled_tools) {
             if (typeof tool === 'string') {
               addItem(
@@ -95,7 +96,7 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
           }
         }
 
-        if (Array.isArray(conf.enabled_tools)) {
+        if (!isWmux && Array.isArray(conf.enabled_tools)) {
           for (const tool of conf.enabled_tools) {
             if (typeof tool === 'string') {
               addItem(
@@ -113,6 +114,45 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
               );
             }
           }
+        }
+
+        if (isWmux) {
+          const disabledTools = Array.isArray(conf.disabled_tools)
+            ? (conf.disabled_tools as unknown[]).filter((x): x is string => typeof x === 'string')
+            : [];
+          const enabledTools = Array.isArray(conf.enabled_tools)
+            ? (conf.enabled_tools as unknown[]).filter((x): x is string => typeof x === 'string')
+            : null;
+
+          const disabledSet = new Set<string>(disabledTools);
+          if (enabledTools !== null) {
+            const enabledSet = new Set(enabledTools);
+            for (const name of listWmuxToolNames()) {
+              if (!enabledSet.has(name)) {
+                disabledSet.add(name);
+              }
+            }
+          }
+
+          wmuxDeclarations.push({
+            source: 'user',
+            serverItem,
+            disabledNames: disabledSet,
+            originPath: configPath,
+          });
+        }
+      }
+    }
+
+    const effectiveWmux = resolveEffectiveWmuxServer(wmuxDeclarations);
+    if (effectiveWmux) {
+      if (effectiveWmux.warning) {
+        warnings.push(effectiveWmux.warning);
+      }
+      const toolItems = wmuxToolItems('codex', effectiveWmux.effective.serverItem, effectiveWmux.effective.disabledNames, deps);
+      for (const toolItem of toolItems) {
+        if (!seenItemIds.has(toolItem.id)) {
+          addItem(toolItem);
         }
       }
     }
