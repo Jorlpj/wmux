@@ -68,6 +68,7 @@ export type RiskClass =
   | 'terminal-content' // reads what's on the user's screen
   | 'terminal-input'   // types into the user's panes
   | 'browser'          // controls a Playwright browser
+  | 'computer'         // sees and drives other desktop apps
   | 'metadata'         // labels / status / custom map writes
   | 'events'           // event subscription
   | 'pane-lifecycle'   // create/focus/list panes
@@ -104,6 +105,21 @@ export function resolveRequiredCapability(
   params: Record<string, unknown>,
 ): RequiredCapabilityName {
   return typeof entry.capability === 'function' ? entry.capability(params) : entry.capability;
+}
+
+/**
+ * Risk classes the enforcer's verdict is binding for in EVERY mode. In shadow
+ * mode a non-allow outcome is normally only logged; for these it is refused,
+ * like the commander gate in RpcRouter. `computer` reads other apps' windows
+ * and injects input into them, so an unapproved named client must never reach
+ * it just because a build (or `mcp.mode: "shadow"`) runs the enforcer advisory.
+ */
+const ALWAYS_ENFORCED_RISK_CLASSES: ReadonlySet<RiskClass> = new Set<RiskClass>(['computer']);
+
+/** Whether a non-allow verdict on `method` is refused even in shadow mode. */
+export function isAlwaysEnforcedMethod(method: string): boolean {
+  const entry = (METHOD_CAPABILITY as Record<string, RequiredCapability | undefined>)[method];
+  return entry?.riskClass !== undefined && ALWAYS_ENFORCED_RISK_CLASSES.has(entry.riskClass);
 }
 
 // === Path extractors ===
@@ -264,6 +280,16 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   //     undeclared plugin must not receive it (PR #470 codex review). The CLI
   //     (`wmux doctor`) is unaffected — it rides the WMUX_CLI_METHODS tier.
   'perf.status':         { capability: 'pane.read' },
+
+  // --- Desktop computer use. Observation and input are separate grants: a
+  // screenshot of another app is sensitive, but injecting input into it is a
+  // different order of risk. Per-app consent is enforced in ComputerService on
+  // top of these.
+  'computer.capabilities':  { capability: 'computer.observe', riskClass: 'computer' },
+  'computer.listApps':      { capability: 'computer.observe', riskClass: 'computer' },
+  'computer.listWindows':   { capability: 'computer.observe', riskClass: 'computer' },
+  'computer.getAppState':   { capability: 'computer.observe', riskClass: 'computer' },
+  'computer.act':           { capability: 'computer.control', riskClass: 'computer' },
 
   // --- Command Deck. Route resolution for the commander brain's MCP; the
   //     method carries its OWN auth (a per-spawn token minted by main and
@@ -608,6 +634,9 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   'browser.read':      'browser',
   'browser.cookies':   'browser',
   'browser.emulate':   'browser',
+  // Desktop computer use
+  'computer.observe':  'computer',
+  'computer.control':  'computer',
   // A2A
   'a2a.send':    'a2a',
   'a2a.execute': 'a2a',
@@ -698,6 +727,9 @@ export const CAPABILITY_EFFECT: Record<string, 'read' | 'write'> = {
   'browser.evaluate':  'write',
   'browser.read':      'read',
   'browser.cookies':   'write',
+  // Desktop computer use
+  'computer.observe':  'read',
+  'computer.control':  'write',
   'browser.emulate':   'write',
   // A2A
   'a2a.send':    'write',
@@ -767,6 +799,12 @@ export const RISK_CLASS_COPY: Record<RiskClass, RiskClassCopy> = {
     summary: 'Can control a Playwright browser session',
     detail:
       'The plugin can open pages, click elements, type text, run JavaScript, and capture screenshots. Sites you log into in this browser are reachable by the plugin.',
+  },
+  'computer': {
+    severity: 'critical',
+    summary: 'Can see and control other apps on your desktop',
+    detail:
+      'The plugin can read other apps\' windows (accessibility text and screenshots, which are sent to its model provider) and click, type, and press keys in them. wmux asks again for each app and never allows password managers, terminals, or wmux itself.',
   },
   'a2a': {
     severity: 'caution',
