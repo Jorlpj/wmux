@@ -1088,9 +1088,10 @@ describe('CustomPanel UI', () => {
     expect(notice).toBeTruthy();
     expect(notice?.textContent).toContain('3 items changed outside wmux since you last applied');
 
-    // Name of drifted item is listed
+    // Name of drifted item is listed (no-overflow case)
     const names = container.querySelector('[data-testid="token-custom-reconcile-names"]');
     expect(names?.textContent).toContain('my-server');
+    expect(names?.textContent).not.toContain('more not shown');
 
     // Re-apply my choices button is present
     const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
@@ -1478,16 +1479,11 @@ describe('CustomPanel UI', () => {
     expect(notice).toBeTruthy();
     expect(notice?.textContent).toContain('210 items changed outside wmux since you last applied');
 
-    // 2. Lists up to 5 names
+    // 2. Lists up to 5 names and overflow summary (210 - 200 = 10)
     const names = container.querySelector('[data-testid="token-custom-reconcile-names"]');
-    expect(names?.textContent).toContain('server-0, server-1, server-2, server-3, server-4');
+    expect(names?.textContent).toContain('server-0, server-1, server-2, server-3, server-4 and 10 more not shown');
     expect(names?.textContent).not.toContain('server-5');
-
-    // 3. Visible "and N more not shown" when truncated (210 - 200 = 10)
-    const truncatedBadge = container.querySelector('[data-testid="token-custom-reconcile-truncated"]');
-    expect(truncatedBadge).toBeTruthy();
-    expect(truncatedBadge?.textContent).toContain('and 10 more not shown');
-    expect(notice?.textContent).toContain('and 10 more not shown');
+    expect(notice?.textContent).toContain('server-0, server-1, server-2, server-3, server-4 and 10 more not shown');
 
     // 4. "Re-apply my choices" stages all 200 returned entries
     const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;

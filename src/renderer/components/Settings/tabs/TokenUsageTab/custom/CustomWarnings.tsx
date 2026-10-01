@@ -1,10 +1,12 @@
 import { IconWarning } from '../../../../icons';
+import { useT } from '../../../../../hooks/useT';
 
 interface CustomWarningsProps {
   warnings: string[];
 }
 
 export function CustomWarnings({ warnings }: CustomWarningsProps) {
+  const t = useT();
   if (!warnings || warnings.length === 0) return null;
 
   return (
@@ -14,7 +16,7 @@ export function CustomWarnings({ warnings }: CustomWarningsProps) {
     >
       <div className="flex items-center gap-2 font-medium text-[var(--text-main)]">
         <IconWarning size={14} />
-        <span>Warnings</span>
+        <span>{t('settings.tokenUsage.warnings')}</span>
       </div>
       <ul className="list-disc pl-5 m-0 space-y-1">
         {warnings.map((warn, i) => (

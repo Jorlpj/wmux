@@ -57,6 +57,10 @@ export function ProfileSection({
   const [picked, setPicked] = useState<TokenProfile>(current === 'custom' ? 'minimal' : current);
   const changes = useMemo(() => tokenProfileChanges(bindings, picked), [bindings, picked]);
   const bound = Object.keys(bindings).length > 0;
+  const sharedAgy =
+    bindings.Builder?.agent && bindings.Builder.agent === bindings.Tester?.agent
+      ? bindings.Builder.agent
+      : undefined;
   const label = (p: TokenProfile | 'custom') => t(PROFILE_KEYS[p]);
 
   return (
@@ -96,7 +100,7 @@ export function ProfileSection({
               }
             }}
           >
-            {surfaceBadgeText ?? 'Surface: default'}
+            {surfaceBadgeText ?? t('settings.tokenUsage.surfaceDefault')}
           </Badge>
         </div>
       }
@@ -137,6 +141,11 @@ export function ProfileSection({
                 </Button>
               </div>
             </div>
+          )}
+          {sharedAgy && (
+            <SettingNote data-testid="token-shared-pane">
+              {t('settings.tokenSharedPane', { agent: sharedAgy })}
+            </SettingNote>
           )}
         </>
       )}

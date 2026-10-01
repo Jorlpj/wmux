@@ -8,6 +8,7 @@ import type {
   SurfaceProviderId,
 } from '../../../../../shared/tokenUsage/surfaceTypes';
 import { SettingNote, SettingsSection } from '../../SettingsLayout';
+import { useT } from '../../../../hooks/useT';
 import Badge from '../../../ui/Badge';
 import Button from '../../../ui/Button';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../../../ui/Dialog';
@@ -92,8 +93,10 @@ export interface ProviderInventoryState {
 const ALL_SURFACE_PROVIDERS: readonly SurfaceProviderId[] = ['claude', 'codex', 'agy'] as const;
 
 export function CustomPanel(props: CustomPanelProps): ReactElement {
-  const { t, providers: propsProviders, onApplied } = props || {};
-  const title = t ? t('settings.tokenProfileCustom') || 'Custom' : 'Custom';
+  const fallbackT = useT();
+  const t = props?.t ?? fallbackT;
+  const { providers: propsProviders, onApplied } = props || {};
+  const title = t('settings.tokenProfileCustom');
   const initialProvider: SurfaceProviderId =
     propsProviders && propsProviders.length > 0 && !propsProviders.includes('claude')
       ? propsProviders[0]
@@ -623,7 +626,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
       data-testid="token-custom-panel"
     >
       <SettingNote>
-        Per-provider MCP/tool/skill/plugin/hook editing is not implemented yet.
+        {t('settings.tokenUsage.customNotice')}
       </SettingNote>
 
       <CustomControls
@@ -640,19 +643,19 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
 
       {inventory && (
         <div className="flex items-center gap-2 text-[11px] text-[var(--text-sub)] my-2 flex-wrap">
-          <span>CLI version:</span>
+          <span>{t('settings.tokenUsage.cliVersion')}</span>
           <span className="ui-code text-[var(--text-main)]">
-            {inventory.cliVersion ?? 'Not detected'}
+            {inventory.cliVersion ?? t('settings.tokenUsage.notDetected')}
           </span>
           {inventory.cliVersion && (
             <Badge tone={inventory.versionSupported ? 'success' : 'warning'}>
-              {inventory.versionSupported ? 'Supported' : 'Unsupported (read-only)'}
+              {inventory.versionSupported ? t('settings.tokenUsage.versionSupported') : t('settings.tokenUsage.versionUnsupported')}
             </Badge>
           )}
         </div>
       )}
 
-      <SettingNote>Changes take effect on the next CLI session.</SettingNote>
+      <SettingNote>{t('settings.tokenUsage.nextSessionNotice')}</SettingNote>
 
       {showReconcileNotice && (
         <div
@@ -662,27 +665,25 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
           <div className="flex items-start justify-between gap-3">
             <div className="flex flex-col gap-1">
               <span className="text-[13px] font-medium text-[var(--text-main)]">
-                {totalReconcileChanged} {totalReconcileChanged === 1 ? 'item' : 'items'} changed outside wmux since you last applied
+                {totalReconcileChanged === 1
+                  ? t('settings.tokenUsage.reconcileChangedOne')
+                  : t('settings.tokenUsage.reconcileChangedMany', { count: totalReconcileChanged })}
               </span>
-              {displayedNames.length > 0 ? (
+              {displayedNames.length > 0 && (
                 <span className="text-[11px] text-[var(--text-sub)]" data-testid="token-custom-reconcile-names">
-                  {displayedNames.join(', ')}
-                  {reconcileResult?.truncated && truncatedCount > 0 && (
-                    <span data-testid="token-custom-reconcile-truncated">
-                      {` and ${truncatedCount} more not shown`}
-                    </span>
-                  )}
+                  {reconcileResult?.truncated && truncatedCount > 0
+                    ? t('settings.tokenUsage.reconcileDriftSummary', {
+                        names: displayedNames.join(', '),
+                        count: truncatedCount,
+                      })
+                    : t('settings.tokenUsage.reconcileDriftList', {
+                        names: displayedNames.join(', '),
+                      })}
                 </span>
-              ) : (
-                reconcileResult?.truncated && truncatedCount > 0 && (
-                  <span className="text-[11px] text-[var(--text-sub)]" data-testid="token-custom-reconcile-truncated">
-                    and {truncatedCount} more not shown
-                  </span>
-                )
               )}
               {couldNotReapplyCount > 0 && (
                 <span className="text-[11px] text-[var(--danger)]" data-testid="token-custom-reconcile-unapplied">
-                  {couldNotReapplyCount} could not be re-applied
+                  {t('settings.tokenUsage.reconcileCouldNotReapply', { count: couldNotReapplyCount })}
                 </span>
               )}
             </div>
@@ -694,7 +695,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                   onClick={handleReapplyChoices}
                   data-testid="token-custom-reapply-choices"
                 >
-                  Re-apply my choices
+                  {t('settings.tokenUsage.reapplyChoices')}
                 </Button>
               )}
               <Button
@@ -706,7 +707,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                 }}
                 data-testid="token-custom-reconcile-dismiss"
               >
-                Dismiss
+                {t('settings.tokenUsage.dismiss')}
               </Button>
             </div>
           </div>
@@ -717,19 +718,19 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
 
       {(!isInventoryLoaded || (loading && !inventory)) && !error && (
         <div className="text-[12px] text-[var(--text-sub)] py-4 text-center">
-          Loading surface inventory...
+          {t('settings.tokenUsage.loadingInventory')}
         </div>
       )}
 
       {error && (
         <div className="text-[12px] text-[var(--danger)] py-3">
-          Failed to load inventory: {error}
+          {t('settings.tokenUsage.failedToLoadInventory', { error })}
         </div>
       )}
 
       {inventory && filteredItems.length === 0 && (
         <div className="text-[12px] text-[var(--text-sub)] py-4 text-center">
-          No surface items match the current filter.
+          {t('settings.tokenUsage.noMatchingItems')}
         </div>
       )}
 
@@ -791,9 +792,11 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
               className="text-[13px] font-medium text-[var(--text-main)]"
               data-testid="token-custom-staged-count"
             >
-              {stagedChanges.size} {stagedChanges.size === 1 ? 'change' : 'changes'}
+              {stagedChanges.size === 1
+                ? t('settings.tokenUsage.stagedCountOne')
+                : t('settings.tokenUsage.stagedCountMany', { count: stagedChanges.size })}
             </span>
-            <Badge tone="warning">staged</Badge>
+            <Badge tone="warning">{t('settings.tokenUsage.staged')}</Badge>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -803,7 +806,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
               disabled={applying}
               data-testid="token-custom-discard"
             >
-              Discard
+              {t('settings.tokenUsage.discard')}
             </Button>
             <Button
               variant="secondary"
@@ -812,7 +815,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
               disabled={applying}
               data-testid="token-custom-preview"
             >
-              Preview
+              {t('settings.tokenUsage.preview')}
             </Button>
           </div>
         </div>
@@ -825,14 +828,15 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
           data-testid="token-custom-discard-dialog"
         >
           <DialogHeader
-            title="Discard staged changes?"
-            description="You have unsaved staged changes for the current provider."
-            closeLabel="Close"
+            title={t('settings.tokenUsage.discardDialogTitle')}
+            description={t('settings.tokenUsage.discardDialogDesc')}
+            closeLabel={t('settings.close')}
           />
           <DialogBody>
             <p className="text-[13px] text-[var(--text-sub)] m-0">
-              Switching providers will discard your {stagedChanges.size} staged{' '}
-              {stagedChanges.size === 1 ? 'change' : 'changes'}. Do you want to discard them or stay?
+              {stagedChanges.size === 1
+                ? t('settings.tokenUsage.discardDialogBodyOne')
+                : t('settings.tokenUsage.discardDialogBodyMany', { count: stagedChanges.size })}
             </p>
           </DialogBody>
           <DialogFooter>
@@ -841,14 +845,14 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
               onClick={handleCancelProviderSwitch}
               data-testid="token-custom-stay-btn"
             >
-              Stay
+              {t('settings.tokenUsage.stay')}
             </Button>
             <Button
               variant="dangerTinted"
               onClick={handleConfirmProviderSwitch}
               data-testid="token-custom-discard-confirm-btn"
             >
-              Discard & Switch
+              {t('settings.tokenUsage.discardAndSwitch')}
             </Button>
           </DialogFooter>
         </Dialog>
@@ -865,20 +869,20 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
           data-testid="token-custom-preview-dialog"
         >
           <DialogHeader
-            title="Preview Changes"
-            description="Review changes before applying to CLI configuration."
-            closeLabel="Close"
+            title={t('settings.tokenUsage.previewTitle')}
+            description={t('settings.tokenUsage.previewDesc')}
+            closeLabel={t('settings.close')}
           />
           <DialogBody className="flex flex-col gap-3 max-h-[60vh] overflow-y-auto">
             {previewLoading && (
               <div className="text-[12px] text-[var(--text-sub)] py-4 text-center">
-                Loading preview...
+                {t('settings.tokenUsage.loadingPreview')}
               </div>
             )}
 
             {previewError && (
               <div className="text-[12px] text-[var(--danger)] py-2">
-                Failed to generate preview: {previewError}
+                {t('settings.tokenUsage.failedPreview', { error: previewError })}
               </div>
             )}
 
@@ -886,14 +890,14 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
               <>
                 {previewData.edits.length === 0 && previewData.rejected.length === 0 && (
                   <div className="text-[12px] text-[var(--text-sub)] py-2">
-                    No file edits to preview.
+                    {t('settings.tokenUsage.noEditsToPreview')}
                   </div>
                 )}
 
                 {previewData.edits.length > 0 && (
                   <div className="flex flex-col gap-2">
                     <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
-                      File Edits ({previewData.edits.length})
+                      {t('settings.tokenUsage.fileEditsHeader', { count: previewData.edits.length })}
                     </span>
                     <div className="rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-base)] divide-y divide-[var(--border-hairline)] overflow-hidden">
                       {previewData.edits.map((edit, idx) => (
@@ -913,7 +917,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                 {previewData.rejected.length > 0 && (
                   <div className="flex flex-col gap-2" data-testid="token-custom-preview-rejected">
                     <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--danger)]">
-                      Rejected Changes ({previewData.rejected.length})
+                      {t('settings.tokenUsage.rejectedChangesHeader', { count: previewData.rejected.length })}
                     </span>
                     <div className="rounded-[10px] border border-[var(--danger)] bg-[var(--bg-base)] divide-y divide-[var(--border-hairline)] overflow-hidden">
                       {previewData.rejected.map((rej, idx) => (
@@ -928,14 +932,14 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                       ))}
                     </div>
                     <span className="text-[11px] text-[var(--text-sub)]">
-                      Rejected items have been un-staged.
+                      {t('settings.tokenUsage.rejectedUnstaged')}
                     </span>
                   </div>
                 )}
 
                 {previewData.requiresNewSession && (
                   <div className="text-[11px] text-[var(--text-sub)]">
-                    Takes effect in the next CLI session.
+                    {t('settings.tokenUsage.nextSessionNoticeShort')}
                   </div>
                 )}
 
@@ -945,10 +949,10 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                     data-testid="token-custom-wmux-confirm"
                   >
                     <span className="font-semibold text-[var(--accent)]">
-                      Warning: wmux required item
+                      {t('settings.tokenUsage.wmuxWarningTitle')}
                     </span>
                     <p className="text-[var(--text-main)] m-0">
-                      wmux needs this item; disabling it can break wmux features in that CLI
+                      {t('settings.tokenUsage.wmuxWarningDesc')}
                     </p>
                   </div>
                 )}
@@ -960,12 +964,12 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                 {applyResult.ok ? (
                   <>
                     <div className="text-[13px] font-medium text-[var(--success)]">
-                      Changes applied successfully.
+                      {t('settings.tokenUsage.applySuccess')}
                     </div>
                     {applyResult.backups.length > 0 && (
                       <div className="flex flex-col gap-1.5">
                         <span className="text-[11px] font-semibold text-[var(--text-sub)] uppercase tracking-wider">
-                          Backups created:
+                          {t('settings.tokenUsage.backupsCreated')}
                         </span>
                         <ul className="list-disc pl-5 m-0 text-[11px] ui-code text-[var(--text-sub)] space-y-1">
                           {applyResult.backups.map((b, i) => (
@@ -975,16 +979,16 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                       </div>
                     )}
                     <div className="text-[12px] text-[var(--text-sub)]">
-                      Takes effect in the next CLI session.
+                      {t('settings.tokenUsage.nextSessionNoticeShort')}
                     </div>
                   </>
                 ) : (
                   <div className="flex flex-col gap-2">
                     <div className="text-[13px] font-medium text-[var(--danger)]">
-                      Failed to apply changes: {applyResult.error}
+                      {t('settings.tokenUsage.applyFailed', { error: applyResult.error ?? '' })}
                     </div>
                     <div className="text-[12px] text-[var(--text-sub)]">
-                      Please check the configuration, reload the inventory, and retry.
+                      {t('settings.tokenUsage.applyFailedCheck')}
                     </div>
                   </div>
                 )}
@@ -1006,7 +1010,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                   disabled={applying}
                   data-testid="token-custom-preview-back"
                 >
-                  {confirmingWmux ? 'Cancel' : 'Back'}
+                  {confirmingWmux ? t('common.cancel') : t('settings.tokenUsage.back')}
                 </Button>
                 <Button
                   variant="primary"
@@ -1015,10 +1019,10 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                   data-testid="token-custom-apply"
                 >
                   {applying
-                    ? 'Applying...'
+                    ? t('settings.tokenUsage.applying')
                     : confirmingWmux
-                    ? 'Confirm & Apply'
-                    : 'Apply'}
+                    ? t('settings.tokenUsage.confirmAndApply')
+                    : t('settings.tokenUsage.apply')}
                 </Button>
               </>
             ) : (
@@ -1029,7 +1033,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                     onClick={() => setApplyResult(null)}
                     data-testid="token-custom-apply-back"
                   >
-                    Back
+                    {t('settings.tokenUsage.back')}
                   </Button>
                 )}
                 <Button
@@ -1044,7 +1048,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                   }}
                   data-testid={applyResult.ok ? 'token-custom-apply-done' : 'token-custom-apply-retry'}
                 >
-                  {applyResult.ok ? 'Done' : 'Retry'}
+                  {applyResult.ok ? t('settings.tokenUsage.done') : t('settings.tokenUsage.retry')}
                 </Button>
               </>
             )}

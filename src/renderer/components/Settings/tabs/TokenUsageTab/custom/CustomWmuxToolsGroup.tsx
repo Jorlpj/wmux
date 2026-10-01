@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { CORE_TOOL_SURFACE } from '../../../../../../shared/coreSurface';
 import { ROLE_TOOL_SURFACES } from '../../../../../../shared/roleSurfaces';
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
+import { useT } from '../../../../../hooks/useT';
 import Badge from '../../../../ui/Badge';
 import Button from '../../../../ui/Button';
 import Switch from '../../../../ui/Switch';
@@ -23,6 +24,7 @@ export function CustomWmuxToolsGroup({
   stagedChanges,
   rejectedFlags,
 }: CustomWmuxToolsGroupProps) {
+  const t = useT();
   const [collapsed, setCollapsed] = useState(false);
   const fullToolList = allTools ?? tools;
 
@@ -108,16 +110,16 @@ export function CustomWmuxToolsGroup({
                 strokeLinejoin="round"
               />
             </svg>
-            <span className="font-medium text-[var(--text-main)]">wmux core tools</span>
+            <span className="font-medium text-[var(--text-main)]">{t('settings.tokenUsage.wmuxCoreTools')}</span>
             <span
               className="text-[11px] text-[var(--text-sub)]"
               data-testid="token-custom-wmux-count"
             >
-              {enabledCount} of {totalCount} enabled
+              {t('settings.tokenUsage.enabledOfTotal', { enabled: enabledCount, total: totalCount })}
             </span>
             {stagedToolsCount > 0 && (
               <Badge tone="warning">
-                {stagedToolsCount} staged
+                {t('settings.tokenUsage.stagedCountBadge', { count: stagedToolsCount })}
               </Badge>
             )}
           </button>
@@ -128,7 +130,7 @@ export function CustomWmuxToolsGroup({
               onClick={() => applyPreset('core')}
               data-testid="wmux-preset-core"
             >
-              Core
+              {t('settings.tokenUsage.presetCore')}
             </Button>
             <Button
               variant="secondary"
@@ -136,7 +138,7 @@ export function CustomWmuxToolsGroup({
               onClick={() => applyPreset('planner')}
               data-testid="wmux-preset-planner"
             >
-              Planner
+              {t('settings.tokenUsage.presetPlanner')}
             </Button>
             <Button
               variant="secondary"
@@ -144,7 +146,7 @@ export function CustomWmuxToolsGroup({
               onClick={() => applyPreset('reviewer')}
               data-testid="wmux-preset-reviewer"
             >
-              Reviewer
+              {t('settings.tokenUsage.presetReviewer')}
             </Button>
             <Button
               variant="secondary"
@@ -152,7 +154,7 @@ export function CustomWmuxToolsGroup({
               onClick={() => applyPreset('none')}
               data-testid="wmux-preset-none"
             >
-              None
+              {t('settings.tokenUsage.presetNone')}
             </Button>
             <Button
               variant="secondary"
@@ -160,7 +162,7 @@ export function CustomWmuxToolsGroup({
               onClick={() => applyPreset('all-core')}
               data-testid="wmux-preset-all-core"
             >
-              All core
+              {t('settings.tokenUsage.presetAllCore')}
             </Button>
           </div>
         </div>
@@ -169,7 +171,7 @@ export function CustomWmuxToolsGroup({
           className="px-3 py-2 text-[12px] text-[var(--text-sub)] border-b border-[var(--border-hairline)] bg-[var(--bg-mantle)]"
           data-testid="token-custom-wmux-note"
         >
-          Applies to every pane of this CLI; roles are still narrowed per pane at launch. browser_* and company_* tools are not listed here.
+          {t('settings.tokenUsage.wmuxToolsScopeNote')}
         </div>
 
         {!collapsed && (
@@ -179,7 +181,7 @@ export function CustomWmuxToolsGroup({
           >
             {tools.length === 0 ? (
               <div className="text-[12px] text-[var(--text-sub)] py-3 text-center">
-                No wmux tools match the current filter.
+                {t('settings.tokenUsage.noWmuxToolsMatching')}
               </div>
             ) : (
               tools.map((tool) => {
@@ -199,7 +201,7 @@ export function CustomWmuxToolsGroup({
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[var(--text-sub)]" aria-hidden="true">↳</span>
                       <span className="ui-code text-[var(--text-main)]">{tool.name}</span>
-                      {isToolStaged && <Badge tone="warning">staged</Badge>}
+                      {isToolStaged && <Badge tone="warning">{t('settings.tokenUsage.staged')}</Badge>}
                       {toolRejection && (
                         <Badge tone="danger">{toolRejection}</Badge>
                       )}
@@ -214,12 +216,12 @@ export function CustomWmuxToolsGroup({
                         <Switch
                           checked={toolEnabled}
                           onCheckedChange={() => onToggle(tool.id)}
-                          aria-label={`Toggle ${tool.name}`}
+                          aria-label={t('settings.tokenUsage.toggleAria', { name: tool.name })}
                           data-testid={`toggle-mcp-tool-${tool.name}`}
                         />
                       ) : (
                         <Badge tone={toolEnabled ? 'success' : 'neutral'}>
-                          {toolEnabled ? 'Enabled' : 'Disabled'}
+                          {toolEnabled ? t('settings.tokenUsage.enabled') : t('settings.tokenUsage.disabled')}
                         </Badge>
                       )}
                     </div>

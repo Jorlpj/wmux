@@ -101,12 +101,12 @@ export function McpStatusSection({ api }: { api?: ElectronMcpApi } = {}) {
           if (res.success) {
             useStore.getState().pushToast?.({
               level: 'info',
-              message: `Registered ${displayName}`,
+              message: t('settings.mcpTargetRegistered', { name: displayName }),
             });
             if (res.sensor?.ok) {
               useStore.getState().pushToast?.({
                 level: 'info',
-                message: 'Quota sensor installed',
+                message: t('settings.mcpSensorInstalled'),
               });
             }
           } else if (res.error) {
@@ -120,7 +120,7 @@ export function McpStatusSection({ api }: { api?: ElectronMcpApi } = {}) {
         setPendingTarget(null);
       }
     },
-    [ipcInvoke, mcpApi],
+    [ipcInvoke, mcpApi, t],
   );
 
   if (!mcpApi && !loading) return null;
@@ -133,8 +133,8 @@ export function McpStatusSection({ api }: { api?: ElectronMcpApi } = {}) {
     const actionLabel = isTargetPending
       ? '…'
       : isRegistered
-        ? 'Re-register'
-        : 'Register';
+        ? t('settings.mcpReregister')
+        : t('settings.mcpRegister');
 
     return (
       <div key={target.id} className="settings-row" data-mcp-target={target.id}>

@@ -9,6 +9,7 @@ import Button from '../../../../ui/Button';
 import Input from '../../../../ui/Input';
 import Badge from '../../../../ui/Badge';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../../../../ui/Dialog';
+import { useT } from '../../../../../hooks/useT';
 
 const PROVIDER_NAMES: Record<SurfaceProviderId, string> = {
   claude: 'Claude',
@@ -16,7 +17,14 @@ const PROVIDER_NAMES: Record<SurfaceProviderId, string> = {
   agy: 'Agy',
 };
 
-export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } = {}) {
+export interface SavedSurfaceProfilesProps {
+  onApplied?: () => void;
+  t?: (key: string, vars?: Record<string, string | number>) => string;
+}
+
+export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfilesProps = {}) {
+  const hookT = useT();
+  const t = tProp ?? hookT;
   const [profiles, setProfiles] = useState<SurfaceProfile[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,14 +67,14 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
       }
     } catch (err) {
       if (reqId === listReqIdRef.current) {
-        setError((err as Error).message || 'Failed to load surface profiles.');
+        setError((err as Error).message || t('settings.tokenUsage.failedLoadProfiles'));
       }
     } finally {
       if (reqId === listReqIdRef.current) {
         setLoading(false);
       }
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadProfiles();
@@ -75,11 +83,11 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
   const handleSave = async () => {
     const trimmed = saveName.trim();
     if (!trimmed) {
-      setSaveError('Profile name must not be empty.');
+      setSaveError(t('settings.tokenUsage.nameEmpty'));
       return;
     }
     if (trimmed.length > 40) {
-      setSaveError('Profile name must be 40 characters or fewer.');
+      setSaveError(t('settings.tokenUsage.nameTooLong'));
       return;
     }
     if (typeof window === 'undefined' || !window.electronAPI?.tokenUsage?.saveProfile) {
@@ -97,12 +105,12 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
           setSaveName('');
           await loadProfiles();
         } else {
-          setSaveError(res.error || 'Failed to save profile.');
+          setSaveError(res.error || t('settings.tokenUsage.failedSave'));
         }
       }
     } catch (err) {
       if (reqId === saveReqIdRef.current) {
-        setSaveError((err as Error).message || 'Failed to save profile.');
+        setSaveError((err as Error).message || t('settings.tokenUsage.failedSave'));
       }
     } finally {
       if (reqId === saveReqIdRef.current) {
@@ -138,7 +146,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
       }
     } catch (err) {
       if (reqId === previewReqIdRef.current) {
-        setPreviewError((err as Error).message || 'Failed to preview profile.');
+        setPreviewError((err as Error).message || t('settings.tokenUsage.failedPreviewProfile'));
       }
     } finally {
       if (reqId === previewReqIdRef.current) {
@@ -168,7 +176,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
       }
     } catch (err) {
       if (reqId === applyReqIdRef.current) {
-        setApplyError((err as Error).message || 'Failed to apply profile.');
+        setApplyError((err as Error).message || t('settings.tokenUsage.failedApplyProfile'));
       }
     } finally {
       if (reqId === applyReqIdRef.current) {
@@ -194,7 +202,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
       }
     } catch (err) {
       if (reqId === deleteReqIdRef.current) {
-        setDeleteError((err as Error).message || 'Failed to delete profile.');
+        setDeleteError((err as Error).message || t('settings.tokenUsage.failedDeleteProfile'));
       }
     } finally {
       if (reqId === deleteReqIdRef.current) {
@@ -213,16 +221,18 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
     <div className="mt-4 pt-4 border-t border-[var(--color-border)]" data-testid="saved-surface-profiles">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h4 className="text-[13px] font-medium text-[var(--text-main)] m-0">Saved surface profiles</h4>
+          <h4 className="text-[13px] font-medium text-[var(--text-main)] m-0">
+            {t('settings.tokenUsage.savedProfilesTitle')}
+          </h4>
           <p className="text-[11px] text-[var(--text-sub)] m-0">
-            Snapshot and restore toggleable surface items across CLI sessions
+            {t('settings.tokenUsage.savedProfilesDesc')}
           </p>
         </div>
       </div>
 
       <div className="flex gap-2 mb-3">
         <Input
-          placeholder="New profile name"
+          placeholder={t('settings.tokenUsage.newProfilePlaceholder')}
           value={saveName}
           onChange={(e) => {
             setSaveName(e.target.value);
@@ -249,7 +259,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
           disabled={saving || !saveName.trim()}
           data-testid="saved-profile-save-btn"
         >
-          {saving ? 'Saving...' : 'Save current as...'}
+          {saving ? t('settings.tokenUsage.saving') : t('settings.tokenUsage.saveCurrentAs')}
         </Button>
       </div>
 
@@ -261,7 +271,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
 
       {loading && safeProfiles.length === 0 ? (
         <p className="text-[11px] text-[var(--text-sub)]" data-testid="saved-profiles-loading">
-          Loading saved profiles...
+          {t('settings.tokenUsage.loadingProfiles')}
         </p>
       ) : error ? (
         <p className="text-[11px] text-[var(--color-danger)]" data-testid="saved-profiles-error">
@@ -269,7 +279,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
         </p>
       ) : safeProfiles.length === 0 ? (
         <p className="text-[11px] text-[var(--text-muted)] italic" data-testid="saved-profiles-empty">
-          No saved surface profiles yet.
+          {t('settings.tokenUsage.noSavedProfiles')}
         </p>
       ) : (
         <div className="flex flex-col gap-2" data-testid="saved-profiles-list">
@@ -301,11 +311,14 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
 
                   <div className="flex flex-wrap gap-1.5" data-testid="saved-profile-disabled-counts">
                     {providerEntries.length === 0 ? (
-                      <span className="text-[11px] text-[var(--text-muted)]">No providers captured</span>
+                      <span className="text-[11px] text-[var(--text-muted)]">{t('settings.tokenUsage.noProvidersCaptured')}</span>
                     ) : (
                       providerEntries.map(([providerId, state]) => (
                         <Badge key={providerId} className="text-[11px]">
-                          {PROVIDER_NAMES[providerId] || providerId}: {state.disabledItemIds.length} disabled
+                          {t('settings.tokenUsage.providerDisabledCount', {
+                            provider: PROVIDER_NAMES[providerId] || providerId,
+                            count: state.disabledItemIds.length,
+                          })}
                         </Badge>
                       ))
                     )}
@@ -319,7 +332,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                     onClick={() => handlePreview(profile)}
                     data-testid={`saved-profile-preview-btn-${profile.id}`}
                   >
-                    Preview
+                    {t('settings.tokenUsage.preview')}
                   </Button>
                   <Button
                     variant="primary"
@@ -331,7 +344,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                     }}
                     data-testid={`saved-profile-apply-btn-${profile.id}`}
                   >
-                    Apply
+                    {t('settings.tokenUsage.apply')}
                   </Button>
                   <Button
                     variant="destructive"
@@ -342,7 +355,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                     }}
                     data-testid={`saved-profile-delete-btn-${profile.id}`}
                   >
-                    Delete
+                    {t('settings.tokenUsage.delete')}
                   </Button>
                 </div>
               </div>
@@ -354,11 +367,11 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
       {/* Preview Dialog */}
       {previewProfileTarget && (
         <Dialog onClose={closePreview} width={560}>
-          <DialogHeader title={`Preview profile: ${previewProfileTarget.name}`} />
+          <DialogHeader title={t('settings.tokenUsage.previewProfileTitle', { name: previewProfileTarget.name })} />
           <DialogBody>
             {previewLoading ? (
               <p className="text-[13px] text-[var(--text-sub)]" data-testid="saved-profile-preview-loading">
-                Calculating preview changes...
+                {t('settings.tokenUsage.calcPreview')}
               </p>
             ) : previewError ? (
               <p className="text-[13px] text-[var(--color-danger)]" data-testid="saved-profile-preview-error">
@@ -368,7 +381,9 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
               <div className="flex flex-col gap-4 text-[13px]" data-testid="saved-profile-preview-content">
                 <div className="flex gap-4 p-2.5 rounded-lg border border-[var(--color-border)] bg-[var(--bg-surface)]">
                   <div>
-                    <span className="text-[11px] text-[var(--text-sub)] block">Missing items</span>
+                    <span className="text-[11px] text-[var(--text-sub)] block">
+                      {t('settings.tokenUsage.missingItems')}
+                    </span>
                     <span className="font-medium text-[var(--text-main)]" data-testid="preview-missing-count">
                       {previewData.missing.count}
                     </span>
@@ -379,7 +394,9 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                     )}
                   </div>
                   <div className="border-l border-[var(--color-border)] pl-4">
-                    <span className="text-[11px] text-[var(--text-sub)] block">New items since capture</span>
+                    <span className="text-[11px] text-[var(--text-sub)] block">
+                      {t('settings.tokenUsage.newItemsSinceCapture')}
+                    </span>
                     <span className="font-medium text-[var(--text-main)]" data-testid="preview-new-count">
                       {previewData.newItems}
                     </span>
@@ -397,14 +414,19 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                         {PROVIDER_NAMES[providerId as SurfaceProviderId] || providerId}
                       </h5>
                       <span className="text-[11px] text-[var(--text-sub)]">
-                        Rejected: {provPreview?.rejected.length ?? 0} · Missing: {provPreview?.missingCount ?? 0} · New:{' '}
-                        {provPreview?.newItemsCount ?? 0}
+                        {t('settings.tokenUsage.provStats', {
+                          rejected: provPreview?.rejected.length ?? 0,
+                          missing: provPreview?.missingCount ?? 0,
+                          newCount: provPreview?.newItemsCount ?? 0,
+                        })}
                       </span>
                     </div>
 
                     {provPreview && provPreview.edits.length > 0 ? (
                       <div className="flex flex-col gap-1.5 mt-1">
-                        <span className="text-[11px] text-[var(--text-sub)] font-medium">File edits:</span>
+                        <span className="text-[11px] text-[var(--text-sub)] font-medium">
+                          {t('settings.tokenUsage.fileEditsLabel')}
+                        </span>
                         {provPreview.edits.map((edit, idx) => (
                           <div
                             key={idx}
@@ -416,12 +438,14 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                         ))}
                       </div>
                     ) : (
-                      <p className="text-[11px] text-[var(--text-muted)] italic m-0">No file edits needed</p>
+                      <p className="text-[11px] text-[var(--text-muted)] italic m-0">
+                        {t('settings.tokenUsage.noEditsNeeded')}
+                      </p>
                     )}
 
                     {provPreview && provPreview.rejected.length > 0 && (
                       <div className="flex flex-col gap-1 mt-1 text-[var(--color-danger)] text-[11px]">
-                        <span className="font-medium">Rejected changes:</span>
+                        <span className="font-medium">{t('settings.tokenUsage.rejectedChangesLabel')}</span>
                         {provPreview.rejected.map((r, idx) => (
                           <span key={idx}>
                             {r.itemId}: {r.reason}
@@ -436,7 +460,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
           </DialogBody>
           <DialogFooter>
             <Button variant="secondary" onClick={closePreview}>
-              Close
+              {t('settings.close')}
             </Button>
           </DialogFooter>
         </Dialog>
@@ -445,23 +469,23 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
       {/* Apply Confirmation Dialog */}
       {applyTarget && (
         <Dialog onClose={() => { if (!applying) setApplyTarget(null); }} width={480}>
-          <DialogHeader title={`Apply profile: ${applyTarget.name}`} />
+          <DialogHeader title={t('settings.tokenUsage.applyProfileTitle', { name: applyTarget.name })} />
           <DialogBody>
             {applyResult ? (
               <div className="flex flex-col gap-2 text-[13px]" data-testid="saved-profile-apply-result">
                 {applyResult.ok ? (
                   applyResult.nothingToChange ? (
                     <>
-                      <p className="text-[var(--text-main)] font-medium m-0">Already up to date</p>
-                      <p className="text-[11px] text-[var(--text-sub)] m-0">No changes needed for this profile.</p>
+                      <p className="text-[var(--text-main)] font-medium m-0">{t('settings.tokenUsage.alreadyUpToDate')}</p>
+                      <p className="text-[11px] text-[var(--text-sub)] m-0">{t('settings.tokenUsage.noChangesNeeded')}</p>
                     </>
                   ) : (
                     <>
-                      <p className="text-[var(--text-main)] font-medium m-0">Profile applied successfully.</p>
-                      <p className="text-[11px] text-[var(--text-sub)] m-0">Takes effect in the next CLI session</p>
+                      <p className="text-[var(--text-main)] font-medium m-0">{t('settings.tokenUsage.profileAppliedSuccess')}</p>
+                      <p className="text-[11px] text-[var(--text-sub)] m-0">{t('settings.tokenUsage.nextSessionNoticeShort')}</p>
                       {allBackups.length > 0 && (
                         <div className="mt-2 text-[11px] text-[var(--text-sub)]">
-                          <span className="font-medium block text-[var(--text-main)]">Backups created:</span>
+                          <span className="font-medium block text-[var(--text-main)]">{t('settings.tokenUsage.backupsCreated')}</span>
                           <ul className="list-disc list-inside m-0 pl-1 ui-code">
                             {allBackups.map((b, idx) => (
                               <li key={idx}>{b}</li>
@@ -473,10 +497,10 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                   )
                 ) : (
                   <div>
-                    <p className="text-[var(--color-danger)] m-0">Failed to apply some provider changes:</p>
+                    <p className="text-[var(--color-danger)] m-0">{t('settings.tokenUsage.failedApplySome')}</p>
                     {Object.entries(applyResult.providers).map(([pId, pRes]) => (
                       <p key={pId} className="text-[11px] text-[var(--color-danger)] m-0 mt-1">
-                        {PROVIDER_NAMES[pId as SurfaceProviderId] || pId}: {pRes?.error || 'Failed'}
+                        {PROVIDER_NAMES[pId as SurfaceProviderId] || pId}: {pRes?.error || t('settings.tokenUsage.failed')}
                       </p>
                     ))}
                   </div>
@@ -485,10 +509,10 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
             ) : (
               <div className="text-[13px]">
                 <p className="text-[var(--text-main)] m-0">
-                  Are you sure you want to apply profile &quot;{applyTarget.name}&quot;?
+                  {t('settings.tokenUsage.confirmApplyPrompt', { name: applyTarget.name })}
                 </p>
                 <p className="text-[11px] text-[var(--text-sub)] mt-1 mb-0">
-                  This will update your active CLI configuration to match this profile.
+                  {t('settings.tokenUsage.confirmApplySubtext')}
                 </p>
                 {applyError && <p className="text-[11px] text-[var(--color-danger)] mt-2 mb-0">{applyError}</p>}
               </div>
@@ -503,12 +527,12 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                   setApplyResult(null);
                 }}
               >
-                Done
+                {t('settings.tokenUsage.done')}
               </Button>
             ) : (
               <>
                 <Button variant="secondary" onClick={() => setApplyTarget(null)} disabled={applying}>
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
                 <Button
                   variant="primary"
@@ -516,7 +540,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
                   disabled={applying}
                   data-testid="saved-profile-confirm-apply-btn"
                 >
-                  {applying ? 'Applying...' : 'Apply profile'}
+                  {applying ? t('settings.tokenUsage.applying') : t('settings.tokenUsage.applyProfileBtn')}
                 </Button>
               </>
             )}
@@ -527,19 +551,19 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
       {/* Delete Confirmation Dialog */}
       {deleteTarget && (
         <Dialog onClose={() => { if (!deleting) setDeleteTarget(null); }} width={420}>
-          <DialogHeader title="Delete profile" />
+          <DialogHeader title={t('settings.tokenUsage.deleteProfileTitle')} />
           <DialogBody>
             <div className="text-[13px]">
               <p className="text-[var(--text-main)] m-0">
-                Are you sure you want to delete profile &quot;{deleteTarget.name}&quot;?
+                {t('settings.tokenUsage.confirmDeletePrompt', { name: deleteTarget.name })}
               </p>
-              <p className="text-[11px] text-[var(--text-sub)] mt-1 mb-0">This action cannot be undone.</p>
+              <p className="text-[11px] text-[var(--text-sub)] mt-1 mb-0">{t('settings.tokenUsage.cannotBeUndone')}</p>
               {deleteError && <p className="text-[11px] text-[var(--color-danger)] mt-2 mb-0">{deleteError}</p>}
             </div>
           </DialogBody>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setDeleteTarget(null)} disabled={deleting}>
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               variant="danger"
@@ -547,7 +571,7 @@ export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } =
               disabled={deleting}
               data-testid="saved-profile-confirm-delete-btn"
             >
-              {deleting ? 'Deleting...' : 'Delete'}
+              {deleting ? t('settings.tokenUsage.deleting') : t('settings.tokenUsage.delete')}
             </Button>
           </DialogFooter>
         </Dialog>

@@ -1,4 +1,5 @@
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
+import { useT } from '../../../../../hooks/useT';
 import Badge from '../../../../ui/Badge';
 import Switch from '../../../../ui/Switch';
 
@@ -15,12 +16,13 @@ export function CustomBuiltinsGroup({
   stagedChanges,
   rejectedFlags,
 }: CustomBuiltinsGroupProps) {
+  const t = useT();
   if (items.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2 my-4" data-testid="token-custom-builtins-group">
       <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
-        Built-in Tools & Context ({items.length})
+        {t('settings.tokenUsage.builtinsHeader', { count: items.length })}
       </span>
       <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
         {items.map((item) => {
@@ -39,8 +41,8 @@ export function CustomBuiltinsGroup({
             >
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-[var(--text-main)]">{item.name}</span>
-                <Badge tone="neutral">{item.kind === 'builtin-tool' ? 'builtin tool' : 'context'}</Badge>
-                {isStaged && <Badge tone="warning">staged</Badge>}
+                <Badge tone="neutral">{item.kind === 'builtin-tool' ? t('settings.tokenUsage.builtinTool') : t('settings.tokenUsage.context')}</Badge>
+                {isStaged && <Badge tone="warning">{t('settings.tokenUsage.staged')}</Badge>}
                 {rejectionReason && (
                   <Badge tone="danger">{rejectionReason}</Badge>
                 )}
@@ -53,12 +55,12 @@ export function CustomBuiltinsGroup({
                   <Switch
                     checked={isEnabled}
                     onCheckedChange={() => onToggle(item.id)}
-                    aria-label={`Toggle ${item.name}`}
+                    aria-label={t('settings.tokenUsage.toggleAria', { name: item.name })}
                     data-testid={`toggle-builtin-${item.name}`}
                   />
                 ) : (
                   <Badge tone={isEnabled ? 'success' : 'neutral'}>
-                    {isEnabled ? 'Enabled' : 'Disabled'}
+                    {isEnabled ? t('settings.tokenUsage.enabled') : t('settings.tokenUsage.disabled')}
                   </Badge>
                 )}
               </div>

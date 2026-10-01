@@ -1,4 +1,5 @@
 import type { SurfaceProviderId } from '../../../../../../shared/tokenUsage/surfaceTypes';
+import { useT } from '../../../../../hooks/useT';
 import Button from '../../../../ui/Button';
 import Checkbox from '../../../../ui/Checkbox';
 import Input from '../../../../ui/Input';
@@ -35,6 +36,7 @@ export function CustomControls({
   loading,
   providers,
 }: CustomControlsProps) {
+  const t = useT();
   const allowed = providers && providers.length > 0 ? new Set(providers) : new Set(ORDERED_PROVIDERS);
   const providerOptions = ORDERED_PROVIDERS.filter((p) => allowed.has(p)).map((p) => ({
     value: p,
@@ -48,7 +50,7 @@ export function CustomControls({
           value={provider}
           options={providerOptions}
           onValueChange={onProviderChange}
-          ariaLabel="Surface provider"
+          ariaLabel={t('settings.tokenUsage.surfaceProviderAria')}
           data-testid="token-custom-provider-tabs"
         />
         <Button
@@ -58,7 +60,7 @@ export function CustomControls({
           disabled={loading}
           data-testid="token-custom-refresh"
         >
-          {loading ? 'Refreshing...' : 'Refresh'}
+          {loading ? t('settings.tokenUsage.refreshing') : t('settings.tokenUsage.refresh')}
         </Button>
       </div>
 
@@ -67,7 +69,7 @@ export function CustomControls({
           <Input
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search items by name or path..."
+            placeholder={t('settings.tokenUsage.searchPlaceholder')}
             data-testid="token-custom-search"
           />
         </div>
@@ -77,7 +79,7 @@ export function CustomControls({
             onCheckedChange={onOnlyChangedChange}
             data-testid="token-custom-only-changed"
           />
-          <span>Only changed</span>
+          <span>{t('settings.tokenUsage.onlyChanged')}</span>
         </label>
       </div>
     </div>

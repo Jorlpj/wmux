@@ -1,4 +1,5 @@
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
+import { useT } from '../../../../../hooks/useT';
 import Badge from '../../../../ui/Badge';
 import Switch from '../../../../ui/Switch';
 
@@ -15,12 +16,13 @@ export function CustomSkillsGroup({
   stagedChanges,
   rejectedFlags,
 }: CustomSkillsGroupProps) {
+  const t = useT();
   if (skills.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2 my-4" data-testid="token-custom-skills-group">
       <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
-        Skills ({skills.length})
+        {t('settings.tokenUsage.skillsHeader', { count: skills.length })}
       </span>
       <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
         {skills.map((skill) => {
@@ -42,10 +44,10 @@ export function CustomSkillsGroup({
                 <Badge tone="neutral">{skill.source}</Badge>
                 {skill.descriptionChars !== null && (
                   <span className="text-[11px] text-[var(--text-sub)]">
-                    {skill.descriptionChars} chars
+                    {t('settings.tokenUsage.charsCount', { count: skill.descriptionChars })}
                   </span>
                 )}
-                {isStaged && <Badge tone="warning">staged</Badge>}
+                {isStaged && <Badge tone="warning">{t('settings.tokenUsage.staged')}</Badge>}
                 {rejectionReason && (
                   <Badge tone="danger">{rejectionReason}</Badge>
                 )}
@@ -58,12 +60,12 @@ export function CustomSkillsGroup({
                   <Switch
                     checked={isEnabled}
                     onCheckedChange={() => onToggle(skill.id)}
-                    aria-label={`Toggle ${skill.name}`}
+                    aria-label={t('settings.tokenUsage.toggleAria', { name: skill.name })}
                     data-testid={`toggle-skill-${skill.name}`}
                   />
                 ) : (
                   <Badge tone={isEnabled ? 'success' : 'neutral'}>
-                    {isEnabled ? 'Enabled' : 'Disabled'}
+                    {isEnabled ? t('settings.tokenUsage.enabled') : t('settings.tokenUsage.disabled')}
                   </Badge>
                 )}
               </div>

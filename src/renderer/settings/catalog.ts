@@ -147,7 +147,6 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'fanoutallowtools', tab: 'roles', labelKey: 'settings.fanoutAllowWorkerTools', descKey: 'settings.fanoutAllowWorkerToolsDesc', synonyms: 'fanout worker allow tools permissions settings.json' },
 
   { id: 'tokenprofile', tab: 'tokens', labelKey: 'settings.tokenProfile', descKey: 'settings.tokenProfileDesc', synonyms: 'token usage cost cheap minimal balanced effort model profile' },
-  { id: 'tokenroles', tab: 'tokens', labelKey: 'settings.tokenRoles', descKey: 'settings.tokenRolesDesc', synonyms: 'token role tools surface mcp argv' },
 
   { id: 'browserbackend', tab: 'browser', labelKey: 'settings.browserBackend', descKey: 'settings.browserBackendDesc', synonyms: 'browser chrome chromium external builtin' },
   { id: 'browserlight', tab: 'browser', labelKey: 'settings.browserLightweight', descKey: 'settings.browserLightweightDesc', synonyms: 'browser throttle cpu lightweight' },

@@ -5,6 +5,7 @@ import type {
 } from '../../../../../../shared/tokenUsage/quotaTypes';
 import Button from '../../../../ui/Button';
 import Badge from '../../../../ui/Badge';
+import { useT } from '../../../../../hooks/useT';
 import { formatAvgTokensPerMessage, formatCapturedAgo, providerDisplayName } from './quotaFormatters';
 import { QuotaWindowRow } from './QuotaWindowRow';
 
@@ -33,6 +34,7 @@ export function ProviderQuotaCard({
   sampleSize: propsSampleSize,
   partial: propsPartial,
 }: ProviderQuotaCardProps) {
+  const t = useT();
   const quota = reading?.quota;
   const deltas = reading?.deltas ?? [];
 
@@ -51,12 +53,12 @@ export function ProviderQuotaCard({
       ? propsPartial
       : Boolean(quotaAny?.partial ?? quotaAny?.avgTokensPartial);
 
-  const avgTokensText = formatAvgTokensPerMessage(provider, avgTokens, sampleSize, isPartial);
+  const avgTokensText = formatAvgTokensPerMessage(provider, avgTokens, sampleSize, isPartial, t);
 
   const displayName = providerDisplayName(provider);
   const planLabel = quota?.planLabel;
   const creditsLabel = quota?.creditsLabel;
-  const capturedAgo = provider === 'agy' && quota?.capturedAtMs ? formatCapturedAgo(quota.capturedAtMs) : null;
+  const capturedAgo = provider === 'agy' && quota?.capturedAtMs ? formatCapturedAgo(quota.capturedAtMs, undefined, t) : null;
 
   const showInstallSensor =
     provider === 'agy' &&
@@ -86,21 +88,21 @@ export function ProviderQuotaCard({
           size="sm"
           onClick={onRefresh}
           disabled={loading}
-          aria-label={`Refresh ${displayName} quota`}
+          aria-label={t('settings.tokenUsage.refreshQuotaAria', { provider: displayName })}
           data-testid={`quota-refresh-${provider}`}
         >
-          {loading ? 'Refreshing...' : 'Refresh'}
+          {loading ? t('settings.tokenUsage.refreshing') : t('settings.tokenUsage.refresh')}
         </Button>
       </div>
 
       {loading && !reading ? (
         <div className="text-[11px] text-[var(--text-sub)] py-2" data-testid={`quota-loading-${provider}`}>
-          Loading quota...
+          {t('settings.tokenUsage.loadingQuota')}
         </div>
       ) : quota && quota.status === 'ok' ? (
         <div className="flex flex-col divide-y divide-[var(--border-subtle)]">
           {quota.windows.length === 0 ? (
-            <div className="text-[11px] text-[var(--text-sub)] py-1">No quota windows reported.</div>
+            <div className="text-[11px] text-[var(--text-sub)] py-1">{t('settings.tokenUsage.noQuotaWindows')}</div>
           ) : (
             quota.windows.map((w) => (
               <QuotaWindowRow
@@ -114,7 +116,7 @@ export function ProviderQuotaCard({
       ) : (
         <div className="flex flex-col gap-2 py-1">
           <div className="text-[11px] text-[var(--text-sub)]" data-testid={`quota-message-${provider}`}>
-            {quota?.message ?? 'No quota data available.'}
+            {quota?.message ?? t('settings.tokenUsage.noQuotaData')}
           </div>
 
           {showInstallSensor && (
@@ -126,7 +128,7 @@ export function ProviderQuotaCard({
                 disabled={installingSensor}
                 data-testid="agy-install-sensor"
               >
-                {installingSensor ? 'Installing...' : 'Install sensor'}
+                {installingSensor ? t('settings.tokenUsage.installing') : t('settings.tokenUsage.installSensor')}
               </Button>
             </div>
           )}

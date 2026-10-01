@@ -9,32 +9,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../../stores';
 import { useT } from '../../../hooks/useT';
-import { applyRoleBinding, type OrchestratorRoleBindings, type RoleBinding } from '../../../../shared/orchestratorRole';
-import { ROLE_TOOL_SURFACES } from '../../../../shared/roleSurfaces';
-import { CORE_TOOL_SURFACE } from '../../../../shared/coreSurface';
+import type { OrchestratorRoleBindings } from '../../../../shared/orchestratorRole';
 import { activeProviders } from '../../../../shared/activeProviders';
-import { SettingNote, SettingRow, SettingsSection } from '../SettingsLayout';
+import { SettingRow, SettingsSection } from '../SettingsLayout';
 import Button from '../../ui/Button';
 import { QuotaSection } from './TokenUsageTab/QuotaSection';
-import { ProfileSection, describeBinding } from './TokenUsageTab/ProfileSection';
+import { ProfileSection } from './TokenUsageTab/ProfileSection';
 import { CustomPanel } from './TokenUsageTab/CustomPanel';
 
 type T = ReturnType<typeof useT>;
-
-const ROLE_ORDER = ['Planner', 'Builder', 'Tester', 'Reviewer'];
-
-function argvPreview(b: RoleBinding): string {
-  return b.agent ? applyRoleBinding(b.agent, b, { spawnedProcess: true }).command : '';
-}
-
-/** What the role's pane sees from wmux at its binding's tool level. */
-function toolsLabel(role: string, b: RoleBinding, t: T): string {
-  if (!b.tools) return t('settings.tokenToolsCliDefault');
-  if (b.tools === 'full') return t('settings.tokenToolsAll');
-  const surface = (ROLE_TOOL_SURFACES as Record<string, readonly string[] | undefined>)[role];
-  const n = b.tools === 'role' && surface ? surface.length : CORE_TOOL_SURFACE.length;
-  return t('settings.tokenRoleTools', { n });
-}
 
 export interface TokenUsageViewProps {
   bindings: OrchestratorRoleBindings;
@@ -47,7 +30,7 @@ export interface TokenUsageViewProps {
 
 export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, deckBrainEffort, t }: TokenUsageViewProps) {
   const [showCustom, setShowCustom] = useState(false);
-  const [surfaceBadgeText, setSurfaceBadgeText] = useState('Surface: default');
+  const [surfaceBadgeText, setSurfaceBadgeText] = useState(() => t('settings.tokenUsage.surfaceDefault'));
   const surfaceReqIdRef = useRef(0);
 
   const providers = useMemo(() => activeProviders(bindings), [bindings]);
@@ -79,31 +62,27 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
           failedCount++;
         }
       }
-      const baseText = disabledCount === 0 ? 'Surface: default' : `Surface: ${disabledCount} off`;
-      setSurfaceBadgeText(failedCount > 0 ? `${baseText} (some unavailable)` : baseText);
+      const baseText = disabledCount === 0
+        ? t('settings.tokenUsage.surfaceDefault')
+        : t('settings.tokenUsage.surfaceOff', { n: disabledCount });
+      setSurfaceBadgeText(
+        failedCount > 0
+          ? t('settings.tokenUsage.surfaceSomeUnavailable', { surface: baseText })
+          : baseText,
+      );
     } catch {
       // ignore
     }
-  }, [providers]);
+  }, [providers, t]);
 
   useEffect(() => {
     refreshSurfaceState();
   }, [refreshSurfaceState]);
 
-  const roles = [
-    ...ROLE_ORDER.filter((r) => bindings[r]),
-    ...Object.keys(bindings).filter((r) => !ROLE_ORDER.includes(r)),
-  ];
-  const bound = roles.length > 0;
-  const sharedAgy = bindings.Builder?.agent && bindings.Builder.agent === bindings.Tester?.agent
-    ? bindings.Builder.agent
-    : undefined;
-
   return (
     <div className="settings-page" data-testid="token-usage-tab">
       <QuotaSection t={t} providers={providers} />
 
-      {/* Catalog search jump anchor: <SettingsSection id="tokenprofile" */}
       <ProfileSection
         bindings={bindings}
         onApply={onApply}
@@ -116,29 +95,6 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
       />
 
       {showCustom && <CustomPanel t={t} providers={providers} onApplied={refreshSurfaceState} />}
-
-      <SettingsSection id="tokenroles" title={t('settings.tokenRoles')} description={t('settings.tokenRolesDesc')}>
-        {!bound && <SettingNote>{t('settings.tokenProfileNoRoles')}</SettingNote>}
-        {roles.map((role) => {
-          const b = bindings[role];
-          return (
-            <div key={role} className="settings-row" data-token-role={role}>
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-[13px] font-medium">{role}</span>
-                <span className="text-[11px] text-[var(--text-sub)]">
-                  {b.agent ?? '—'} · {describeBinding(b)} · {toolsLabel(role, b, t)}
-                </span>
-              </div>
-              {b.agent && (
-                <p className="ui-code m-0 mt-1 text-[11px] text-[var(--text-sub)]">{argvPreview(b)}</p>
-              )}
-            </div>
-          );
-        })}
-        {sharedAgy && (
-          <SettingNote data-testid="token-shared-pane">{t('settings.tokenSharedPane', { agent: sharedAgy })}</SettingNote>
-        )}
-      </SettingsSection>
 
       <SettingsSection id="tokendeck" title={t('settings.tokenDeck')} description={t('settings.tokenDeckDesc')}>
         <SettingRow

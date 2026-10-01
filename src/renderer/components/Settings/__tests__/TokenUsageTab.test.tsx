@@ -63,17 +63,23 @@ describe('TokenUsageView', () => {
     expect(html).not.toContain('token-profile-apply');
   });
 
-  it('lists each role with its launch, tool surface size and the shared-pane note', () => {
-    expect(render(BOUND)).toContain('wmux tools: CLI default');
-    const html = render(applyTokenProfile(BOUND, 'minimal'));
-    expect(html).toContain('6 wmux tools'); // Planner
-    expect(html).toContain('5 wmux tools'); // Reviewer
-    expect(html).toContain('0 wmux tools'); // Builder / Tester
-    expect(render(applyTokenProfile(BOUND, 'full'))).toContain('all wmux tools');
-    expect(html).toContain('agy --model gemini-3.8-flash-low --dangerously-skip-permissions');
-    expect(html).toContain('Builder and Tester share one agy pane');
-    // Permissions are shown, never offered as a profile lever.
-    expect(html).not.toMatch(/Skip permissions/);
+  it('shows shared pane note when Builder and Tester share an agent', () => {
+    const html = render(BOUND);
+    expect(html).toContain('data-testid="token-shared-pane"');
+    expect(html).toContain('Builder and Tester share one agy pane; that pane runs the Builder launch.');
+  });
+
+  it('does not show shared pane note when Builder and Tester have different agents or are unbound', () => {
+    const htmlDiff = render({
+      Builder: { agent: 'agy', model: 'gemini-3.8-flash-high' },
+      Tester: { agent: 'claude', model: 'claude-sonnet-5-5' },
+    });
+    expect(htmlDiff).not.toContain('data-testid="token-shared-pane"');
+
+    const htmlOnlyBuilder = render({
+      Builder: { agent: 'agy', model: 'gemini-3.8-flash-high' },
+    });
+    expect(htmlOnlyBuilder).not.toContain('data-testid="token-shared-pane"');
   });
 
   it('shows the Deck brain model and effort with a link to Orchestrator', () => {
