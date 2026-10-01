@@ -710,6 +710,10 @@ export const ko = {
   'settings.roleBindingHintFreshContextInert':
     '작업마다 새 대화는 claude 또는 codex 에이전트에서만 동작합니다. 이 역할에는 아무 효과가 없습니다.',
   'settings.roleBindingRefreshModels': '모델 새로고침',
+  'settings.rolePresetApply': '{role} 프리셋 적용',
+  'settings.rolePresetApplied': '{role} 프리셋 적용됨',
+  'settings.rolePresetTooltip':
+    '이 역할을 {tier} 추론 강도와 권한 건너뛰기로 설정합니다. 선택한 에이전트와 추가 인수는 유지됩니다(없으면 agy). agy는 도구·스킬·MCP 설정을 역할별로 나눌 수 없어 토큰 사용량 탭에서 공유됩니다.',
   'deck.fleet.enforcedLaunch': '강제 실행: {binding}',
   'pane.enforcedLaunch': '역할이 강제한 실행: {binding}',
   'pane.enforcedSkipBadge': '바이패스',

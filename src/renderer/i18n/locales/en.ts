@@ -1202,6 +1202,10 @@ export const en = {
   'settings.roleBindingFreshContextTooltip':
     'When this pane is handed a NEW task (the orchestrator’s terminal_send with new_task, or a new send_message from another agent), wmux first types {command} so the previous task’s conversation does not carry over. Never on a follow-up or a reply. Skipped while the agent is busy or the pane still has other open agent tasks.',
   'settings.roleBindingRefreshModels': 'Refresh models',
+  'settings.rolePresetApply': 'Apply {role} preset',
+  'settings.rolePresetApplied': '{role} preset applied',
+  'settings.rolePresetTooltip':
+    'Sets this role to {tier} effort with skip permissions on, keeping the agent and extra args you chose (agy when none). Tool, skill and MCP settings are not per role for agy — they stay shared in Token usage.',
   'settings.tabTokens': 'Token usage',
   'settings.tokenProfile': 'Profile',
   'settings.tokenProfileDesc':

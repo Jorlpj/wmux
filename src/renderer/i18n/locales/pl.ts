@@ -1183,6 +1183,10 @@ export const pl = {
   'settings.roleBindingFreshContextTooltip':
     'Gdy ten panel dostaje NOWE zadanie (terminal_send orkiestratora z new_task albo nowe send_message od innego agenta), wmux najpierw wpisuje {command}, aby rozmowa z poprzedniego zadania nie przechodziła dalej. Nigdy przy kontynuacji ani odpowiedzi. Pomijane, gdy agent pracuje albo panel ma jeszcze inne otwarte zadania agentów.',
   'settings.roleBindingRefreshModels': 'Odśwież modele',
+  'settings.rolePresetApply': 'Zastosuj preset {role}',
+  'settings.rolePresetApplied': 'Preset {role} zastosowany',
+  'settings.rolePresetTooltip':
+    'Ustawia tę rolę na wysiłek {tier} z pominięciem uprawnień, zachowując wybranego agenta i dodatkowe argumenty (agy, gdy brak). Narzędzia, skille i MCP nie są per rola dla agy — pozostają wspólne w Zużyciu tokenów.',
   'settings.tabTokens': 'Zużycie tokenów',
   'settings.tokenProfile': 'Profil',
   'settings.tokenProfileDesc':

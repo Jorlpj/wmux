@@ -1262,6 +1262,10 @@ export const zh = {
   'settings.roleBindingFreshContextTooltip':
     '当此面板收到一个新任务（编排器带 new_task 的 terminal_send，或另一个智能体新的 send_message）时，wmux 会先输入 {command}，使上一个任务的对话不会延续。后续指示或回复不会触发。智能体忙碌时，或面板仍有其他未结束的智能体任务时跳过。',
   'settings.roleBindingRefreshModels': '刷新模型',
+  'settings.rolePresetApply': '应用 {role} 预设',
+  'settings.rolePresetApplied': '已应用 {role} 预设',
+  'settings.rolePresetTooltip':
+    '将此角色设为 {tier} 推理强度并跳过权限提示，保留你选择的智能体和额外参数（未选择时为 agy）。agy 的工具、技能和 MCP 设置无法按角色区分，仍在“令牌用量”中共享。',
   'settings.tabTokens': '令牌用量',
   'settings.tokenProfile': '配置档',
   'settings.tokenProfileDesc':

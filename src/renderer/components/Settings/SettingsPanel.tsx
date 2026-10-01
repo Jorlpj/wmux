@@ -31,6 +31,7 @@ import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardow
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, applyRoleBinding, launcherSupportsModelFlag, type RoleBinding } from '../../../shared/orchestratorRole';
+import { ROLE_PRESET_SPECS, applyRolePreset, hasRolePreset, rolePresetApplied } from '../../../shared/rolePresets';
 import {
   DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
   FANOUT_WORKER_PERMISSION_MODES,
@@ -873,6 +874,21 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                     {t('settings.roleBindingRefreshModels')}
                   </UiButton>
                 )}
+              </div>
+            )}
+            {hasRolePreset(role) && (
+              <div className="mt-1.5 pl-[84px]" data-role-binding-preset={role}>
+                <UiButton
+                  variant="secondary"
+                  size="sm"
+                  disabled={rolePresetApplied(role, bindings)}
+                  title={t('settings.rolePresetTooltip', { tier: ROLE_PRESET_SPECS[role].tier })}
+                  onClick={() => onChange(role, applyRolePreset(role, bindings[role]))}
+                >
+                  {rolePresetApplied(role, bindings)
+                    ? t('settings.rolePresetApplied', { role })
+                    : t('settings.rolePresetApply', { role })}
+                </UiButton>
               </div>
             )}
             {preview && (

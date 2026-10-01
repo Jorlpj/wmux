@@ -77,7 +77,9 @@ describe('RoleBindingsView render', () => {
     // 4 roles × agent select, and 4 roles × (model input + args input).
     expect(html.split('class="ui-select').length - 1).toBe(4);
     expect(html.split('class="ui-input').length - 1).toBe(8);
-    expect(html).not.toContain('outline-none');
+    // A bare `outline-none` strips the ring; the shared Button's own
+    // `focus-visible:outline-none` swaps it for a ring-2 and is fine.
+    expect(html).not.toMatch(/(^|[\s"])outline-none/);
     expect(html).not.toMatch(/style="[^"]*(box-shadow|border)[^"]*"/);
 
     const read = (...p: string[]) => readFileSync(join(__dirname, ...p), 'utf8').replace(/\r\n/g, '\n');
