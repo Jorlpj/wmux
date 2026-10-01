@@ -6,7 +6,7 @@ import type {
 import Button from '../../../../ui/Button';
 import Badge from '../../../../ui/Badge';
 import { useT } from '../../../../../hooks/useT';
-import { formatAvgTokensPerMessage, formatCapturedAgo, providerDisplayName } from './quotaFormatters';
+import { formatAvgTokensPerMessage, formatCapturedAgo, formatCheckedAgo, providerDisplayName } from './quotaFormatters';
 import { QuotaWindowRow } from './QuotaWindowRow';
 
 export interface ProviderQuotaCardProps {
@@ -58,7 +58,10 @@ export function ProviderQuotaCard({
   const displayName = providerDisplayName(provider);
   const planLabel = quota?.planLabel;
   const creditsLabel = quota?.creditsLabel;
-  const capturedAgo = provider === 'agy' && quota?.capturedAtMs ? formatCapturedAgo(quota.capturedAtMs, undefined, t) : null;
+  // agy (sensor) and codex (session file) readings are only as new as their source's last write.
+  const capturedAgo =
+    (provider === 'agy' || provider === 'codex') && quota?.capturedAtMs ? formatCapturedAgo(quota.capturedAtMs, undefined, t) : null;
+  const checkedAgo = quota ? formatCheckedAgo(quota.fetchedAtMs, undefined, t) : null;
 
   const showInstallSensor =
     provider === 'agy' &&
@@ -80,6 +83,11 @@ export function ProviderQuotaCard({
           )}
           {capturedAgo && (
             <span className="text-[11px] text-[var(--text-muted)]">{capturedAgo}</span>
+          )}
+          {checkedAgo && (
+            <span className="text-[11px] text-[var(--text-muted)]" data-testid={`quota-checked-${provider}`}>
+              {checkedAgo}
+            </span>
           )}
         </div>
 

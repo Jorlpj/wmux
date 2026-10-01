@@ -149,6 +149,18 @@ export function ProfileSection({
           )}
         </>
       )}
+      <SettingRow label={t('settings.tokenUsage.customizeSurface')} description={t('settings.tokenUsage.customizeSurfaceDesc')}>
+        <Button
+          variant={showCustom ? 'primary' : 'secondary'}
+          size="sm"
+          aria-expanded={showCustom}
+          aria-controls="tokencustom"
+          data-testid="token-customize-button"
+          onClick={onToggleCustom}
+        >
+          {showCustom ? t('settings.tokenUsage.customizeSurfaceHide') : t('settings.tokenUsage.customizeSurface')}
+        </Button>
+      </SettingRow>
       <SavedSurfaceProfiles onApplied={onProfileApplied} />
     </SettingsSection>
   );

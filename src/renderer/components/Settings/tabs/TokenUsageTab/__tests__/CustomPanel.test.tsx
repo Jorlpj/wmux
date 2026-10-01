@@ -252,9 +252,8 @@ describe('CustomPanel UI', () => {
       root.render(createElement(CustomPanel));
     });
 
-    expect(container.querySelector('[data-testid="token-custom-panel"]')?.textContent).toContain(
-      'Per-provider MCP/tool/skill/plugin/hook editing is not implemented yet.',
-    );
+    // The panel is the editor itself: no placeholder saying it is not built yet.
+    expect(container.querySelector('[data-testid="token-custom-panel"]')?.textContent).not.toContain('not implemented');
 
     expect(readInventoryMock).toHaveBeenCalledWith({ provider: 'claude' });
 

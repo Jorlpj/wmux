@@ -32,6 +32,13 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
   const [showCustom, setShowCustom] = useState(false);
   const [surfaceBadgeText, setSurfaceBadgeText] = useState(() => t('settings.tokenUsage.surfaceDefault'));
   const surfaceReqIdRef = useRef(0);
+  const customRef = useRef<HTMLDivElement>(null);
+
+  // The panel renders below the profile card, out of sight on a short window:
+  // bring it to the pill or button that was just clicked.
+  useEffect(() => {
+    if (showCustom) customRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+  }, [showCustom]);
 
   const providers = useMemo(() => activeProviders(bindings), [bindings]);
 
@@ -94,7 +101,11 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
         onProfileApplied={refreshSurfaceState}
       />
 
-      {showCustom && <CustomPanel t={t} providers={providers} onApplied={refreshSurfaceState} />}
+      {showCustom && (
+        <div ref={customRef}>
+          <CustomPanel t={t} providers={providers} onApplied={refreshSurfaceState} />
+        </div>
+      )}
 
       <SettingsSection id="tokendeck" title={t('settings.tokenDeck')} description={t('settings.tokenDeckDesc')}>
         <SettingRow

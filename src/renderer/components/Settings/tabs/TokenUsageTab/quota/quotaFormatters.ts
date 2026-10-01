@@ -69,6 +69,14 @@ export function formatCapturedAgo(capturedAtMs: number | null, nowMs = Date.now(
   return t('settings.tokenUsage.capturedMinutesAgo', { m: mins });
 }
 
+/** When wmux last read the provider: what makes a Refresh visible even when the numbers did not move. */
+export function formatCheckedAgo(fetchedAtMs: number | null, nowMs = Date.now(), t: TranslateFn = defaultT as TranslateFn): string | null {
+  if (fetchedAtMs === null || fetchedAtMs <= 0) return null;
+  const mins = Math.floor(Math.max(0, nowMs - fetchedAtMs) / 60000);
+  if (mins < 1) return t('settings.tokenUsage.checkedJustNow');
+  return t('settings.tokenUsage.checkedMinutesAgo', { m: mins });
+}
+
 export function formatAvgTokensPerMessage(
   provider: QuotaProviderId,
   avgTokens: number | null,
