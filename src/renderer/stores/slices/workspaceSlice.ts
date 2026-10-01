@@ -1423,6 +1423,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.anthropicUsageEnabled = data.anthropicUsageEnabled;
         window.electronAPI.usage.setEnabled(data.anthropicUsageEnabled);
       }
+      if (typeof data.refreshQuotaOnTurnEnd === 'boolean') {
+        state.refreshQuotaOnTurnEnd = data.refreshQuotaOnTurnEnd;
+        window.electronAPI?.settings?.setRefreshQuotaOnTurnEnd?.(data.refreshQuotaOnTurnEnd);
+      }
       if (data.customKeybindings) {
         // Merge saved keybindings with current built-in defaults (mirrors the
         // layoutTemplates merge below). Built-in defaults (id 'kb-default-*')

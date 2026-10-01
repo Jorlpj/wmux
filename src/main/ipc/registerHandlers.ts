@@ -44,6 +44,7 @@ import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
 import { setMutedNotificationCategories } from '../notification/mutedCategories';
 import { setDefaultWslDistro } from '../pty/defaultWslDistro';
+import { AccountUsageService } from '../account/AccountUsageService';
 import { updateUnreadBadge } from '../tray';
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
@@ -241,6 +242,12 @@ export function registerAllHandlers(
   };
   ipcMain.removeAllListeners(IPC.MUTED_NOTIFICATION_CATEGORIES);
   ipcMain.on(IPC.MUTED_NOTIFICATION_CATEGORIES, onMutedCategories);
+
+  const onRefreshQuotaOnTurnEnd = (_event: Electron.IpcMainEvent, enabled: unknown): void => {
+    AccountUsageService.setRefreshQuotaOnTurnEnd(enabled);
+  };
+  ipcMain.removeAllListeners(IPC.SETTINGS_REFRESH_QUOTA_ON_TURN_END);
+  ipcMain.on(IPC.SETTINGS_REFRESH_QUOTA_ON_TURN_END, onRefreshQuotaOnTurnEnd);
 
   // Window hide (prefix-d detach)
   const onWindowHide = (): void => {
@@ -514,6 +521,7 @@ export function registerAllHandlers(
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.MUTED_NOTIFICATION_CATEGORIES);
     ipcMain.removeAllListeners(IPC.SETTINGS_DEFAULT_WSL_DISTRO);
+    ipcMain.removeAllListeners(IPC.SETTINGS_REFRESH_QUOTA_ON_TURN_END);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
     ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);

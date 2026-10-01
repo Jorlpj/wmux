@@ -43,6 +43,7 @@ function make(opts: {
   cooldownMs?: number;
   refreshIntervalMs?: number;
   staggerMs?: number;
+  getRefreshQuotaOnTurnEnd?: () => boolean;
 } = {}): AccountUsageService {
   return new AccountUsageService({
     now: opts.now ?? (() => 1000),
@@ -53,6 +54,7 @@ function make(opts: {
     cooldownMs: opts.cooldownMs ?? 5 * 60 * 1000,
     refreshIntervalMs: opts.refreshIntervalMs,
     staggerMs: opts.staggerMs,
+    getRefreshQuotaOnTurnEnd: opts.getRefreshQuotaOnTurnEnd,
   });
 }
 
@@ -259,38 +261,92 @@ describe('AccountUsageService refresh-all timer and 429 backoff', () => {
   const MIN = 60_000;
   afterEach(() => { vi.useRealTimers(); });
 
-  it('refreshes every claude account every 15 min, staggered, only while enabled', async () => {
+  it('with setting off, advancing time by hours triggers no probe and no timer exists', async () => {
     vi.useFakeTimers();
     const fetchImpl = okFetch();
     const svc = make({
       now: () => Date.now(),
       fetchImpl,
-      getConfigDir: (id) => (id === 'C' ? null : `C:/dirs/${id}`), // C = codex
+      getRefreshQuotaOnTurnEnd: () => false,
     });
-    svc.setEnabled(true);
-    await vi.advanceTimersByTimeAsync(10_000); // first account at +10s
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(10_000); // second at +20s
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(svc.getAll().map((e) => e.accountId).sort()).toEqual(['A', 'B']);
-    await vi.advanceTimersByTimeAsync(15 * MIN - 20_000); // next pass starts
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
-    svc.setEnabled(false); // zero traffic while off
-    await vi.advanceTimersByTimeAsync(60 * MIN);
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(10 * 3600 * 1000);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
     svc.dispose();
   });
 
-  it('hidden window → the timer sends nothing', async () => {
-    vi.useFakeTimers();
+  it('an agent.stop (maybeProbe) with the setting off does nothing', async () => {
     const fetchImpl = okFetch();
-    const svc = make({ now: () => Date.now(), fetchImpl });
-    svc.setWindowVisible(false);
-    svc.setEnabled(true);
-    await vi.advanceTimersByTimeAsync(20 * MIN);
+    const svc = make({
+      fetchImpl,
+      getRefreshQuotaOnTurnEnd: () => false,
+    });
+    await svc.maybeProbe('A');
     expect(fetchImpl).not.toHaveBeenCalled();
+    expect(svc.getAll()).toEqual([]);
+    svc.dispose();
+  });
+
+  it('with setting on, an agent.stop triggers exactly one coalesced probe', async () => {
+    const d = deferred<Response>();
+    const fetchImpl = vi.fn().mockReturnValue(d.promise) as unknown as typeof fetch;
+    const svc = make({
+      fetchImpl,
+      getRefreshQuotaOnTurnEnd: () => true,
+    });
+    const p1 = svc.maybeProbe('A');
+    const p2 = svc.maybeProbe('A');
+    d.resolve(new Response(JSON.stringify({
+      five_hour: { utilization: 40, resets_at: new Date(Date.now() + 3600000).toISOString() },
+      seven_day: { utilization: 60, resets_at: new Date(Date.now() + 86400000).toISOString() },
+    }), { status: 200 }));
+    await Promise.all([p1, p2]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const entry = svc.getAll().find((e) => e.accountId === 'A');
+    expect(entry?.status).toBe('ok');
+    svc.dispose();
+  });
+
+  it('toggling at runtime takes effect on the next stop', async () => {
+    let enabled = false;
+    let t = 1000;
+    const fetchImpl = okFetch();
+    const svc = make({
+      now: () => t,
+      fetchImpl,
+      cooldownMs: 0,
+      getRefreshQuotaOnTurnEnd: () => enabled,
+    });
+    await svc.maybeProbe('A');
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    // Toggle on at runtime
+    enabled = true;
+    t += 1000;
+    await svc.maybeProbe('A');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Toggle off at runtime
+    enabled = false;
+    t += 1000;
+    await svc.maybeProbe('A');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    svc.dispose();
+  });
+
+  it('manual refresh still works with setting off', async () => {
+    const fetchImpl = okFetch(50, 80);
+    const svc = make({
+      fetchImpl,
+      getRefreshQuotaOnTurnEnd: () => false,
+    });
+    await svc.maybeProbe('A');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await svc.refreshNow('A');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const entry = svc.getAll().find((e) => e.accountId === 'A');
+    expect(entry?.status).toBe('ok');
     svc.dispose();
   });
 
@@ -318,23 +374,7 @@ describe('AccountUsageService refresh-all timer and 429 backoff', () => {
     svc.dispose();
   });
 
-  it('hidden → visible while enabled schedules one catch-up pass (cooldown still applies)', async () => {
-    vi.useFakeTimers();
-    const fetchImpl = okFetch();
-    const svc = make({ now: () => Date.now(), fetchImpl, listKnownIds: () => new Set(['A']) });
-    svc.setWindowVisible(false);
-    svc.setEnabled(true);
-    await vi.advanceTimersByTimeAsync(10_000); // initial pass skipped: hidden
-    expect(fetchImpl).not.toHaveBeenCalled();
-    svc.setWindowVisible(true);
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    svc.setWindowVisible(false);
-    svc.setWindowVisible(true); // within cooldown → gated
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    svc.dispose();
-  });
+
 
   it('unsupported-platform: automatic pass leaves the entry alone, manual refresh surfaces it', async () => {
     let t = 1000;

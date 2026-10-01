@@ -321,6 +321,23 @@ export class SessionManager {
     }
   }
 
+  /**
+   * The persisted refresh-quota-on-turn-end toggle, as a targeted read.
+   */
+  readRefreshQuotaOnTurnEnd(): boolean | null {
+    if (this.pendingData && typeof this.pendingData.refreshQuotaOnTurnEnd === 'boolean') {
+      return this.pendingData.refreshQuotaOnTurnEnd;
+    }
+    try {
+      const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
+        validate: SessionManager.isSessionData,
+      });
+      return loaded?.refreshQuotaOnTurnEnd ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   load(): SessionData | null {
     // v2 RCA fix (adversarial review): distinguish "no session file" (true
     // first launch → null) from "file exists but unreadable" (transient AV/

@@ -405,6 +405,7 @@ export const IPC = {
   // pty.create can inject `wsl.exe -d <distro>` at the shell-resolution
   // choke point without threading it through every create call.
   SETTINGS_DEFAULT_WSL_DISTRO: 'settings:default-wsl-distro',
+  SETTINGS_REFRESH_QUOTA_ON_TURN_END: 'settings:refresh-quota-on-turn-end',
   // Phase 2.2 — MCP plugin permission approval (main → renderer subscribe,
   // renderer → main response). Emitted when the enforcer rejects an
   // unconfirmed plugin in enforce mode and the ApprovalQueue mints a

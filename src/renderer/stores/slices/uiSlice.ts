@@ -659,6 +659,8 @@ export interface UISlice {
   // it stays in main process memory during a fetch and is discarded.
   anthropicUsageEnabled: boolean;
   setAnthropicUsageEnabled: (enabled: boolean) => void;
+  refreshQuotaOnTurnEnd: boolean;
+  setRefreshQuotaOnTurnEnd: (enabled: boolean) => void;
   anthropicUsage: {
     status:
       | 'idle'
@@ -1687,6 +1689,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     window.electronAPI.usage.setEnabled(enabled);
     set((state) => {
       state.anthropicUsageEnabled = enabled;
+    });
+  },
+  refreshQuotaOnTurnEnd: false,
+  setRefreshQuotaOnTurnEnd: (enabled) => {
+    window.electronAPI?.settings?.setRefreshQuotaOnTurnEnd?.(enabled);
+    set((state) => {
+      state.refreshQuotaOnTurnEnd = enabled;
     });
   },
   anthropicUsage: {

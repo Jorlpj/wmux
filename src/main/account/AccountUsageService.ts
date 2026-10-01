@@ -76,9 +76,8 @@ const DEFAULT_STAGGER_MS = 10 * 1000;
 export interface AccountUsageDeps {
   now?: () => number;
   cooldownMs?: number;
-  /** Refresh-all interval. Default 15 min. */
+  /** Kept for live statusline cadence. Default 15 min. */
   refreshIntervalMs?: number;
-  /** Delay between accounts within one refresh-all pass. Default 10 s. */
   staggerMs?: number;
   fetchImpl?: typeof fetch;
   loadCredential?: (configDir: string) => Promise<LoadResult>;
@@ -88,9 +87,29 @@ export interface AccountUsageDeps {
   /** Set of currently-registered account ids, used to prune stale cache entries
    *  (test 12: no leak over a long daemon lifetime). Default reads the store. */
   listKnownIds?: () => Set<string>;
+  /** Injected getter for `refreshQuotaOnTurnEnd`. Checked at call time on each turn end. */
+  getRefreshQuotaOnTurnEnd?: () => boolean;
+  refreshQuotaOnTurnEnd?: () => boolean;
 }
 
 export class AccountUsageService {
+  private static memoryRefreshQuotaOnTurnEnd: boolean | null = null;
+
+  static setRefreshQuotaOnTurnEnd(enabled: unknown): void {
+    AccountUsageService.memoryRefreshQuotaOnTurnEnd = enabled === true;
+  }
+
+  static isRefreshQuotaOnTurnEnd(fallback?: () => boolean | null): boolean {
+    if (AccountUsageService.memoryRefreshQuotaOnTurnEnd !== null) {
+      return AccountUsageService.memoryRefreshQuotaOnTurnEnd;
+    }
+    return fallback?.() ?? false;
+  }
+
+  static resetRefreshQuotaOnTurnEndForTest(): void {
+    AccountUsageService.memoryRefreshQuotaOnTurnEnd = null;
+  }
+
   private enabled = false;
   private windowVisible = true;
   private readonly cache = new Map<string, AccountUsageEntry>();
@@ -100,8 +119,6 @@ export class AccountUsageService {
   private readonly listeners = new Set<(entry: AccountUsageEntry) => void>();
   /** Per-account 429 backoff: automatic probes before `untilMs` are skipped. */
   private readonly rateLimited = new Map<string, { untilMs: number; count: number }>();
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
-  private readonly staggerTimers = new Set<ReturnType<typeof setTimeout>>();
   /** Per-account time of the last accepted live statusline sample. While
    *  younger than the refresh interval, automatic probes slow down. */
   private readonly liveAtMs = new Map<string, number>();
@@ -114,17 +131,16 @@ export class AccountUsageService {
   private readonly now: () => number;
   private readonly cooldownMs: number;
   private readonly refreshIntervalMs: number;
-  private readonly staggerMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly loadCredential: (configDir: string) => Promise<LoadResult>;
   private readonly getConfigDir: (accountId: string) => string | null;
   private readonly listKnownIds: () => Set<string>;
+  private readonly getRefreshQuotaOnTurnEnd: () => boolean;
 
   constructor(deps: AccountUsageDeps = {}) {
     this.now = deps.now ?? (() => Date.now());
     this.cooldownMs = deps.cooldownMs ?? DEFAULT_COOLDOWN_MS;
     this.refreshIntervalMs = deps.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
-    this.staggerMs = deps.staggerMs ?? DEFAULT_STAGGER_MS;
     this.fetchImpl = deps.fetchImpl ?? fetch;
     this.loadCredential = deps.loadCredential ?? loadClaudeCredential;
     this.getConfigDir = deps.getConfigDir ?? ((accountId) => {
@@ -134,65 +150,25 @@ export class AccountUsageService {
     });
     this.listKnownIds = deps.listKnownIds ?? (() =>
       new Set(getAccountStore().listAccounts().map((a) => a.id)));
+    this.getRefreshQuotaOnTurnEnd =
+      deps.getRefreshQuotaOnTurnEnd ?? deps.refreshQuotaOnTurnEnd ?? (() => this.enabled);
   }
 
-  /** Opt-in toggle. Turning ON starts the refresh-all timer with an immediate
-   *  staggered pass. Turning OFF keeps the cache (so the last-known values still
-   *  render) but stops the timer and all AUTOMATIC probing — the "zero traffic
-   *  while off" contract. Manual refreshNow still works (explicit user action). */
+  /** Opt-in toggle. */
   setEnabled(on: boolean): void {
     this.enabled = on;
-    if (on) this.startRefreshTimer();
-    else this.stopRefreshTimer();
   }
 
-  /** Stop all timers. Called on app quit. */
+  /** Stop all activity. Called on app quit. */
   dispose(): void {
     this.enabled = false;
-    this.stopRefreshTimer();
     this.listeners.clear();
-  }
-
-  private startRefreshTimer(): void {
-    if (this.refreshTimer) return;
-    this.refreshTimer = setInterval(() => this.scheduleRefreshAll(), this.refreshIntervalMs);
-    this.scheduleRefreshAll();
-  }
-
-  private stopRefreshTimer(): void {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = null;
-    }
-    for (const t of this.staggerTimers) clearTimeout(t);
-    this.staggerTimers.clear();
-  }
-
-  /** One refresh-all pass: every registered claude account gets an automatic
-   *  (gated) probe, `staggerMs` apart so the requests don't burst. A pass still
-   *  staggering when the next begins is replaced, never stacked. */
-  private scheduleRefreshAll(): void {
-    for (const t of this.staggerTimers) clearTimeout(t);
-    this.staggerTimers.clear();
-    const ids = [...this.listKnownIds()].filter((id) => this.getConfigDir(id) !== null);
-    ids.forEach((id, i) => {
-      const t = setTimeout(() => {
-        this.staggerTimers.delete(t);
-        void this.maybeProbe(id);
-      }, (i + 1) * this.staggerMs);
-      this.staggerTimers.add(t);
-    });
   }
 
   /** Hooked to BrowserWindow show/hide so automatic probes don't burn quota for
    *  a dashboard nobody is looking at. Manual refresh is unaffected. */
   setWindowVisible(visible: boolean): void {
-    const cameBack = visible && !this.windowVisible;
     this.windowVisible = visible;
-    // Hidden → visible while on: one catch-up pass, so numbers that aged while
-    // nobody looked refresh now instead of at the next interval. The usual
-    // cooldown / backoff gates still apply per account.
-    if (cameBack && this.enabled && this.refreshTimer) this.scheduleRefreshAll();
   }
 
   onChange(cb: (entry: AccountUsageEntry) => void): () => void {
@@ -248,7 +224,7 @@ export class AccountUsageService {
    * already in flight for it. This is the whole cost-control story.
    */
   async maybeProbe(accountId: string): Promise<void> {
-    if (!this.enabled) return;                 // opt-in: zero traffic while off
+    if (!this.getRefreshQuotaOnTurnEnd()) return;
     if (!this.windowVisible) return;           // hidden-window skip
     if (this.inflight.has(accountId)) return;  // coalesce a burst → one probe
     const backoff = this.rateLimited.get(accountId);
@@ -288,7 +264,7 @@ export class AccountUsageService {
     try {
       const cred = await this.loadCredential(configDir);
       // The toggle may have gone off while the credential was being read.
-      if (automatic && !this.enabled) return;
+      if (automatic && !this.getRefreshQuotaOnTurnEnd()) return;
       // A platform that can't read per-account credentials is not an account
       // fault: an automatic pass leaves the entry as it was instead of
       // painting it red. A manual refresh still surfaces the reason.

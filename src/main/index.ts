@@ -1088,7 +1088,10 @@ const disposeWorkspaceMirrorHandler = registerWorkspaceMirrorHandler();
 // resolves workspace → account here so hooks.rpc stays account-agnostic) and on
 // the service's own staggered 15-min refresh of every account.
 setUsageClientVersion(app.getVersion());
-const accountUsageService = new AccountUsageService();
+const accountUsageService = new AccountUsageService({
+  getRefreshQuotaOnTurnEnd: () =>
+    AccountUsageService.isRefreshQuotaOnTurnEnd(() => sessionManager.readRefreshQuotaOnTurnEnd()),
+});
 const disposeAccountUsageListener = accountUsageService.onChange((entry) => {
   const win = mainWindow;
   if (win && !win.isDestroyed()) {

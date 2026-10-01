@@ -937,6 +937,8 @@ export interface SessionData {
   notificationRingEnabled?: boolean;
   /** Whether the user opted in to Anthropic usage polling (#896). No credentials are persisted. */
   anthropicUsageEnabled?: boolean;
+  /** Whether to refresh provider quota at the end of each agent turn. Default false. */
+  refreshQuotaOnTurnEnd?: boolean;
   /** Categories whose surface actions are suppressed (#516). */
   mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];

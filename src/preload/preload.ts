@@ -377,6 +377,7 @@ const electronAPI = {
     setAutoUpdateEnabled: (enabled: boolean) => ipcRenderer.send(IPC.AUTO_UPDATE_ENABLED, enabled),
     // #1103 — null clears the choice (back to wsl.exe's system default).
     setDefaultWslDistro: (distro: string | null) => ipcRenderer.send(IPC.SETTINGS_DEFAULT_WSL_DISTRO, distro),
+    setRefreshQuotaOnTurnEnd: (enabled: boolean) => ipcRenderer.send(IPC.SETTINGS_REFRESH_QUOTA_ON_TURN_END, enabled),
   },
   // Windows "start on login" toggle (issue #460). Backed by the per-user Run
   // registry key. `get`/`set` resolve to the live state; off-Windows both
