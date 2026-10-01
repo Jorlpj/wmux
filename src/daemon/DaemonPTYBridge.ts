@@ -14,6 +14,7 @@ import { OutputModeTracker } from './util/outputModeTracker';
 import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
+import { titleShowsRunningTurn } from './transcript/chatScreenGate';
 
 /**
  * Daemon version of PTYBridge.
@@ -141,6 +142,15 @@ export class DaemonPTYBridge extends EventEmitter {
    * transcript end or the agent ending makes the close final.
    */
   private turnSoftClosed = false;
+  /**
+   * #1670 — the episode was opened while the boot window was open (a program
+   * launched, no submit or hook since), by a byte promotion or by the first
+   * Enter: the TUI painting itself or a dialog answered, or a real first turn.
+   * A running hook, or a submit joining it while it runs, proves a turn; until
+   * then a submit that finds no running turn on the title replaces it (see
+   * `startAnsweredTurn`).
+   */
+  private bootEpisode = false;
 
   /**
    * Reads the pane's transcript for the latest recorded turn end (epoch ms),
@@ -197,6 +207,9 @@ export class DaemonPTYBridge extends EventEmitter {
    * pane is not someone answering the dialog, but a click may be.
    */
   private keyInputRevision = 0;
+  /** When `keyInputRevision` last moved (#1680): `isKeyInputQuiet` reads it so
+   *  a pointer drifting over the pane does not read as someone typing. */
+  private lastKeyInputAt = 0;
   private emptyShellPrompt = false;
   private completedShellCommand = false;
   private shellCommandRunning = false;
@@ -295,6 +308,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastInputAt = Date.now();
         this.inputRevision += 1;
         this.keyInputRevision += 1;
+        this.lastKeyInputAt = this.lastInputAt;
         this.emptyShellPrompt = false;
         this.completedShellCommand = false;
       }
@@ -315,6 +329,7 @@ export class DaemonPTYBridge extends EventEmitter {
       if (active === '\x1b' && !this.inputInBracketedPaste) this.lastEscAt = this.lastInputAt;
       if (active.length > 0) {
         this.keyInputRevision += 1;
+        this.lastKeyInputAt = this.lastInputAt;
         // Sizes nothing, carries nothing: a remote terminal-prompt answer that
         // a key or click has overtaken is refreshed off this.
         if (this.sessionId) this.emit('fenceInput', { sessionId: this.sessionId });
@@ -404,14 +419,24 @@ export class DaemonPTYBridge extends EventEmitter {
     // An answer resumes the episode it interrupted; a submit into a running
     // turn is queued by the agent's own composer. Anything else starts one.
     if (!wasAwaiting) {
+      // #1670 — an episode opened at boot (by the boot burst, or by the first
+      // Enter after a launch, which may only have answered a dialog the
+      // detector does not see, such as Codex's folder-trust prompt) is not a
+      // turn unless the agent shows one running (a first turn started from
+      // the command line, or the first prompt still working). Otherwise the
+      // next submit starts the turn, so a key sent before it (a lone Esc
+      // dismissing a notice) is never read as an interrupt of that turn.
+      if (this.turnOpen && this.bootEpisode && !this.titleShowsRunningTurn()) this.closeTurn();
       if (this.turnOpen && this.sessionId) {
         const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(this.sessionId);
         if (endedAt !== undefined) this.noteTranscriptTurnEnd(endedAt);
       }
       // Still open = no settle and no recorded end since it began: a prompt
       // typed into the running turn, however long the turn has been quiet.
+      const joined = this.turnOpen;
       this.turnSoftClosed = false;
       this.openTurn();
+      if (joined) this.bootEpisode = false;
     }
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
@@ -445,13 +470,57 @@ export class DaemonPTYBridge extends EventEmitter {
   private static readonly FOCUS_REPORT = /\x1b\[[IO]/g;
 
   /**
-   * Remove only PASSIVE input: focus reports, and SGR mouse reports that are
-   * pure motion (motion flag 32 set, button bits 3 = none, no wheel flag 64).
-   * Presses, releases and wheel reports stay — they can select or dismiss.
+   * #1680 — replies the TERMINAL writes back to a query the app sent: no key
+   * makes them, and an app redrawing (e.g. after `/clear` or `/new`) may ask.
+   * Each form is anchored on a final byte or prefix no key encoding uses.
+   * xterm.js 6.0.0 (the renderer and the web terminal) answers, in
+   * src/common/InputHandler.ts and src/browser/CoreBrowserTerminal.ts:
+   *   DA1 `CSI ? … c`, DA2 `CSI > … c`, DSR status `CSI 0 n`, DECRQM
+   *   `CSI ? … $ y` / `CSI … $ y`, window reports `CSI 4|6|8 ; … t`, DECRQSS
+   *   `DCS 0|1 $ r … ST`, OSC 4/10/11/12 color reports (ST or BEL), and the
+   *   cursor position reports below. Also covered, from other terminals that
+   *   may sit behind the web or phone input: DA3 `DCS ! | … ST`, XTVERSION
+   *   `DCS > | … ST`, and the kitty keyboard flags reply `CSI ? flags u`.
+   */
+  // eslint-disable-next-line no-control-regex
+  private static readonly TERMINAL_REPLY = new RegExp(
+    [
+      '\\x1b\\[[?>][\\d;]*c', // DA1, DA2
+      '\\x1b\\[0n', // DSR: terminal OK
+      '\\x1b\\[\\??[\\d;]+\\$y', // DECRQM (ANSI and DEC private)
+      '\\x1b\\[[468](?:;\\d+)+t', // window size reports
+      '\\x1b\\[\\?\\d+(?:;\\d+)+R', // DECXCPR
+      '\\x1b\\[\\?\\d+u', // kitty keyboard flags
+      '\\x1bP(?:[01]\\$r|!\\||>\\|)[^\\x1b\\x07]*(?:\\x1b\\\\|\\x07)', // DECRQSS, DA3, XTVERSION
+      '\\x1b\\](?:4;\\d+|1[0-2]);[^\\x1b\\x07]*(?:\\x1b\\\\|\\x07)', // OSC color reports
+    ].join('|'),
+    'g',
+  );
+
+  /**
+   * CPR `CSI row ; col R`. The one reply a key can collide with: xterm.js
+   * sends F3 with modifiers as `CSI 1 ; m R`, m = 1 + (shift 1, alt 2, ctrl 4,
+   * meta 8) — so 2..16 (src/common/input/Keyboard.ts). A CPR for row 1 and a
+   * column 2..16 is therefore left counted as a key: wrongly counting a reply
+   * can only make a fresh-context step skip or fail, wrongly dropping a key
+   * could let a delivery type over someone's input. Every other CPR (row > 1,
+   * or a column past 16) cannot be a key and is dropped.
+   */
+  // eslint-disable-next-line no-control-regex
+  private static readonly CPR = /\x1b\[(\d+);(\d+)R/g;
+
+  /**
+   * Remove only PASSIVE input: focus reports, SGR mouse reports that are pure
+   * motion (motion flag 32 set, button bits 3 = none, no wheel flag 64), and
+   * the terminal's own replies to queries (TERMINAL_REPLY, CPR). Presses,
+   * releases and wheel reports stay — they can select or dismiss.
    */
   private static stripPassiveInput(data: string): string {
     return data
       .replace(DaemonPTYBridge.FOCUS_REPORT, '')
+      .replace(DaemonPTYBridge.TERMINAL_REPLY, '')
+      .replace(DaemonPTYBridge.CPR, (seq, row: string, col: string) =>
+        Number(row) === 1 && Number(col) >= 2 && Number(col) <= 16 ? seq : '')
       .replace(DaemonPTYBridge.SGR_MOUSE, (seq, b: string) => {
         const code = Number(b);
         const pureMotion = (code & 32) !== 0 && (code & 3) === 3 && (code & 64) === 0;
@@ -479,6 +548,8 @@ export class DaemonPTYBridge extends EventEmitter {
         // The first hook after a settle is an autonomous turn; later hooks, and
         // any hook behind an unanswered dialog, belong to the open episode.
         if (!this.awaitingHuman) this.openTurn(true);
+        // The agent's own hook: whatever opened the episode, it is a turn.
+        this.bootEpisode = false;
       }
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
@@ -562,6 +633,12 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.keyInputRevision;
   }
 
+  /** `isInputQuiet` for writes that can act on the screen only: focus and
+   *  pointer-motion reports do not break the quiet (#1680). */
+  isKeyInputQuiet(): boolean {
+    return Date.now() - this.lastKeyInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
+  }
+
   /** Actual submitted input/hook work, excluding terminal redraw activity. */
   getLastTurnStartedAt(): number {
     return this.lastTurnStartedAt;
@@ -578,12 +655,21 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnSoftClosed = false;
     this.turnSeq += 1;
     this.turnOpenedAt = Date.now();
+    this.bootEpisode = this.codexBootWindow;
   }
 
   private closeTurn(soft = false): void {
     if (this.turnOpen) this.turnSoftClosed = soft;
     else if (!soft) this.turnSoftClosed = false;
     this.turnOpen = false;
+    if (!this.turnSoftClosed) this.bootEpisode = false;
+  }
+
+  /** The agent's own running spinner is the latest window title, set within the freshness window. */
+  private titleShowsRunningTurn(): boolean {
+    const agent = this.agentDetector?.getLastAgent() ?? '';
+    const slug = /codex/i.test(agent) ? 'codex' : /claude/i.test(agent) ? 'claude' : '';
+    return !!slug && titleShowsRunningTurn({ title: this.lastTitle, at: this.lastTitleAt }, slug, Date.now());
   }
 
   /**
@@ -678,7 +764,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed, codexBootWindow } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode } = this;
     this.noteAgentStatus('running', true);
     this.codexBootWindow = codexBootWindow;
     // The session start is not turn evidence itself: a duplicate delivery of
@@ -691,6 +777,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnSeq = turnSeq;
     this.turnOpenedAt = turnOpenedAt;
     this.turnSoftClosed = turnSoftClosed;
+    this.bootEpisode = bootEpisode;
     if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
@@ -1224,6 +1311,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.lastInputAt = 0;
     this.inputRevision = 0;
     this.keyInputRevision = 0;
+    this.lastKeyInputAt = 0;
     this.shellCommandRunning = false;
     this.emptyShellPrompt = false;
     this.completedShellCommand = false;
@@ -1235,6 +1323,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.codexBannerTail = '';
     this.turnOpen = false;
     this.turnSoftClosed = false;
+    this.bootEpisode = false;
     this.hookSeen = false;
     this.lastTitle = '';
     this.lastTitleAt = 0;
