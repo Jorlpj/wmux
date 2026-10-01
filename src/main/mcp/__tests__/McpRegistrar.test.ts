@@ -280,7 +280,23 @@ describe('McpRegistrar.register (broker topology selection)', () => {
     const registrar = new McpRegistrar();
     const result = await registrar.registerTarget('tok', 'agy');
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Antigravity CLI config file not found');
+    expect(result.error).toBe('The CLI config file was not found');
+  });
+
+  it('plants a secret-looking fragment in a broken config and asserts it never appears in the returned error', async () => {
+    const agyJson = path.join(tmpHome, '.gemini', 'config', 'mcp_config.json');
+    fs.mkdirSync(path.dirname(agyJson), { recursive: true });
+    const secretFragment = 'sk-secret-token-key-should-never-leak-998877';
+    // Malformed JSON embedding the secret fragment
+    fs.writeFileSync(agyJson, `{\n  "secret": "${secretFragment}",\n  mcpServers: broken`, 'utf8');
+
+    const registrar = new McpRegistrar();
+    const result = await registrar.registerTarget('tok', 'agy');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('The config file could not be updated');
+    expect(result.error).not.toContain(secretFragment);
+    expect(result.error).not.toContain('mcp_config.json');
   });
 });
 

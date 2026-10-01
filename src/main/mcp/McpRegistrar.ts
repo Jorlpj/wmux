@@ -34,6 +34,11 @@ export type McpServerStatus = ServerRegState;
 /** Registration state for a single agent target (Claude / Codex / Gemini / Antigravity). */
 export type McpTargetStatus = TargetRegStatus;
 
+/** Fixed registration error sentences surfaced via McpTargetResult.error. */
+export const MCP_ERROR_CONFIG_NOT_FOUND = 'The CLI config file was not found';
+export const MCP_ERROR_CONFIG_UPDATE_FAILED = 'The config file could not be updated';
+export const MCP_ERROR_UNAVAILABLE = 'Registration is unavailable right now';
+
 /** Per-target registration result returned by register() and registerTarget(). */
 export interface McpTargetResult {
   id: string;
@@ -236,7 +241,7 @@ export class McpRegistrar {
           return opts.targets.map((id) => ({
             id,
             success: false,
-            error: 'Could not determine MCP script path',
+            error: MCP_ERROR_UNAVAILABLE,
           }));
         }
         return results;
@@ -249,7 +254,7 @@ export class McpRegistrar {
             results.push({
               id: tid,
               success: false,
-              error: `Unknown MCP target: ${tid}`,
+              error: MCP_ERROR_CONFIG_NOT_FOUND,
             });
           }
         }
@@ -279,19 +284,19 @@ export class McpRegistrar {
             results.push({
               id: target.id,
               success: false,
-              error: `${target.displayName} config file not found (${result.configPath})`,
+              error: MCP_ERROR_CONFIG_NOT_FOUND,
             });
           } else if (result.skipped === 'malformed') {
             results.push({
               id: target.id,
               success: false,
-              error: `${target.displayName} config file is malformed (${result.configPath})`,
+              error: MCP_ERROR_CONFIG_UPDATE_FAILED,
             });
           } else if (result.foreign.length > 0 && result.wrote.length === 0) {
             results.push({
               id: target.id,
               success: false,
-              error: `${target.displayName} config contains a foreign wmux entry (${result.foreign.join(', ')})`,
+              error: MCP_ERROR_CONFIG_UPDATE_FAILED,
             });
           } else {
             results.push({
@@ -311,7 +316,7 @@ export class McpRegistrar {
           results.push({
             id: target.id,
             success: false,
-            error: err instanceof Error ? err.message : String(err),
+            error: MCP_ERROR_CONFIG_UPDATE_FAILED,
           });
         }
       }
@@ -347,7 +352,7 @@ export class McpRegistrar {
           results.push({
             id: tid,
             success: false,
-            error: err instanceof Error ? err.message : String(err),
+            error: MCP_ERROR_UNAVAILABLE,
           });
         }
       }
@@ -364,7 +369,7 @@ export class McpRegistrar {
     return results.find((r) => r.id === targetId) ?? {
       id: targetId,
       success: false,
-      error: `Registration produced no result for ${targetId}`,
+      error: MCP_ERROR_UNAVAILABLE,
     };
   }
 
