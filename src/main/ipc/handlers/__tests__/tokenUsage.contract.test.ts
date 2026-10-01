@@ -88,6 +88,27 @@ describe('token usage IPC contract', () => {
 
     cleanup();
   });
+
+  it('reconcile handler returns reconcile result and rejects unknown provider', async () => {
+    const mockDeps = {
+      homeDir: '/tmp/nonexistent-test-home',
+      run: async () => '1.2.14',
+    };
+    const cleanup = registerTokenUsageSurfaceHandlers(mockDeps);
+    const map = await handlers();
+    const result = (await map.get(IPC.TOKEN_SURFACE_RECONCILE)!({}, { provider: 'agy' })) as any;
+    expect(result).toHaveProperty('newItems');
+    expect(result).toHaveProperty('removedItems');
+    expect(result).toHaveProperty('driftedItems');
+    expect(result).toHaveProperty('driftedCount');
+    expect(result).toHaveProperty('truncated');
+
+    await expect(
+      map.get(IPC.TOKEN_SURFACE_RECONCILE)!({}, { provider: 'unknown' as any }),
+    ).rejects.toThrow('Unknown provider');
+
+    cleanup();
+  });
 });
 
 describe('surface capabilities (phase-2 spike)', () => {

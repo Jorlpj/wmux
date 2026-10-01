@@ -21,6 +21,7 @@ import type {
   SaveProfileResult,
   SurfaceProfile,
 } from './tokenUsage/profileTypes';
+import type { SurfaceReconcileResult } from '../main/surfaces/reconcile/types';
 import type {
   RemoteInboxItem,
   LanLinkStatus,
@@ -84,6 +85,7 @@ declare global {
         deleteProfile: (id: string) => Promise<boolean>;
         previewProfile: (id: string) => Promise<ProfilePreviewResult>;
         applyProfile: (id: string, options?: ApplyProfileOptions) => Promise<ProfileApplyAggregateResult>;
+        reconcileSurface: (provider: SurfaceProviderId) => Promise<SurfaceReconcileResult>;
       };
       firstRun?: {
         check: () => Promise<FirstRunCheckResult>;

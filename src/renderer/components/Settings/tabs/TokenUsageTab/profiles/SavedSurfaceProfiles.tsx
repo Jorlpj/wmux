@@ -16,7 +16,7 @@ const PROVIDER_NAMES: Record<SurfaceProviderId, string> = {
   agy: 'Agy',
 };
 
-export function SavedSurfaceProfiles() {
+export function SavedSurfaceProfiles({ onApplied }: { onApplied?: () => void } = {}) {
   const [profiles, setProfiles] = useState<SurfaceProfile[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -161,6 +161,9 @@ export function SavedSurfaceProfiles() {
       const res = await window.electronAPI.tokenUsage.applyProfile(applyTarget.id);
       if (reqId === applyReqIdRef.current) {
         setApplyResult(res);
+        if (res.ok) {
+          onApplied?.();
+        }
         await loadProfiles();
       }
     } catch (err) {

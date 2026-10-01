@@ -2,8 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { CustomPanel } from '../CustomPanel';
-import type { ProviderInventory } from '../../../../../../shared/tokenUsage/surfaceTypes';
+import { CustomPanel, type CustomPanelProps, assertProviderMatches, buildPayloadChanges } from '../CustomPanel';
+import type { ProviderInventory, SurfaceProviderId } from '../../../../../../shared/tokenUsage/surfaceTypes';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -179,6 +179,7 @@ describe('CustomPanel UI', () => {
   let readInventoryMock: ReturnType<typeof vi.fn>;
   let previewChangesMock: ReturnType<typeof vi.fn>;
   let applyChangesMock: ReturnType<typeof vi.fn>;
+  let reconcileSurfaceMock: ReturnType<typeof vi.fn>;
   let container: HTMLDivElement;
 
   beforeEach(() => {
@@ -221,11 +222,20 @@ describe('CustomPanel UI', () => {
       };
     });
 
+    reconcileSurfaceMock = vi.fn().mockResolvedValue({
+      newItems: 0,
+      removedItems: 0,
+      driftedItems: [],
+      driftedCount: 0,
+      truncated: false,
+    });
+
     (window as any).electronAPI = {
       tokenUsage: {
         readInventory: readInventoryMock,
         previewChanges: previewChangesMock,
         applyChanges: applyChangesMock,
+        reconcileSurface: reconcileSurfaceMock,
       },
     };
   });
@@ -1014,6 +1024,713 @@ describe('CustomPanel UI', () => {
     // 3. Action bar remains with 1 staged change
     expect(container.querySelector('[data-testid="token-custom-action-bar"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="token-custom-staged-count"]')?.textContent).toContain('1 change');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('filters provider tabs using providers prop but never hides a provider with staged changes', async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel, { providers: ['claude', 'agy'] as SurfaceProviderId[] }));
+    });
+
+    const tabs = container.querySelector('[data-testid="token-custom-provider-tabs"]');
+    expect(tabs?.textContent).toContain('Claude Code');
+    expect(tabs?.textContent).toContain('Antigravity');
+    expect(tabs?.textContent).not.toContain('Codex');
+
+    // Stage a change on claude
+    const skillSwitch = container.querySelector('[data-testid="toggle-skill-my-skill"]') as HTMLButtonElement;
+    await act(async () => {
+      skillSwitch.click();
+    });
+
+    // Now re-render with providers that only include agy (claude has staged changes)
+    await act(async () => {
+      root.render(createElement(CustomPanel, { providers: ['agy'] as SurfaceProviderId[] }));
+    });
+
+    // Claude must NOT be hidden because it has staged changes!
+    expect(tabs?.textContent).toContain('Claude Code');
+    expect(tabs?.textContent).toContain('Antigravity');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('displays reconciliation notice, lists names, stages choices on re-apply, and dismisses', async () => {
+    reconcileSurfaceMock.mockResolvedValue({
+      newItems: 1,
+      removedItems: 1,
+      driftedCount: 1,
+      truncated: false,
+      driftedItems: [
+        {
+          itemId: 'claude:mcp-server::my-server',
+          name: 'my-server',
+          kind: 'mcp-server',
+          wanted: false,
+          actual: true,
+        },
+      ],
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    // Notice should be visible: 1 drift + 1 new + 1 removed = 3 changed
+    const notice = container.querySelector('[data-testid="token-custom-reconcile-notice"]');
+    expect(notice).toBeTruthy();
+    expect(notice?.textContent).toContain('3 items changed outside wmux since you last applied');
+
+    // Name of drifted item is listed
+    const names = container.querySelector('[data-testid="token-custom-reconcile-names"]');
+    expect(names?.textContent).toContain('my-server');
+
+    // Re-apply my choices button is present
+    const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
+    expect(reapplyBtn).toBeTruthy();
+
+    // Click Re-apply my choices
+    await act(async () => {
+      reapplyBtn.click();
+    });
+
+    // my-server row should now be staged (wanted was false, live inventory had enabled: true)
+    const serverRow = container.querySelector('[data-testid="mcp-server-my-server"]');
+    expect(serverRow?.getAttribute('data-staged')).toBe('true');
+    expect(container.querySelector('[data-testid="token-custom-action-bar"]')).toBeTruthy();
+
+    // Dismiss notice
+    const dismissBtn = container.querySelector('[data-testid="token-custom-reconcile-dismiss"]') as HTMLButtonElement;
+    expect(dismissBtn).toBeTruthy();
+    await act(async () => {
+      dismissBtn.click();
+    });
+
+    // Notice is now dismissed
+    expect(container.querySelector('[data-testid="token-custom-reconcile-notice"]')).toBeNull();
+
+    // Refreshing inventory restores the notice if items are still drifted
+    const refreshBtn = container.querySelector('[data-testid="token-custom-refresh"]') as HTMLButtonElement;
+    await act(async () => {
+      refreshBtn.click();
+    });
+
+    expect(container.querySelector('[data-testid="token-custom-reconcile-notice"]')).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('re-apply my choices does not stage protected wmuxRequired items and shows could not be re-applied count', async () => {
+    reconcileSurfaceMock.mockResolvedValue({
+      newItems: 0,
+      removedItems: 0,
+      driftedCount: 1,
+      truncated: false,
+      driftedItems: [
+        {
+          itemId: 'claude:hook::my-hook',
+          name: 'my-hook',
+          kind: 'hook',
+          wanted: false,
+          actual: true,
+        },
+      ],
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    const notice = container.querySelector('[data-testid="token-custom-reconcile-notice"]');
+    expect(notice).toBeTruthy();
+
+    const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
+    await act(async () => {
+      reapplyBtn.click();
+    });
+
+    // Hook row should NOT be staged
+    const hookRow = container.querySelector('[data-testid="hook-my-hook"]');
+    expect(hookRow?.getAttribute('data-staged')).toBeNull();
+    // Action bar should NOT be present (no staging)
+    expect(container.querySelector('[data-testid="token-custom-action-bar"]')).toBeNull();
+
+    // Message shows "1 could not be re-applied"
+    const unappliedNotice = container.querySelector('[data-testid="token-custom-reconcile-unapplied"]');
+    expect(unappliedNotice?.textContent).toContain('1 could not be re-applied');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('re-apply my choices does not stage read-only items and shows could not be re-applied count', async () => {
+    reconcileSurfaceMock.mockResolvedValue({
+      newItems: 0,
+      removedItems: 0,
+      driftedCount: 1,
+      truncated: false,
+      driftedItems: [
+        {
+          itemId: 'claude:builtin-tool::ReadMe',
+          name: 'ReadMe',
+          kind: 'builtin-tool',
+          wanted: false,
+          actual: true,
+        },
+      ],
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
+    await act(async () => {
+      reapplyBtn.click();
+    });
+
+    // ReadMe is toggleable: false, should NOT be staged
+    expect(container.querySelector('[data-testid="token-custom-action-bar"]')).toBeNull();
+    const unappliedNotice = container.querySelector('[data-testid="token-custom-reconcile-unapplied"]');
+    expect(unappliedNotice?.textContent).toContain('1 could not be re-applied');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('re-apply my choices does not stage items missing from inventory and shows could not be re-applied count', async () => {
+    reconcileSurfaceMock.mockResolvedValue({
+      newItems: 0,
+      removedItems: 0,
+      driftedCount: 1,
+      truncated: false,
+      driftedItems: [
+        {
+          itemId: 'claude:skill::missing-skill',
+          name: 'missing-skill',
+          kind: 'skill',
+          wanted: false,
+          actual: true,
+        },
+      ],
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
+    await act(async () => {
+      reapplyBtn.click();
+    });
+
+    expect(container.querySelector('[data-testid="token-custom-action-bar"]')).toBeNull();
+    const unappliedNotice = container.querySelector('[data-testid="token-custom-reconcile-unapplied"]');
+    expect(unappliedNotice?.textContent).toContain('1 could not be re-applied');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('re-apply my choices stages only stageable items and counts unstageable ones', async () => {
+    reconcileSurfaceMock.mockResolvedValue({
+      newItems: 0,
+      removedItems: 0,
+      driftedCount: 2,
+      truncated: false,
+      driftedItems: [
+        {
+          itemId: 'claude:mcp-server::my-server',
+          name: 'my-server',
+          kind: 'mcp-server',
+          wanted: false,
+          actual: true,
+        },
+        {
+          itemId: 'claude:hook::my-hook',
+          name: 'my-hook',
+          kind: 'hook',
+          wanted: false,
+          actual: true,
+        },
+      ],
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
+    await act(async () => {
+      reapplyBtn.click();
+    });
+
+    // my-server is staged
+    const serverRow = container.querySelector('[data-testid="mcp-server-my-server"]');
+    expect(serverRow?.getAttribute('data-staged')).toBe('true');
+
+    // my-hook is NOT staged
+    const hookRow = container.querySelector('[data-testid="hook-my-hook"]');
+    expect(hookRow?.getAttribute('data-staged')).toBeNull();
+
+    // Action bar reflects 1 change
+    expect(container.querySelector('[data-testid="token-custom-staged-count"]')?.textContent).toContain('1 change');
+
+    // Unapplied message shows "1 could not be re-applied"
+    const unappliedNotice = container.querySelector('[data-testid="token-custom-reconcile-unapplied"]');
+    expect(unappliedNotice?.textContent).toContain('1 could not be re-applied');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('switching providers clears reconcile result immediately, ignores late response, and never stages items from another provider', async () => {
+    const claudeDeferred = createDeferred<any>();
+    const codexDeferred = createDeferred<any>();
+
+    reconcileSurfaceMock.mockImplementation((p: string) => {
+      if (p === 'claude') return claudeDeferred.promise;
+      if (p === 'codex') return codexDeferred.promise;
+      return Promise.resolve({ newItems: 0, removedItems: 0, driftedItems: [], driftedCount: 0, truncated: false });
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    // 1. Resolve claude reconcile
+    await act(async () => {
+      claudeDeferred.resolve({
+        newItems: 0,
+        removedItems: 0,
+        driftedCount: 1,
+        truncated: false,
+        driftedItems: [
+          {
+            itemId: 'claude:mcp-server::my-server',
+            name: 'my-server',
+            kind: 'mcp-server',
+            wanted: false,
+            actual: true,
+          },
+        ],
+      });
+    });
+
+    // Notice is visible for claude
+    expect(container.querySelector('[data-testid="token-custom-reconcile-notice"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="token-custom-reconcile-names"]')?.textContent).toContain('my-server');
+
+    // 2. Switch provider to Codex: notice must be cleared IMMEDIATELY
+    const codexTab = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('Codex'));
+    expect(codexTab).toBeTruthy();
+
+    await act(async () => {
+      codexTab!.click();
+    });
+
+    // Notice is cleared immediately upon switching!
+    expect(container.querySelector('[data-testid="token-custom-reconcile-notice"]')).toBeNull();
+
+    // 3. Suppose a late claude reconcile response resolves after switching
+    const lateClaudeDeferred = createDeferred<any>();
+    reconcileSurfaceMock.mockImplementation((p: string) => {
+      if (p === 'claude') return lateClaudeDeferred.promise;
+      if (p === 'codex') return codexDeferred.promise;
+      return Promise.resolve({ newItems: 0, removedItems: 0, driftedItems: [], driftedCount: 0, truncated: false });
+    });
+
+    await act(async () => {
+      lateClaudeDeferred.resolve({
+        newItems: 0,
+        removedItems: 0,
+        driftedCount: 1,
+        truncated: false,
+        driftedItems: [
+          {
+            itemId: 'claude:mcp-server::my-server',
+            name: 'my-server',
+            kind: 'mcp-server',
+            wanted: false,
+            actual: true,
+          },
+        ],
+      });
+    });
+
+    // The late claude response is ignored; reconcile notice remains null
+    expect(container.querySelector('[data-testid="token-custom-reconcile-notice"]')).toBeNull();
+
+    // 4. Now resolve codex reconcile
+    await act(async () => {
+      codexDeferred.resolve({
+        newItems: 0,
+        removedItems: 0,
+        driftedCount: 1,
+        truncated: false,
+        driftedItems: [
+          {
+            itemId: 'codex:mcp-server::codex-server',
+            name: 'codex-server',
+            kind: 'mcp-server',
+            wanted: false,
+            actual: true,
+          },
+        ],
+      });
+    });
+
+    // Notice now appears for codex
+    expect(container.querySelector('[data-testid="token-custom-reconcile-notice"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="token-custom-reconcile-names"]')?.textContent).toContain('codex-server');
+
+    // Click Re-apply my choices on codex tab
+    const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
+    await act(async () => {
+      reapplyBtn.click();
+    });
+
+    // Only codex item is staged; no claude items are staged
+    const codexRow = container.querySelector('[data-testid="mcp-server-codex-server"]');
+    expect(codexRow?.getAttribute('data-staged')).toBe('true');
+    expect(container.querySelector('[data-testid="token-custom-staged-count"]')?.textContent).toContain('1 change');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('truncation: notice shows true count, lists up to 5 names, displays "and N more not shown", and stages all returned entries', async () => {
+    // Build 200 items in inventory
+    const customItems = [];
+    const returnedDrifted = [];
+    for (let i = 0; i < 200; i++) {
+      const id = `claude:mcp-server::server-${i}`;
+      customItems.push({
+        id,
+        provider: 'claude' as const,
+        kind: 'mcp-server' as const,
+        name: `server-${i}`,
+        parent: null,
+        source: 'user' as const,
+        enabled: true,
+        effect: 'removes' as const,
+        toggleable: true,
+        readOnlyReason: null,
+        hookEvent: null,
+        hookCost: null,
+        descriptionChars: null,
+        originPath: '/home/.claude.json',
+        wmuxRequired: false,
+      });
+      returnedDrifted.push({
+        itemId: id,
+        name: `server-${i}`,
+        kind: 'mcp-server' as const,
+        wanted: false,
+        actual: true,
+      });
+    }
+
+    readInventoryMock.mockResolvedValueOnce({
+      provider: 'claude',
+      cliVersion: '1.0.5',
+      versionSupported: true,
+      writable: true,
+      items: customItems,
+      warnings: [],
+      scannedAtMs: Date.now(),
+    });
+
+    reconcileSurfaceMock.mockResolvedValue({
+      newItems: 0,
+      removedItems: 0,
+      driftedCount: 210,
+      truncated: true,
+      driftedItems: returnedDrifted,
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    // 1. Notice shows true total count (210)
+    const notice = container.querySelector('[data-testid="token-custom-reconcile-notice"]');
+    expect(notice).toBeTruthy();
+    expect(notice?.textContent).toContain('210 items changed outside wmux since you last applied');
+
+    // 2. Lists up to 5 names
+    const names = container.querySelector('[data-testid="token-custom-reconcile-names"]');
+    expect(names?.textContent).toContain('server-0, server-1, server-2, server-3, server-4');
+    expect(names?.textContent).not.toContain('server-5');
+
+    // 3. Visible "and N more not shown" when truncated (210 - 200 = 10)
+    const truncatedBadge = container.querySelector('[data-testid="token-custom-reconcile-truncated"]');
+    expect(truncatedBadge).toBeTruthy();
+    expect(truncatedBadge?.textContent).toContain('and 10 more not shown');
+    expect(notice?.textContent).toContain('and 10 more not shown');
+
+    // 4. "Re-apply my choices" stages all 200 returned entries
+    const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
+    await act(async () => {
+      reapplyBtn.click();
+    });
+
+    const stagedCount = container.querySelector('[data-testid="token-custom-staged-count"]');
+    expect(stagedCount?.textContent).toContain('200 changes');
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  describe('buildPayloadChanges & assertProviderMatches', () => {
+    it('assertProviderMatches throws when actualProvider does not match expectedProvider', () => {
+      expect(() => assertProviderMatches('claude:mcp-server::my-server', 'claude', 'codex')).toThrow(
+        'Assertion failed: staged change for claude:mcp-server::my-server has provider "claude", expected "codex"',
+      );
+      expect(() => assertProviderMatches('claude:mcp-server::my-server', 'claude', 'claude')).not.toThrow();
+    });
+
+    it('buildPayloadChanges builds payload only from entries matching requestProvider', () => {
+      const staged = new Map<string, boolean>([
+        ['claude:mcp-server::my-server', false],
+        ['codex:mcp-server::codex-server', true],
+        ['agy:skill::my-skill', false],
+      ]);
+
+      const claudePayload = buildPayloadChanges(staged, 'claude');
+      expect(claudePayload).toEqual([
+        { itemId: 'claude:mcp-server::my-server', enabled: false },
+      ]);
+
+      const codexPayload = buildPayloadChanges(staged, 'codex');
+      expect(codexPayload).toEqual([
+        { itemId: 'codex:mcp-server::codex-server', enabled: true },
+      ]);
+
+      const agyPayload = buildPayloadChanges(staged, 'agy');
+      expect(agyPayload).toEqual([
+        { itemId: 'agy:skill::my-skill', enabled: false },
+      ]);
+    });
+
+    it('buildPayloadChanges uses inventory items provider when available', () => {
+      const inventory: ProviderInventory = {
+        provider: 'claude',
+        cliVersion: '1.0.0',
+        versionSupported: true,
+        writable: true,
+        items: [
+          {
+            id: 'legacy-id-without-prefix',
+            provider: 'claude',
+            kind: 'skill',
+            name: 'skill',
+            parent: null,
+            source: 'user',
+            enabled: true,
+            effect: 'none',
+            toggleable: true,
+            readOnlyReason: null,
+            hookEvent: null,
+            hookCost: null,
+            descriptionChars: null,
+            originPath: null,
+            wmuxRequired: false,
+          },
+        ],
+        warnings: [],
+        scannedAtMs: 0,
+      };
+
+      const staged = new Map<string, boolean>([
+        ['legacy-id-without-prefix', false],
+      ]);
+
+      expect(buildPayloadChanges(staged, 'claude', inventory)).toEqual([
+        { itemId: 'legacy-id-without-prefix', enabled: false },
+      ]);
+      expect(buildPayloadChanges(staged, 'codex', inventory)).toEqual([]);
+    });
+  });
+
+  it('switch A -> B shows loading state without rows/toggles/presets, refuses toggles during loading, and resolves late', async () => {
+    const codexDeferred = createDeferred<ProviderInventory>();
+
+    const claudeWithWmux: ProviderInventory = {
+      ...mockClaudeInventory,
+      items: [
+        ...mockClaudeInventory.items,
+        {
+          id: 'claude:mcp-tool:wmux:read_file',
+          provider: 'claude',
+          kind: 'mcp-tool',
+          name: 'read_file',
+          parent: 'wmux',
+          source: 'wmux',
+          enabled: true,
+          effect: 'none',
+          toggleable: true,
+          readOnlyReason: null,
+          hookEvent: null,
+          hookCost: null,
+          descriptionChars: null,
+          originPath: null,
+          wmuxRequired: true,
+        },
+      ],
+    };
+
+    const codexWithWmux: ProviderInventory = {
+      ...mockCodexInventory,
+      items: [
+        ...mockCodexInventory.items,
+        {
+          id: 'codex:mcp-tool:wmux:read_file',
+          provider: 'codex',
+          kind: 'mcp-tool',
+          name: 'read_file',
+          parent: 'wmux',
+          source: 'wmux',
+          enabled: true,
+          effect: 'none',
+          toggleable: true,
+          readOnlyReason: null,
+          hookEvent: null,
+          hookCost: null,
+          descriptionChars: null,
+          originPath: null,
+          wmuxRequired: true,
+        },
+      ],
+    };
+
+    readInventoryMock.mockImplementation(({ provider }: { provider: string }) => {
+      if (provider === 'claude') {
+        return Promise.resolve(claudeWithWmux);
+      }
+      if (provider === 'codex') {
+        return codexDeferred.promise;
+      }
+      return Promise.resolve({
+        provider,
+        cliVersion: null,
+        versionSupported: false,
+        writable: false,
+        items: [],
+        warnings: [],
+        scannedAtMs: Date.now(),
+      });
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    // 1. Initially provider A (claude) is resolved and rendered
+    expect(container.querySelector('[data-testid="mcp-server-my-server"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="toggle-mcp-server-my-server"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="wmux-preset-core"]')).not.toBeNull();
+
+    // 2. Switch from Claude (A) to Codex (B)
+    const codexTab = container.querySelector('button[role="radio"][aria-checked="false"]') as HTMLButtonElement;
+    expect(codexTab).toBeTruthy();
+    await act(async () => {
+      codexTab.click();
+    });
+
+    // 3. During loading: selected provider (codex) differs from inventory provider (claude)
+    // Loading state is displayed
+    expect(container.textContent).toContain('Loading surface inventory...');
+    // No rows are present (neither claude nor codex)
+    expect(container.querySelector('[data-testid="mcp-server-my-server"]')).toBeNull();
+    expect(container.querySelector('[data-testid="mcp-server-codex-server"]')).toBeNull();
+    // No toggles are present
+    expect(container.querySelectorAll('button[role="switch"]').length).toBe(0);
+    expect(container.querySelector('[data-testid="toggle-mcp-server-my-server"]')).toBeNull();
+    // No preset buttons are present
+    expect(container.querySelector('[data-testid="wmux-preset-core"]')).toBeNull();
+    expect(container.querySelector('[data-testid="wmux-preset-planner"]')).toBeNull();
+    expect(container.querySelector('[data-testid="wmux-preset-reviewer"]')).toBeNull();
+    expect(container.querySelector('[data-testid="wmux-preset-none"]')).toBeNull();
+    expect(container.querySelector('[data-testid="wmux-preset-all-core"]')).toBeNull();
+
+    // Verify action bar / staged changes cannot be created during loading
+    expect(container.querySelector('[data-testid="token-custom-action-bar"]')).toBeNull();
+
+    // 4. Resolve Codex late
+    await act(async () => {
+      codexDeferred.resolve(mockCodexInventory);
+    });
+
+    // 5. Codex inventory resolves and is displayed
+    expect(container.textContent).not.toContain('Loading surface inventory...');
+    expect(container.querySelector('[data-testid="mcp-server-codex-server"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="toggle-mcp-server-codex-server"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="mcp-server-my-server"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('refuses to stage drifted item whose provider differs from selected provider in re-apply choices', async () => {
+    reconcileSurfaceMock.mockResolvedValue({
+      newItems: 0,
+      removedItems: 0,
+      driftedCount: 1,
+      truncated: false,
+      driftedItems: [
+        {
+          itemId: 'codex:mcp-server::other-server',
+          name: 'other-server',
+          current: true,
+          wanted: false,
+        },
+      ],
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+
+    // Notice is shown
+    expect(container.querySelector('[data-testid="token-custom-reconcile-notice"]')).not.toBeNull();
+
+    // Re-apply choices
+    const reapplyBtn = container.querySelector('[data-testid="token-custom-reapply-choices"]') as HTMLButtonElement;
+    await act(async () => {
+      reapplyBtn.click();
+    });
+
+    // Codex item could not be re-applied because active provider is Claude
+    const unapplied = container.querySelector('[data-testid="token-custom-reconcile-unapplied"]');
+    expect(unapplied).not.toBeNull();
+    expect(unapplied?.textContent).toContain('1 could not be re-applied');
+    // Nothing was staged
+    expect(container.querySelector('[data-testid="token-custom-action-bar"]')).toBeNull();
 
     await act(async () => {
       root.unmount();

@@ -39,6 +39,8 @@ export interface ProfileSectionProps {
   t: (key: string, vars?: Record<string, string | number>) => string;
   showCustom?: boolean;
   onToggleCustom?: () => void;
+  surfaceBadgeText?: string;
+  onProfileApplied?: () => void;
 }
 
 export function ProfileSection({
@@ -48,6 +50,8 @@ export function ProfileSection({
   t,
   showCustom = false,
   onToggleCustom,
+  surfaceBadgeText,
+  onProfileApplied,
 }: ProfileSectionProps) {
   const current = matchTokenProfile(bindings);
   const [picked, setPicked] = useState<TokenProfile>(current === 'custom' ? 'minimal' : current);
@@ -61,22 +65,40 @@ export function ProfileSection({
       title={t('settings.tokenProfile')}
       description={t('settings.tokenProfileDesc')}
       action={
-        <Badge
-          data-testid="token-profile-current"
-          role="button"
-          tabIndex={0}
-          aria-expanded={showCustom}
-          className="cursor-pointer"
-          onClick={onToggleCustom}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onToggleCustom?.();
-            }
-          }}
-        >
-          {label(current)}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge
+            data-testid="token-profile-current"
+            role="button"
+            tabIndex={0}
+            aria-expanded={showCustom}
+            className="cursor-pointer"
+            onClick={onToggleCustom}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onToggleCustom?.();
+              }
+            }}
+          >
+            {label(current)}
+          </Badge>
+          <Badge
+            data-testid="token-surface-badge"
+            role="button"
+            tabIndex={0}
+            aria-expanded={showCustom}
+            className="cursor-pointer"
+            onClick={onToggleCustom}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onToggleCustom?.();
+              }
+            }}
+          >
+            {surfaceBadgeText ?? 'Surface: default'}
+          </Badge>
+        </div>
       }
     >
       {!bound ? (
@@ -118,7 +140,7 @@ export function ProfileSection({
           )}
         </>
       )}
-      <SavedSurfaceProfiles />
+      <SavedSurfaceProfiles onApplied={onProfileApplied} />
     </SettingsSection>
   );
 }

@@ -15,6 +15,7 @@ import {
   previewSurfaceChanges,
   type SurfaceChangeOptions,
 } from '../../surfaces/writers';
+import { reconcileSurface, type SurfaceReconcileResult } from '../../surfaces/reconcile';
 
 const PROVIDERS = ['claude', 'codex', 'agy'];
 
@@ -68,9 +69,22 @@ export function registerTokenUsageSurfaceHandlers(
     }),
   );
 
+  ipcMain.removeHandler(IPC.TOKEN_SURFACE_RECONCILE);
+  ipcMain.handle(
+    IPC.TOKEN_SURFACE_RECONCILE,
+    wrapHandler(IPC.TOKEN_SURFACE_RECONCILE, async (_event, request: { provider: any }): Promise<SurfaceReconcileResult> => {
+      assertProvider(request?.provider);
+      return reconcileSurface(request.provider, {
+        inventoryDeps: deps,
+        storePath: writerOptions.deps?.surfacesStorePath,
+      });
+    }),
+  );
+
   return () => {
     ipcMain.removeHandler(IPC.TOKEN_SURFACE_INVENTORY);
     ipcMain.removeHandler(IPC.TOKEN_SURFACE_PREVIEW);
     ipcMain.removeHandler(IPC.TOKEN_SURFACE_APPLY);
+    ipcMain.removeHandler(IPC.TOKEN_SURFACE_RECONCILE);
   };
 }

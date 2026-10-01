@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type {
   ProviderInventory,
   SurfaceApplyResult,
@@ -19,9 +19,12 @@ import { CustomPluginsGroup } from './custom/CustomPluginsGroup';
 import { CustomSkillsGroup } from './custom/CustomSkillsGroup';
 import { CustomWarnings } from './custom/CustomWarnings';
 import { CustomWmuxToolsGroup } from './custom/CustomWmuxToolsGroup';
+import type { SurfaceDriftedItem, SurfaceReconcileResult } from '../../../../../main/surfaces/reconcile/types';
 
 export interface CustomPanelProps {
   t?: (key: string, vars?: Record<string, string | number>) => string;
+  providers?: SurfaceProviderId[];
+  onApplied?: () => void;
 }
 
 function areStagedMapsEqual(a: Map<string, boolean>, b: Map<string, boolean>): boolean {
@@ -32,18 +35,105 @@ function areStagedMapsEqual(a: Map<string, boolean>, b: Map<string, boolean>): b
   return true;
 }
 
-export function CustomPanel({ t }: CustomPanelProps = {}) {
+/**
+ * Asserts that an item's provider matches the expected provider.
+ */
+export function assertProviderMatches(
+  itemId: string,
+  actualProvider: string | null | undefined,
+  expectedProvider: SurfaceProviderId,
+): void {
+  if (actualProvider !== expectedProvider) {
+    throw new Error(
+      `Assertion failed: staged change for ${itemId} has provider "${actualProvider}", expected "${expectedProvider}"`,
+    );
+  }
+}
+
+/**
+ * Builds the list of changes for a preview or apply payload.
+ * Only staged entries whose provider equals requestProvider are included.
+ * Asserts that every change in the payload strictly belongs to requestProvider.
+ */
+export function buildPayloadChanges(
+  stagedChanges: Map<string, boolean> | Iterable<[string, boolean]>,
+  requestProvider: SurfaceProviderId,
+  inventory?: { items?: Array<{ id: string; provider: SurfaceProviderId }> } | null,
+): SurfaceChange[] {
+  const entries = stagedChanges instanceof Map ? stagedChanges.entries() : stagedChanges;
+  const changes: SurfaceChange[] = [];
+
+  for (const [itemId, enabled] of entries) {
+    const item = inventory?.items?.find((i) => i.id === itemId);
+    const itemProvider =
+      item?.provider ?? (itemId.includes(':') ? (itemId.split(':')[0] as SurfaceProviderId) : null);
+
+    if (itemProvider === requestProvider) {
+      changes.push({ itemId, enabled });
+    }
+  }
+
+  // Pure helper assertion: verify every built payload entry equals the request provider
+  for (const change of changes) {
+    const item = inventory?.items?.find((i) => i.id === change.itemId);
+    const itemProvider =
+      item?.provider ?? (change.itemId.includes(':') ? (change.itemId.split(':')[0] as SurfaceProviderId) : null);
+    assertProviderMatches(change.itemId, itemProvider, requestProvider);
+  }
+
+  return changes;
+}
+
+export interface ProviderInventoryState {
+  provider: SurfaceProviderId;
+  inventory: ProviderInventory;
+}
+
+const ALL_SURFACE_PROVIDERS: readonly SurfaceProviderId[] = ['claude', 'codex', 'agy'] as const;
+
+export function CustomPanel(props: CustomPanelProps): ReactElement {
+  const { t, providers: propsProviders, onApplied } = props || {};
   const title = t ? t('settings.tokenProfileCustom') || 'Custom' : 'Custom';
-  const [provider, setProvider] = useState<SurfaceProviderId>('claude');
+  const initialProvider: SurfaceProviderId =
+    propsProviders && propsProviders.length > 0 && !propsProviders.includes('claude')
+      ? propsProviders[0]
+      : 'claude';
+  const [provider, setProvider] = useState<SurfaceProviderId>(initialProvider);
   const [searchQuery, setSearchQuery] = useState('');
   const [onlyChanged, setOnlyChanged] = useState(false);
-  const [inventory, setInventory] = useState<ProviderInventory | null>(null);
+  const [inventoryState, setInventoryState] = useState<ProviderInventoryState | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isInventoryLoaded = inventoryState !== null && inventoryState.provider === provider;
+  const inventory = isInventoryLoaded ? inventoryState.inventory : null;
 
   const [stagedChanges, setStagedChanges] = useState<Map<string, boolean>>(new Map());
   const [rejectedFlags, setRejectedFlags] = useState<Map<string, string>>(new Map());
   const [pendingProvider, setPendingProvider] = useState<SurfaceProviderId | null>(null);
+
+  const [reconcileResult, setReconcileResult] = useState<SurfaceReconcileResult | null>(null);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  const [couldNotReapplyCount, setCouldNotReapplyCount] = useState(0);
+  const reconcileReqIdRef = useRef(0);
+  const latestReconcileReqRef = useRef<{ id: number; provider: SurfaceProviderId }>({
+    id: 0,
+    provider: initialProvider,
+  });
+
+  const baseProviders =
+    propsProviders && propsProviders.length > 0 ? propsProviders : ALL_SURFACE_PROVIDERS;
+  const visibleSet = new Set(baseProviders);
+  if (stagedChanges.size > 0) {
+    visibleSet.add(provider);
+  }
+  const effectiveProviders = ALL_SURFACE_PROVIDERS.filter((p) => visibleSet.has(p));
+
+  useEffect(() => {
+    if (!effectiveProviders.includes(provider) && effectiveProviders.length > 0) {
+      setProvider(effectiveProviders[0]);
+    }
+  }, [effectiveProviders, provider]);
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -99,8 +189,31 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
       ) {
         return;
       }
-      setInventory(res);
+      setInventoryState({ provider: p, inventory: res });
       setError(null);
+      setNoticeDismissed(false);
+      setCouldNotReapplyCount(0);
+
+      if (window.electronAPI?.tokenUsage?.reconcileSurface) {
+        const recId = ++reconcileReqIdRef.current;
+        latestReconcileReqRef.current = { id: recId, provider: p };
+        window.electronAPI.tokenUsage
+          .reconcileSurface(p)
+          .then((recRes) => {
+            if (!isMountedRef.current) return;
+            if (
+              latestReconcileReqRef.current.id !== recId ||
+              latestReconcileReqRef.current.provider !== p ||
+              providerRef.current !== p
+            ) {
+              return;
+            }
+            setReconcileResult(recRes);
+          })
+          .catch(() => {
+            // ignore reconcile error
+          });
+      }
     } catch (err: unknown) {
       if (!isMountedRef.current) return;
       if (
@@ -124,6 +237,10 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
   }, []);
 
   useEffect(() => {
+    setReconcileResult(null);
+    setNoticeDismissed(false);
+    setCouldNotReapplyCount(0);
+    latestReconcileReqRef.current = { id: ++reconcileReqIdRef.current, provider };
     void fetchInventory(provider);
   }, [provider, fetchInventory]);
 
@@ -136,8 +253,9 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
       ) {
         return;
       }
-      const item = inventory?.items.find((i) => i.id === itemId);
-      if (!item || !item.toggleable) return;
+      if (!isInventoryLoaded || !inventory || inventory.provider !== provider) return;
+      const item = inventory.items.find((i) => i.id === itemId);
+      if (!item || !item.toggleable || item.provider !== provider) return;
       const originalEnabled = item.enabled !== false;
       const current = stagedChanges.has(itemId) ? stagedChanges.get(itemId)! : originalEnabled;
       const next = !current;
@@ -151,12 +269,13 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
         return copy;
       });
     },
-    [applying, inventory, provider, stagedChanges],
+    [applying, inventory, isInventoryLoaded, provider, stagedChanges],
   );
 
   const handleBatchToggle = useCallback(
     (updates: Array<{ itemId: string; next: boolean }>) => {
       if (applying) return;
+      if (!isInventoryLoaded || !inventory || inventory.provider !== provider) return;
       setStagedChanges((prev) => {
         const copy = new Map(prev);
         for (const { itemId, next } of updates) {
@@ -166,8 +285,8 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
           ) {
             continue;
           }
-          const item = inventory?.items.find((i) => i.id === itemId);
-          if (!item || !item.toggleable) continue;
+          const item = inventory.items.find((i) => i.id === itemId);
+          if (!item || !item.toggleable || item.provider !== provider) continue;
           const originalEnabled = item.enabled !== false;
           if (next === originalEnabled) {
             copy.delete(itemId);
@@ -178,7 +297,7 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
         return copy;
       });
     },
-    [applying, inventory, provider],
+    [applying, inventory, isInventoryLoaded, provider],
   );
 
   const handleDiscard = useCallback(() => {
@@ -193,6 +312,10 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
       if (stagedChanges.size > 0) {
         setPendingProvider(newProvider);
       } else {
+        setReconcileResult(null);
+        setNoticeDismissed(false);
+        setCouldNotReapplyCount(0);
+        latestReconcileReqRef.current = { id: ++reconcileReqIdRef.current, provider: newProvider };
         setProvider(newProvider);
         setPreviewOpen(false);
         setApplyResult(null);
@@ -205,6 +328,10 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
     if (pendingProvider) {
       setStagedChanges(new Map());
       setRejectedFlags(new Map());
+      setReconcileResult(null);
+      setNoticeDismissed(false);
+      setCouldNotReapplyCount(0);
+      latestReconcileReqRef.current = { id: ++reconcileReqIdRef.current, provider: pendingProvider };
       setProvider(pendingProvider);
       setPendingProvider(null);
       setPreviewOpen(false);
@@ -233,10 +360,7 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
     setConfirmingWmux(false);
     setApplyResult(null);
 
-    const changes: SurfaceChange[] = Array.from(stagedSnapshot.entries()).map(([itemId, enabled]) => ({
-      itemId,
-      enabled,
-    }));
+    const changes: SurfaceChange[] = buildPayloadChanges(stagedSnapshot, requestProvider, inventory);
 
     try {
       const preview = await window.electronAPI.tokenUsage.previewChanges({
@@ -287,7 +411,7 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
         setPreviewLoading(false);
       }
     }
-  }, [applying, provider, stagedChanges]);
+  }, [applying, inventory, provider, stagedChanges]);
 
   const executeApply = useCallback(
     async (allowWmux: boolean) => {
@@ -297,10 +421,7 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
       if (applying) return;
 
       const applyProvider = provider;
-      const changes: SurfaceChange[] = Array.from(stagedChanges.entries()).map(([itemId, enabled]) => ({
-        itemId,
-        enabled,
-      }));
+      const changes: SurfaceChange[] = buildPayloadChanges(stagedChanges, applyProvider, inventory);
       const requestItemIds = changes.map((c) => c.itemId);
 
       setApplying(true);
@@ -343,6 +464,7 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
             });
             setConfirmingWmux(false);
             setApplyResult(result);
+            onApplied?.();
           }
         } else {
           if (!providerChanged) {
@@ -375,12 +497,13 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
         }
       }
     },
-    [applying, fetchInventory, provider, stagedChanges],
+    [applying, fetchInventory, inventory, onApplied, provider, stagedChanges],
   );
 
   const handleApplyClick = useCallback(() => {
-    const stagedItems = Array.from(stagedChanges.keys())
-      .map((id) => inventory?.items.find((i) => i.id === id))
+    const changes = buildPayloadChanges(stagedChanges, provider, inventory);
+    const stagedItems = changes
+      .map((c) => inventory?.items.find((i) => i.id === c.itemId))
       .filter((i): i is SurfaceItem => i !== undefined);
 
     const hasWmux = stagedItems.some((i) => i.wmuxRequired);
@@ -389,7 +512,7 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
       return;
     }
     void executeApply(hasWmux && confirmingWmux);
-  }, [confirmingWmux, executeApply, inventory, stagedChanges]);
+  }, [confirmingWmux, executeApply, inventory, provider, stagedChanges]);
 
   const filteredItems = useMemo(() => {
     if (!inventory) return [];
@@ -449,6 +572,50 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
     [filteredItems],
   );
 
+  const totalReconcileChanged =
+    (reconcileResult?.driftedCount ?? reconcileResult?.driftedItems.length ?? 0) +
+    (reconcileResult?.newItems ?? 0) +
+    (reconcileResult?.removedItems ?? 0);
+
+  const showReconcileNotice = isInventoryLoaded && !noticeDismissed && totalReconcileChanged > 0;
+  const displayedNames = (reconcileResult?.driftedItems.map((d: SurfaceDriftedItem) => d.name) ?? []).slice(0, 5);
+  const truncatedCount =
+    (reconcileResult?.driftedCount ?? 0) - (reconcileResult?.driftedItems.length ?? 0);
+
+  const handleReapplyChoices = useCallback(() => {
+    if (!reconcileResult || reconcileResult.driftedItems.length === 0) return;
+    if (!isInventoryLoaded || !inventory || inventory.provider !== provider) return;
+
+    let unstageableCount = 0;
+    const stageableUpdates: Array<{ id: string; wanted: boolean; originalEnabled: boolean }> = [];
+
+    for (const d of reconcileResult.driftedItems) {
+      const item = inventory.items.find((i) => i.id === d.itemId);
+      if (!item || item.provider !== provider || !item.toggleable || item.wmuxRequired) {
+        unstageableCount++;
+      } else {
+        const originalEnabled = item.enabled !== false;
+        stageableUpdates.push({ id: d.itemId, wanted: d.wanted, originalEnabled });
+      }
+    }
+
+    setCouldNotReapplyCount(unstageableCount);
+
+    if (stageableUpdates.length > 0) {
+      setStagedChanges((prev) => {
+        const copy = new Map(prev);
+        for (const { id, wanted, originalEnabled } of stageableUpdates) {
+          if (wanted === originalEnabled) {
+            copy.delete(id);
+          } else {
+            copy.set(id, wanted);
+          }
+        }
+        return copy;
+      });
+    }
+  }, [inventory, isInventoryLoaded, provider, reconcileResult]);
+
   return (
     <SettingsSection
       id="tokencustom"
@@ -467,7 +634,8 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
         onlyChanged={onlyChanged}
         onOnlyChangedChange={setOnlyChanged}
         onRefresh={() => void fetchInventory(provider)}
-        loading={loading}
+        loading={loading || !isInventoryLoaded}
+        providers={effectiveProviders}
       />
 
       {inventory && (
@@ -486,9 +654,68 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
 
       <SettingNote>Changes take effect on the next CLI session.</SettingNote>
 
-      {inventory && <CustomWarnings warnings={inventory.warnings} />}
+      {showReconcileNotice && (
+        <div
+          className="rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-3 my-2 flex flex-col gap-2"
+          data-testid="token-custom-reconcile-notice"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <span className="text-[13px] font-medium text-[var(--text-main)]">
+                {totalReconcileChanged} {totalReconcileChanged === 1 ? 'item' : 'items'} changed outside wmux since you last applied
+              </span>
+              {displayedNames.length > 0 ? (
+                <span className="text-[11px] text-[var(--text-sub)]" data-testid="token-custom-reconcile-names">
+                  {displayedNames.join(', ')}
+                  {reconcileResult?.truncated && truncatedCount > 0 && (
+                    <span data-testid="token-custom-reconcile-truncated">
+                      {` and ${truncatedCount} more not shown`}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                reconcileResult?.truncated && truncatedCount > 0 && (
+                  <span className="text-[11px] text-[var(--text-sub)]" data-testid="token-custom-reconcile-truncated">
+                    and {truncatedCount} more not shown
+                  </span>
+                )
+              )}
+              {couldNotReapplyCount > 0 && (
+                <span className="text-[11px] text-[var(--danger)]" data-testid="token-custom-reconcile-unapplied">
+                  {couldNotReapplyCount} could not be re-applied
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {reconcileResult && reconcileResult.driftedItems.length > 0 && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleReapplyChoices}
+                  data-testid="token-custom-reapply-choices"
+                >
+                  Re-apply my choices
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setNoticeDismissed(true);
+                  setCouldNotReapplyCount(0);
+                }}
+                data-testid="token-custom-reconcile-dismiss"
+              >
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
-      {loading && !inventory && (
+      {inventory && <CustomWarnings warnings={inventory.warnings ?? []} />}
+
+      {(!isInventoryLoaded || (loading && !inventory)) && !error && (
         <div className="text-[12px] text-[var(--text-sub)] py-4 text-center">
           Loading surface inventory...
         </div>

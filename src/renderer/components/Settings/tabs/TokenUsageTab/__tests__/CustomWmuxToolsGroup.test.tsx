@@ -479,7 +479,7 @@ describe('CustomPanel integration with CustomWmuxToolsGroup', () => {
     readInventoryMock.mockResolvedValue(mockInventory);
     const root = createRoot(container);
     await act(async () => {
-      root.render(createElement(CustomPanel));
+      root.render(createElement(CustomPanel, { providers: ['agy'] }));
     });
 
     // Exactly one row per tool in CustomWmuxToolsGroup

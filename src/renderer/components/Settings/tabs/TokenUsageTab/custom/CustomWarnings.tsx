@@ -5,7 +5,7 @@ interface CustomWarningsProps {
 }
 
 export function CustomWarnings({ warnings }: CustomWarningsProps) {
-  if (warnings.length === 0) return null;
+  if (!warnings || warnings.length === 0) return null;
 
   return (
     <div

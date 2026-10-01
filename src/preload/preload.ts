@@ -24,6 +24,7 @@ import type {
   SaveProfileResult,
   SurfaceProfile,
 } from '../shared/tokenUsage/profileTypes';
+import type { SurfaceReconcileResult } from '../main/surfaces/reconcile';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -1271,6 +1272,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.TOKEN_PROFILES_PREVIEW, { id }) as Promise<ProfilePreviewResult>,
     applyProfile: (id: string) =>
       ipcRenderer.invoke(IPC.TOKEN_PROFILES_APPLY, { id }) as Promise<ProfileApplyAggregateResult>,
+    reconcileSurface: (provider: SurfaceProviderId) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_RECONCILE, { provider }) as Promise<SurfaceReconcileResult>,
   },
   firstRun: {
     check: () => ipcRenderer.invoke(IPC.FIRST_RUN_CHECK) as Promise<FirstRunCheckResult>,
