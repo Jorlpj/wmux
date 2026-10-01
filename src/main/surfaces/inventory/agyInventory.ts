@@ -14,6 +14,7 @@ import {
   makeItem,
   type InventoryDeps,
 } from './types';
+import { resolveEffectiveWmuxServer, wmuxToolItems, type WmuxServerDeclaration } from './wmuxTools';
 
 export async function readAgyInventory(deps: InventoryDeps): Promise<ProviderInventory> {
   const warnings: string[] = [];
@@ -45,6 +46,7 @@ export async function readAgyInventory(deps: InventoryDeps): Promise<ProviderInv
   }
 
   let hasMcpServers = false;
+  const wmuxDeclarations: WmuxServerDeclaration[] = [];
 
   for (const { filePath, isProject } of mcpConfigs) {
     const content = await safeReadFile(filePath, deps, warnings);
@@ -61,21 +63,20 @@ export async function readAgyInventory(deps: InventoryDeps): Promise<ProviderInv
         const source: SurfaceSource = isWmux ? 'wmux' : isProject ? 'project' : 'user';
         const enabled = conf.disabled !== true;
 
-        addItem(
-          makeItem({
-            provider: 'agy',
-            kind: 'mcp-server',
-            name: serverName,
-            source,
-            enabled,
-            effect: 'removes',
-            toggleable: true,
-            originPath: filePath,
-            wmuxRequired: isWmux,
-          }),
-        );
+        const serverItem = makeItem({
+          provider: 'agy',
+          kind: 'mcp-server',
+          name: serverName,
+          source,
+          enabled,
+          effect: 'removes',
+          toggleable: true,
+          originPath: filePath,
+          wmuxRequired: isWmux,
+        });
+        addItem(serverItem);
 
-        if (Array.isArray(conf.disabledTools)) {
+        if (!isWmux && Array.isArray(conf.disabledTools)) {
           for (const tool of conf.disabledTools) {
             if (typeof tool === 'string') {
               addItem(
@@ -95,6 +96,31 @@ export async function readAgyInventory(deps: InventoryDeps): Promise<ProviderInv
             }
           }
         }
+
+        if (isWmux) {
+          const disabledTools = Array.isArray(conf.disabledTools)
+            ? (conf.disabledTools as unknown[]).filter((x): x is string => typeof x === 'string')
+            : [];
+          wmuxDeclarations.push({
+            source: isProject ? 'project' : 'user',
+            serverItem,
+            disabledNames: new Set<string>(disabledTools),
+            originPath: filePath,
+          });
+        }
+      }
+    }
+  }
+
+  const effectiveWmux = resolveEffectiveWmuxServer(wmuxDeclarations);
+  if (effectiveWmux) {
+    if (effectiveWmux.warning) {
+      warnings.push(effectiveWmux.warning);
+    }
+    const toolItems = wmuxToolItems('agy', effectiveWmux.effective.serverItem, effectiveWmux.effective.disabledNames, deps);
+    for (const toolItem of toolItems) {
+      if (!seenItemIds.has(toolItem.id)) {
+        addItem(toolItem);
       }
     }
   }

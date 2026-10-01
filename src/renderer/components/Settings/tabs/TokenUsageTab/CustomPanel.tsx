@@ -18,6 +18,7 @@ import { CustomMcpGroup } from './custom/CustomMcpGroup';
 import { CustomPluginsGroup } from './custom/CustomPluginsGroup';
 import { CustomSkillsGroup } from './custom/CustomSkillsGroup';
 import { CustomWarnings } from './custom/CustomWarnings';
+import { CustomWmuxToolsGroup } from './custom/CustomWmuxToolsGroup';
 
 export interface CustomPanelProps {
   t?: (key: string, vars?: Record<string, string | number>) => string;
@@ -151,6 +152,33 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
       });
     },
     [applying, inventory, provider, stagedChanges],
+  );
+
+  const handleBatchToggle = useCallback(
+    (updates: Array<{ itemId: string; next: boolean }>) => {
+      if (applying) return;
+      setStagedChanges((prev) => {
+        const copy = new Map(prev);
+        for (const { itemId, next } of updates) {
+          if (
+            applyingProviderRef.current === provider &&
+            applyingItemIdsRef.current.has(itemId)
+          ) {
+            continue;
+          }
+          const item = inventory?.items.find((i) => i.id === itemId);
+          if (!item || !item.toggleable) continue;
+          const originalEnabled = item.enabled !== false;
+          if (next === originalEnabled) {
+            copy.delete(itemId);
+          } else {
+            copy.set(itemId, next);
+          }
+        }
+        return copy;
+      });
+    },
+    [applying, inventory, provider],
   );
 
   const handleDiscard = useCallback(() => {
@@ -389,11 +417,19 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
     [inventory],
   );
   const mcpTools = useMemo(
-    () => filteredItems.filter((i) => i.kind === 'mcp-tool'),
+    () => filteredItems.filter((i) => i.kind === 'mcp-tool' && i.parent !== 'wmux'),
     [filteredItems],
   );
   const allMcpTools = useMemo(
-    () => (inventory ? inventory.items.filter((i) => i.kind === 'mcp-tool') : []),
+    () => (inventory ? inventory.items.filter((i) => i.kind === 'mcp-tool' && i.parent !== 'wmux') : []),
+    [inventory],
+  );
+  const wmuxTools = useMemo(
+    () => filteredItems.filter((i) => i.kind === 'mcp-tool' && i.parent === 'wmux'),
+    [filteredItems],
+  );
+  const allWmuxTools = useMemo(
+    () => (inventory ? inventory.items.filter((i) => i.kind === 'mcp-tool' && i.parent === 'wmux') : []),
     [inventory],
   );
   const skills = useMemo(
@@ -481,6 +517,16 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
             stagedChanges={stagedChanges}
             rejectedFlags={rejectedFlags}
           />
+          {allWmuxTools.length > 0 && (
+            <CustomWmuxToolsGroup
+              tools={wmuxTools}
+              allTools={allWmuxTools}
+              onToggle={handleToggle}
+              onBatchToggle={handleBatchToggle}
+              stagedChanges={stagedChanges}
+              rejectedFlags={rejectedFlags}
+            />
+          )}
           <CustomSkillsGroup
             skills={skills}
             onToggle={handleToggle}

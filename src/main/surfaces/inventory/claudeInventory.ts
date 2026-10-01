@@ -15,6 +15,7 @@ import {
   makeItem,
   type InventoryDeps,
 } from './types';
+import { resolveEffectiveWmuxServer, wmuxToolItems, type WmuxServerDeclaration } from './wmuxTools';
 
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -443,6 +444,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
     }
   }
 
+  const wmuxDeclarations: WmuxServerDeclaration[] = [];
   const addMcpServerWithTools = (
     serverName: string,
     source: SurfaceSource,
@@ -454,22 +456,21 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
     const isDenied = deniedMcpServers.has(serverName) || projectDisabledMcpServers.has(serverName) || disabledByConfig;
     const finalSource: SurfaceSource = isWmux ? 'wmux' : source;
 
-    addItem(
-      makeItem({
-        provider: 'claude',
-        kind: 'mcp-server',
-        name: serverName,
-        source: finalSource,
-        enabled: !isDenied,
-        effect: 'removes',
-        toggleable: true,
-        originPath,
-        wmuxRequired: isWmux,
-      }),
-    );
+    const serverItem = makeItem({
+      provider: 'claude',
+      kind: 'mcp-server',
+      name: serverName,
+      source: finalSource,
+      enabled: !isDenied,
+      effect: 'removes',
+      toggleable: true,
+      originPath,
+      wmuxRequired: isWmux,
+    });
+    addItem(serverItem);
 
     const deniedTools = mcpToolDenies.get(serverName);
-    if (deniedTools) {
+    if (!isWmux && deniedTools) {
       for (const tool of deniedTools) {
         addItem(
           makeItem({
@@ -485,6 +486,15 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
           }),
         );
       }
+    }
+
+    if (isWmux) {
+      wmuxDeclarations.push({
+        source: source as 'project' | 'user' | 'plugin',
+        serverItem,
+        disabledNames: deniedTools ?? new Set<string>(),
+        originPath,
+      });
     }
   };
 
@@ -521,6 +531,19 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
         for (const serverName of Object.keys(parsedPMcp.mcpServers)) {
           addMcpServerWithTools(serverName, 'project', projectMcpJsonPath);
         }
+      }
+    }
+  }
+
+  const effectiveWmux = resolveEffectiveWmuxServer(wmuxDeclarations);
+  if (effectiveWmux) {
+    if (effectiveWmux.warning) {
+      warnings.push(effectiveWmux.warning);
+    }
+    const wmuxTools = wmuxToolItems('claude', effectiveWmux.effective.serverItem, effectiveWmux.effective.disabledNames, deps);
+    for (const toolItem of wmuxTools) {
+      if (!seenItemIds.has(toolItem.id)) {
+        addItem(toolItem);
       }
     }
   }
