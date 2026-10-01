@@ -63,6 +63,11 @@ import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
+import { registerComputerRpc } from './pipe/handlers/computer.rpc';
+import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
+import { createComputerService, disposeComputerUse, registerComputerUseIpc } from './computer';
+import { createComputerConsentRequester } from './computer/computerConsent';
+import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { registerUsageRpc } from './pipe/handlers/usage.rpc';
@@ -887,6 +892,25 @@ registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerPerfRpc(rpcRouter);
+// Desktop computer use. Built on first call, so an install that never opts in
+// (Settings › Computer use) never constructs it or spawns a helper. Consent rides
+// the approval queue, which is created further down — hence the late binding.
+let computerService: ComputerService | null = null;
+let computerConsentQueue: ApprovalQueue | null = null;
+registerComputerRpc(
+  rpcRouter,
+  () => {
+    computerService ??= createComputerService({
+      requestConsent: createComputerConsentRequester({ queue: () => computerConsentQueue }),
+    });
+    return computerService;
+  },
+  (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  // The consent prompt names the asking session's workspace the way the
+  // person named it; the renderer's mirror is the only place main knows it.
+  (workspaceId) => getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId)?.name,
+);
+registerComputerUseIpc(() => computerService);
 // #517 backend choice: main owns the setting (sync read at boot — an RPC can
 // arrive before the renderer has pushed anything, so renderer-push authority
 // would race and fail open to builtin).
@@ -1275,6 +1299,7 @@ const approvalQueue = new ApprovalQueue(getPluginTrustStore(), {
   },
 });
 rpcRouter.setApprovalQueue(approvalQueue);
+computerConsentQueue = approvalQueue;
 // Live-Chrome tab borrowing asks through that same queue, so the prompt appears
 // in both of its renditions (the modal and the Fleet approvals inbox) with no new
 // UI. The workspace NAME comes from the renderer's mirror, which is the only
@@ -2437,6 +2462,14 @@ app.on('before-quit', async (e) => {
   // Broker dies with the app: shims exit and hosts mark the server down,
   // same visible behavior as the old per-agent child dying with wmux.
   mcpBrokerSupervisor.stop();
+
+  // Computer use: stop the helper, take down consent prompts, release the
+  // global stop key. Synchronous, before anything below can stall.
+  try {
+    disposeComputerUse(computerService);
+  } catch (err) {
+    console.error('[Main] before-quit computer-use dispose failed:', err);
+  }
 
   // macOS 로그아웃/재시작/종료 대응(P4): win32의 'session-end' flushSync와 동등한
   // 동기 세션 flush. macOS는 WM_ENDSESSION 대신 Apple Event로 quit을 보내고

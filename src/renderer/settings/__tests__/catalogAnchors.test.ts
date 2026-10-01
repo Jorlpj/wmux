@@ -25,6 +25,7 @@ const SOURCES = [
   'McpStatusSection.tsx',
   'tabs/TokenUsageTab/ProfileSection.tsx',
   'tabs/TokenUsageTab.tsx',
+  'ComputerUseSection.tsx',
 ];
 
 function anchoredIds(): Set<string> {
