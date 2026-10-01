@@ -12,6 +12,7 @@ import { SettingNote, SettingRow, SettingsSection } from '../../SettingsLayout';
 import SegmentedControl from '../../../ui/SegmentedControl';
 import Button from '../../../ui/Button';
 import Badge from '../../../ui/Badge';
+import { SavedSurfaceProfiles } from './profiles/SavedSurfaceProfiles';
 
 export function effortOf(b: RoleBinding): string | undefined {
   return b.agent === 'agy' && b.model ? agyEffortOf(b.model) : b.effort;
@@ -117,6 +118,7 @@ export function ProfileSection({
           )}
         </>
       )}
+      <SavedSurfaceProfiles />
     </SettingsSection>
   );
 }

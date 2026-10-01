@@ -11,7 +11,16 @@ import type {
   SurfaceChangeRequest,
   SurfaceInventoryRequest,
   SurfacePreview,
+  SurfaceProviderId,
 } from './tokenUsage/surfaceTypes';
+import type {
+  ApplyProfileOptions,
+  ProfileApplyAggregateResult,
+  ProfilePreviewResult,
+  SaveProfileRequest,
+  SaveProfileResult,
+  SurfaceProfile,
+} from './tokenUsage/profileTypes';
 import type {
   RemoteInboxItem,
   LanLinkStatus,
@@ -67,6 +76,14 @@ declare global {
         readInventory: (request: SurfaceInventoryRequest) => Promise<ProviderInventory>;
         previewChanges: (request: SurfaceChangeRequest) => Promise<SurfacePreview>;
         applyChanges: (request: SurfaceChangeRequest) => Promise<SurfaceApplyResult>;
+        listProfiles: () => Promise<SurfaceProfile[]>;
+        saveProfile: (
+          nameOrRequest: string | SaveProfileRequest,
+          providers?: SurfaceProviderId[],
+        ) => Promise<SaveProfileResult>;
+        deleteProfile: (id: string) => Promise<boolean>;
+        previewProfile: (id: string) => Promise<ProfilePreviewResult>;
+        applyProfile: (id: string, options?: ApplyProfileOptions) => Promise<ProfileApplyAggregateResult>;
       };
       firstRun?: {
         check: () => Promise<FirstRunCheckResult>;
