@@ -28,6 +28,9 @@ import { registerDiffHandlers } from './handlers/diff.handler';
 import { registerWorktreeHandlers } from './handlers/worktree.handler';
 import { registerGithubHandlers } from './handlers/github.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
+import { registerTokenUsageQuotaHandlers } from './handlers/tokenUsageQuota.handler';
+import { registerTokenUsageSurfaceHandlers } from './handlers/tokenUsageSurface.handler';
+import { registerTokenUsageProfilesHandlers } from './handlers/tokenUsageProfiles.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { registerPaneResourcesHandlers } from './handlers/paneResources.handler';
 import { registerChatHandlers } from './handlers/chat.handler';
@@ -181,6 +184,9 @@ export function registerAllHandlers(
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
     : null;
+  const cleanupTokenUsageQuota = registerTokenUsageQuotaHandlers();
+  const cleanupTokenUsageSurface = registerTokenUsageSurfaceHandlers();
+  const cleanupTokenUsageProfiles = registerTokenUsageProfilesHandlers();
   // LanLink PR-3 control plane — daemon-mode only (the enable/NIC state lives in
   // the daemon). Without a DaemonClient there is no control pipe to forward to, so
   // the handlers stay unregistered and the Settings section hides itself.
@@ -492,6 +498,9 @@ export function registerAllHandlers(
     cleanupWorktree();
     cleanupGithub();
     if (cleanupMcp) cleanupMcp();
+    cleanupTokenUsageQuota();
+    cleanupTokenUsageSurface();
+    cleanupTokenUsageProfiles();
     if (cleanupLanLink) cleanupLanLink();
     if (cleanupPaneResources) cleanupPaneResources();
     cleanupWeb();
