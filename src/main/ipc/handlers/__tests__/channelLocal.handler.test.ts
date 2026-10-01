@@ -15,6 +15,25 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const { teardownMock } = vi.hoisted(() => ({
+  teardownMock: vi.fn<(workspaceId?: string, opts?: unknown) => Promise<unknown>>(async () => ({
+    workspaceId: 'ws-target',
+    scheduleDeleted: false,
+    scheduleIds: [],
+    loopCleared: false,
+    workCleared: false,
+    strandedWork: null,
+    autonomyDeleted: false,
+    decisionCleared: false,
+    commanderSessionsCleared: [],
+  })),
+}));
+
+vi.mock('../../../deck/deckWorkspaceTeardown', () => ({
+  teardownWorkspaceDeckState: (workspaceId: string, opts?: unknown) => teardownMock(workspaceId, opts),
+  surfaceStrandedWork: vi.fn(),
+}));
+
 vi.mock('electron', () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const ipcMain = {
@@ -56,6 +75,7 @@ function installHandler(connected = true): void {
 
 beforeEach(() => {
   handlers.clear();
+  teardownMock.mockClear();
 });
 
 afterEach(() => {
@@ -182,5 +202,61 @@ describe('channelLocal.handler — CHANNEL_MUTATE_LOCAL', () => {
     await expect(
       handler(fakeEvent, 'a2a.channel.post', { verifiedWorkspaceId: 'ws-ceo' }),
     ).rejects.toThrow(/[Dd]aemon/);
+  });
+
+  describe('whole-workspace purgeMembership teardown trigger', () => {
+    it('triggers teardown exactly once on whole-workspace purge (both memberId and principalId absent)', async () => {
+      installHandler();
+      const handler = getHandler(IPC.CHANNEL_MUTATE_LOCAL);
+      const res = await handler(fakeEvent, 'a2a.channel.purgeMembership', {
+        verifiedWorkspaceId: 'ws-ceo',
+        workspaceId: 'ws-remove-me',
+      });
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(teardownMock).toHaveBeenCalledTimes(1);
+      expect(teardownMock).toHaveBeenCalledWith('ws-remove-me', expect.objectContaining({
+        onStrandedWork: expect.any(Function),
+      }));
+      expect(res).toMatchObject({ ok: true });
+    });
+
+    it('does not trigger teardown on per-member purge with memberId', async () => {
+      installHandler();
+      const handler = getHandler(IPC.CHANNEL_MUTATE_LOCAL);
+      const res = await handler(fakeEvent, 'a2a.channel.purgeMembership', {
+        verifiedWorkspaceId: 'ws-ceo',
+        workspaceId: 'ws-remove-me',
+        memberId: 'mem-1',
+      });
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(teardownMock).not.toHaveBeenCalled();
+      expect(res).toMatchObject({ ok: true });
+    });
+
+    it('does not trigger teardown on per-member purge with principalId', async () => {
+      installHandler();
+      const handler = getHandler(IPC.CHANNEL_MUTATE_LOCAL);
+      const res = await handler(fakeEvent, 'a2a.channel.purgeMembership', {
+        verifiedWorkspaceId: 'ws-ceo',
+        workspaceId: 'ws-remove-me',
+        principalId: 'prin-1',
+      });
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(teardownMock).not.toHaveBeenCalled();
+      expect(res).toMatchObject({ ok: true });
+    });
+
+    it('returns daemon result even when teardown throws (teardown failure does not change RPC result)', async () => {
+      installHandler();
+      teardownMock.mockRejectedValueOnce(new Error('Teardown store exploded!'));
+      const handler = getHandler(IPC.CHANNEL_MUTATE_LOCAL);
+      const res = await handler(fakeEvent, 'a2a.channel.purgeMembership', {
+        verifiedWorkspaceId: 'ws-ceo',
+        workspaceId: 'ws-remove-me',
+      });
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(teardownMock).toHaveBeenCalledTimes(1);
+      expect(res).toMatchObject({ ok: true });
+    });
   });
 });

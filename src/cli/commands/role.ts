@@ -15,10 +15,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { dataSuffix } from '../../shared/constants';
+import { dataSuffix, getWmuxHomeDir } from '../../shared/constants';
+import { ROLE_TOOL_SURFACES, resolveRoleName, roleMcpArgv } from '../../shared/roleSurfaces';
+import { CORE_TOOL_SURFACE } from '../../shared/coreSurface';
 import {
   applyRoleBinding, bindingEnforcesFreshContext, bindingEnforcesSkipPermissions, normalizeRoleBindings,
-  type RoleBinding,
+  type RoleBinding, type WmuxTools,
 } from '../../shared/orchestratorRole';
 import { tokenize } from '../../shared/agentResume';
 import { agyEffortOf } from '../../shared/modelCatalog';
@@ -53,9 +55,17 @@ export interface ResolvedRole {
   argv: string[];
   /** Flags only (argv without the launcher), for scripts that own the launcher. */
   flags: string[];
+  /** The role's wmux MCP surface. `argv` is opt-in: append it to the launch to
+   *  narrow the agent's wmux tools (see src/shared/roleSurfaces.ts). */
+  mcp?: { level: WmuxTools; tools: string[]; argv: string[] };
 }
 
-export function resolveRole(role: string, binding: RoleBinding): ResolvedRole {
+/** The stdio bundle the CLI configs register (McpRegistrar stabilizes it there). */
+export function defaultMcpEntry(): string {
+  return path.join(getWmuxHomeDir(), 'mcp', 'index.js');
+}
+
+export function resolveRole(role: string, binding: RoleBinding, mcpEntry = defaultMcpEntry()): ResolvedRole {
   const agent = binding.agent;
   const effort = agent === 'agy' ? (binding.model ? agyEffortOf(binding.model) : undefined) : binding.effort;
   const argv = agent
@@ -72,7 +82,26 @@ export function resolveRole(role: string, binding: RoleBinding): ResolvedRole {
     freshContext: bindingEnforcesFreshContext(binding),
     argv,
     flags: argv.slice(1),
+    ...mcpFor(role, agent, binding.tools, mcpEntry),
   };
+}
+
+/** Only when the binding picks a tool level (Settings > Token usage, or by
+ *  hand): an unset level means "leave the CLI's own wmux registration alone". */
+function mcpFor(
+  role: string,
+  agent: string | undefined,
+  tools: WmuxTools | undefined,
+  entry: string,
+): Pick<ResolvedRole, 'mcp'> {
+  if (!agent || !tools) return {};
+  const known = resolveRoleName(role);
+  if (tools === 'role' && known.kind !== 'role') return {};
+  const orchRole = known.kind === 'role' ? known.role : undefined;
+  const argv = orchRole ? roleMcpArgv(agent, orchRole, entry, tools) : roleMcpArgv(agent, 'Planner', entry, tools);
+  if (!argv) return {};
+  const list = tools === 'role' && orchRole ? [...ROLE_TOOL_SURFACES[orchRole]] : tools === 'core' ? [...CORE_TOOL_SURFACE] : ['*'];
+  return { mcp: { level: tools, tools: list, argv } };
 }
 
 export interface RoleDeps {

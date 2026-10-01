@@ -1,0 +1,17 @@
+### Added
+
+- **Fan-out can run tasks on the Antigravity CLI (agy).** agy refuses a positional prompt, so wmux launches it as `agy -i "<prompt>"`, and it lists exactly the task's worktree in agy's own `trustedWorkspaces` before launch so the "Do you trust…" screen never blocks an unattended task. Verified on Windows with agy 1.2.14: a Claude pane called `fanout_start` with `agents:[{agent:'agy'}]`, agy ran the prompt in its own worktree, wrote the file and committed.
+- **agy in Roles & fan-out.** The agent list for a role binding includes agy; its effort is the model id suffix (`gemini-3.8-flash-low|medium|high`).
+- **Builder and Tester presets.** Each row has an "Apply preset" button that writes a ready-made binding for that role (Builder: high effort, Tester: medium, both with skip permissions), keeping the agent and extra args you set. Because the settings live on the role rather than the provider, Builder and Tester can both use agy and still differ.
+- **`--role=<Role>` MCP surface.** A role-bound agent sees only the wmux tools its role uses (Planner 6, Reviewer 5, Builder/Tester none), and `wmux role resolve --json` prints the per-CLI tokens to launch it that way. `RoleBinding.tools` selects `full`, `core` or `role`, and a role-bound pane that wmux launches gets that tool level.
+- **Deck state hygiene.** Orphan Deck state and orphan atomic-write temp files are reconciled at startup; workspace removal tears down all of its Deck state; `wmux deck state --orphans` and `--prune --yes` inspect and clean it.
+- **Agent-friendly scripts.** `npm run test:agent`, `test:changed` and `typecheck:quiet` print short output.
+
+### Changed
+
+- Model discovery lists agy and codex models from their own CLIs (cached), and role bindings take an effort level and a skip-permissions switch per agent grammar.
+
+### Fixed
+
+- The runtime test lane no longer writes into the live `~/.wmux`: vitest runs against an isolated data directory and a test that bypasses the isolation refuses the live one.
+- **Heads-up for agy users:** agy honours no ignore file (`.gitignore`, `.geminiignore`, `.agyignore`, not even with `--sandbox` or `--mode plan`). Fan-out's per-task worktree never contains gitignored trees, which reduces exposure; an explicit absolute path is still readable.
