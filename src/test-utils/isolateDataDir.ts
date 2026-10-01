@@ -11,7 +11,10 @@ if (!process.env.WMUX_TEST_REAL_HOME) {
 // and default WMUX_DATA_SUFFIX to '-vitest'.
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-test-'));
 process.env.HOME = tempDir;
-process.env.USERPROFILE = tempDir;
+// USERPROFILE only exists on Windows. getWmuxHomeDir() prefers USERPROFILE over
+// HOME, so defining it on POSIX would shadow a test's own HOME override (a test
+// that points HOME at its fixture dir would silently read the wrong directory).
+if (process.platform === 'win32') process.env.USERPROFILE = tempDir;
 process.env.WMUX_DATA_SUFFIX ??= '-vitest';
 // Read by assertNotLiveWmuxDataDir: without this marker a vitest run refuses the
 // live data dir even when HOME was never overridden.
