@@ -1,11 +1,20 @@
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
 import Badge from '../../../../ui/Badge';
+import Switch from '../../../../ui/Switch';
 
-interface CustomPluginsGroupProps {
+export interface CustomPluginsGroupProps {
   plugins: SurfaceItem[];
+  onToggle?: (itemId: string) => void;
+  stagedChanges?: Map<string, boolean>;
+  rejectedFlags?: Map<string, string>;
 }
 
-export function CustomPluginsGroup({ plugins }: CustomPluginsGroupProps) {
+export function CustomPluginsGroup({
+  plugins,
+  onToggle,
+  stagedChanges,
+  rejectedFlags,
+}: CustomPluginsGroupProps) {
   if (plugins.length === 0) return null;
 
   return (
@@ -15,25 +24,43 @@ export function CustomPluginsGroup({ plugins }: CustomPluginsGroupProps) {
       </span>
       <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
         {plugins.map((plugin) => {
-          const isEnabled = plugin.enabled !== false;
+          const isStaged = stagedChanges?.has(plugin.id) ?? false;
+          const isEnabled = isStaged
+            ? stagedChanges!.get(plugin.id)!
+            : plugin.enabled !== false;
+          const rejectionReason = rejectedFlags?.get(plugin.id);
 
           return (
             <div
               key={plugin.id}
               className="flex items-center justify-between px-3 py-2 text-[13px]"
               data-testid={`plugin-${plugin.name}`}
+              data-staged={isStaged ? 'true' : undefined}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-[var(--text-main)]">{plugin.name}</span>
                 <Badge tone="neutral">{plugin.source}</Badge>
+                {isStaged && <Badge tone="warning">staged</Badge>}
+                {rejectionReason && (
+                  <Badge tone="danger">{rejectionReason}</Badge>
+                )}
                 {plugin.readOnlyReason && (
                   <span className="text-[11px] text-[var(--text-sub)]">({plugin.readOnlyReason})</span>
                 )}
               </div>
               <div className="flex items-center gap-2">
-                <Badge tone={isEnabled ? 'success' : 'neutral'}>
-                  {isEnabled ? 'Enabled' : 'Disabled'}
-                </Badge>
+                {plugin.toggleable && onToggle ? (
+                  <Switch
+                    checked={isEnabled}
+                    onCheckedChange={() => onToggle(plugin.id)}
+                    aria-label={`Toggle ${plugin.name}`}
+                    data-testid={`toggle-plugin-${plugin.name}`}
+                  />
+                ) : (
+                  <Badge tone={isEnabled ? 'success' : 'neutral'}>
+                    {isEnabled ? 'Enabled' : 'Disabled'}
+                  </Badge>
+                )}
               </div>
             </div>
           );

@@ -1,7 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ProviderInventory, SurfaceProviderId } from '../../../../../shared/tokenUsage/surfaceTypes';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type {
+  ProviderInventory,
+  SurfaceApplyResult,
+  SurfaceChange,
+  SurfaceItem,
+  SurfacePreview,
+  SurfaceProviderId,
+} from '../../../../../shared/tokenUsage/surfaceTypes';
 import { SettingNote, SettingsSection } from '../../SettingsLayout';
 import Badge from '../../../ui/Badge';
+import Button from '../../../ui/Button';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../../../ui/Dialog';
 import { CustomBuiltinsGroup } from './custom/CustomBuiltinsGroup';
 import { CustomControls } from './custom/CustomControls';
 import { CustomHooksGroup } from './custom/CustomHooksGroup';
@@ -14,6 +23,14 @@ export interface CustomPanelProps {
   t?: (key: string, vars?: Record<string, string | number>) => string;
 }
 
+function areStagedMapsEqual(a: Map<string, boolean>, b: Map<string, boolean>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [key, value] of a) {
+    if (b.get(key) !== value) return false;
+  }
+  return true;
+}
+
 export function CustomPanel({ t }: CustomPanelProps = {}) {
   const title = t ? t('settings.tokenProfileCustom') || 'Custom' : 'Custom';
   const [provider, setProvider] = useState<SurfaceProviderId>('claude');
@@ -23,19 +40,85 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [stagedChanges, setStagedChanges] = useState<Map<string, boolean>>(new Map());
+  const [rejectedFlags, setRejectedFlags] = useState<Map<string, string>>(new Map());
+  const [pendingProvider, setPendingProvider] = useState<SurfaceProviderId | null>(null);
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<SurfacePreview | null>(null);
+  const [confirmingWmux, setConfirmingWmux] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyResult, setApplyResult] = useState<SurfaceApplyResult | null>(null);
+
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
+
+  const stagedChangesRef = useRef(stagedChanges);
+  stagedChangesRef.current = stagedChanges;
+
+  const inventoryReqIdRef = useRef(0);
+  const latestInventoryReqRef = useRef<{ id: number; provider: SurfaceProviderId }>({
+    id: 0,
+    provider: 'claude',
+  });
+
+  const previewReqIdRef = useRef(0);
+  const latestPreviewReqRef = useRef<{ id: number; provider: SurfaceProviderId } | null>(null);
+
+  const applyingProviderRef = useRef<SurfaceProviderId | null>(null);
+  const applyingItemIdsRef = useRef<Set<string>>(new Set());
+
   const fetchInventory = useCallback(async (p: SurfaceProviderId) => {
     if (typeof window === 'undefined' || !window.electronAPI?.tokenUsage?.readInventory) {
       return;
     }
-    setLoading(true);
-    setError(null);
+    const reqId = ++inventoryReqIdRef.current;
+    if (p === providerRef.current) {
+      latestInventoryReqRef.current = { id: reqId, provider: p };
+      setLoading(true);
+      setError(null);
+    }
     try {
       const res = await window.electronAPI.tokenUsage.readInventory({ provider: p });
+      if (!isMountedRef.current) return;
+      if (
+        latestInventoryReqRef.current.id !== reqId ||
+        latestInventoryReqRef.current.provider !== p ||
+        providerRef.current !== p
+      ) {
+        return;
+      }
       setInventory(res);
+      setError(null);
     } catch (err: unknown) {
+      if (!isMountedRef.current) return;
+      if (
+        latestInventoryReqRef.current.id !== reqId ||
+        latestInventoryReqRef.current.provider !== p ||
+        providerRef.current !== p
+      ) {
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (
+        isMountedRef.current &&
+        latestInventoryReqRef.current.id === reqId &&
+        latestInventoryReqRef.current.provider === p &&
+        providerRef.current === p
+      ) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -43,10 +126,249 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
     void fetchInventory(provider);
   }, [provider, fetchInventory]);
 
+  const handleToggle = useCallback(
+    (itemId: string) => {
+      if (
+        applying &&
+        applyingProviderRef.current === provider &&
+        applyingItemIdsRef.current.has(itemId)
+      ) {
+        return;
+      }
+      const item = inventory?.items.find((i) => i.id === itemId);
+      if (!item || !item.toggleable) return;
+      const originalEnabled = item.enabled !== false;
+      const current = stagedChanges.has(itemId) ? stagedChanges.get(itemId)! : originalEnabled;
+      const next = !current;
+      setStagedChanges((prev) => {
+        const copy = new Map(prev);
+        if (next === originalEnabled) {
+          copy.delete(itemId);
+        } else {
+          copy.set(itemId, next);
+        }
+        return copy;
+      });
+    },
+    [applying, inventory, provider, stagedChanges],
+  );
+
+  const handleDiscard = useCallback(() => {
+    if (applying) return;
+    setStagedChanges(new Map());
+    setRejectedFlags(new Map());
+  }, [applying]);
+
+  const handleProviderChange = useCallback(
+    (newProvider: SurfaceProviderId) => {
+      if (newProvider === provider) return;
+      if (stagedChanges.size > 0) {
+        setPendingProvider(newProvider);
+      } else {
+        setProvider(newProvider);
+        setPreviewOpen(false);
+        setApplyResult(null);
+      }
+    },
+    [provider, stagedChanges.size],
+  );
+
+  const handleConfirmProviderSwitch = useCallback(() => {
+    if (pendingProvider) {
+      setStagedChanges(new Map());
+      setRejectedFlags(new Map());
+      setProvider(pendingProvider);
+      setPendingProvider(null);
+      setPreviewOpen(false);
+      setApplyResult(null);
+    }
+  }, [pendingProvider]);
+
+  const handleCancelProviderSwitch = useCallback(() => {
+    setPendingProvider(null);
+  }, []);
+
+  const handlePreviewClick = useCallback(async () => {
+    if (typeof window === 'undefined' || !window.electronAPI?.tokenUsage?.previewChanges) {
+      return;
+    }
+    if (applying) return;
+
+    const reqId = ++previewReqIdRef.current;
+    const requestProvider = provider;
+    latestPreviewReqRef.current = { id: reqId, provider: requestProvider };
+    const stagedSnapshot = new Map(stagedChanges);
+
+    setPreviewOpen(true);
+    setPreviewLoading(true);
+    setPreviewError(null);
+    setConfirmingWmux(false);
+    setApplyResult(null);
+
+    const changes: SurfaceChange[] = Array.from(stagedSnapshot.entries()).map(([itemId, enabled]) => ({
+      itemId,
+      enabled,
+    }));
+
+    try {
+      const preview = await window.electronAPI.tokenUsage.previewChanges({
+        provider: requestProvider,
+        changes,
+      });
+
+      if (!isMountedRef.current) return;
+      if (
+        !latestPreviewReqRef.current ||
+        latestPreviewReqRef.current.id !== reqId ||
+        latestPreviewReqRef.current.provider !== providerRef.current ||
+        !areStagedMapsEqual(stagedSnapshot, stagedChangesRef.current)
+      ) {
+        return;
+      }
+
+      setPreviewData(preview);
+      if (preview.rejected && preview.rejected.length > 0) {
+        setStagedChanges((prev) => {
+          const next = new Map(prev);
+          for (const rej of preview.rejected) {
+            next.delete(rej.itemId);
+          }
+          return next;
+        });
+        setRejectedFlags((prev) => {
+          const next = new Map(prev);
+          for (const rej of preview.rejected) {
+            next.set(rej.itemId, rej.reason);
+          }
+          return next;
+        });
+      }
+    } catch (err: unknown) {
+      if (!isMountedRef.current) return;
+      if (
+        !latestPreviewReqRef.current ||
+        latestPreviewReqRef.current.id !== reqId ||
+        latestPreviewReqRef.current.provider !== providerRef.current ||
+        !areStagedMapsEqual(stagedSnapshot, stagedChangesRef.current)
+      ) {
+        return;
+      }
+      setPreviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (isMountedRef.current && latestPreviewReqRef.current?.id === reqId) {
+        setPreviewLoading(false);
+      }
+    }
+  }, [applying, provider, stagedChanges]);
+
+  const executeApply = useCallback(
+    async (allowWmux: boolean) => {
+      if (typeof window === 'undefined' || !window.electronAPI?.tokenUsage?.applyChanges) {
+        return;
+      }
+      if (applying) return;
+
+      const applyProvider = provider;
+      const changes: SurfaceChange[] = Array.from(stagedChanges.entries()).map(([itemId, enabled]) => ({
+        itemId,
+        enabled,
+      }));
+      const requestItemIds = changes.map((c) => c.itemId);
+
+      setApplying(true);
+      applyingProviderRef.current = applyProvider;
+      applyingItemIdsRef.current = new Set(requestItemIds);
+      setPreviewError(null);
+
+      try {
+        const result = await window.electronAPI.tokenUsage.applyChanges({
+          provider: applyProvider,
+          changes,
+          allowWmuxRequired: allowWmux ? true : undefined,
+        });
+
+        if (!isMountedRef.current) return;
+
+        const providerChanged = providerRef.current !== applyProvider;
+
+        if (result.ok) {
+          if (!providerChanged) {
+            const appliedIds =
+              result.appliedItemIds && result.appliedItemIds.length > 0
+                ? result.appliedItemIds
+                : requestItemIds;
+            const appliedSet = new Set(appliedIds);
+
+            setStagedChanges((prev) => {
+              const next = new Map(prev);
+              for (const id of appliedSet) {
+                next.delete(id);
+              }
+              return next;
+            });
+            setRejectedFlags((prev) => {
+              const next = new Map(prev);
+              for (const id of appliedSet) {
+                next.delete(id);
+              }
+              return next;
+            });
+            setConfirmingWmux(false);
+            setApplyResult(result);
+          }
+        } else {
+          if (!providerChanged) {
+            setApplyResult(result);
+          }
+        }
+
+        // always trigger an inventory reload for the provider the request was for (guarded by rule 1)
+        void fetchInventory(applyProvider);
+      } catch (err: unknown) {
+        if (!isMountedRef.current) return;
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const providerChanged = providerRef.current !== applyProvider;
+        if (!providerChanged) {
+          setApplyResult({
+            provider: applyProvider,
+            ok: false,
+            appliedItemIds: [],
+            backups: [],
+            error: errMsg,
+          });
+        }
+        // always trigger an inventory reload for the provider the request was for (guarded by rule 1)
+        void fetchInventory(applyProvider);
+      } finally {
+        if (isMountedRef.current) {
+          setApplying(false);
+          applyingProviderRef.current = null;
+          applyingItemIdsRef.current.clear();
+        }
+      }
+    },
+    [applying, fetchInventory, provider, stagedChanges],
+  );
+
+  const handleApplyClick = useCallback(() => {
+    const stagedItems = Array.from(stagedChanges.keys())
+      .map((id) => inventory?.items.find((i) => i.id === id))
+      .filter((i): i is SurfaceItem => i !== undefined);
+
+    const hasWmux = stagedItems.some((i) => i.wmuxRequired);
+    if (hasWmux && !confirmingWmux) {
+      setConfirmingWmux(true);
+      return;
+    }
+    void executeApply(hasWmux && confirmingWmux);
+  }, [confirmingWmux, executeApply, inventory, stagedChanges]);
+
   const filteredItems = useMemo(() => {
     if (!inventory) return [];
     return inventory.items.filter((item) => {
-      if (onlyChanged && item.enabled !== false) return false;
+      const isStaged = stagedChanges.has(item.id);
+      const effectiveEnabled = isStaged ? stagedChanges.get(item.id)! : item.enabled !== false;
+      if (onlyChanged && effectiveEnabled) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchesName = item.name.toLowerCase().includes(q);
@@ -56,7 +378,7 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
       }
       return true;
     });
-  }, [inventory, onlyChanged, searchQuery]);
+  }, [inventory, onlyChanged, searchQuery, stagedChanges]);
 
   const mcpServers = useMemo(
     () => filteredItems.filter((i) => i.kind === 'mcp-server'),
@@ -69,6 +391,10 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
   const mcpTools = useMemo(
     () => filteredItems.filter((i) => i.kind === 'mcp-tool'),
     [filteredItems],
+  );
+  const allMcpTools = useMemo(
+    () => (inventory ? inventory.items.filter((i) => i.kind === 'mcp-tool') : []),
+    [inventory],
   );
   const skills = useMemo(
     () => filteredItems.filter((i) => i.kind === 'skill'),
@@ -99,7 +425,7 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
 
       <CustomControls
         provider={provider}
-        onProviderChange={setProvider}
+        onProviderChange={handleProviderChange}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onlyChanged={onlyChanged}
@@ -146,12 +472,311 @@ export function CustomPanel({ t }: CustomPanelProps = {}) {
 
       {inventory && (
         <>
-          <CustomMcpGroup servers={mcpServers} tools={mcpTools} allServers={allMcpServers} />
-          <CustomSkillsGroup skills={skills} />
-          <CustomPluginsGroup plugins={plugins} />
-          <CustomHooksGroup hooks={hooks} />
-          <CustomBuiltinsGroup items={builtins} />
+          <CustomMcpGroup
+            servers={mcpServers}
+            tools={mcpTools}
+            allServers={allMcpServers}
+            allTools={allMcpTools}
+            onToggle={handleToggle}
+            stagedChanges={stagedChanges}
+            rejectedFlags={rejectedFlags}
+          />
+          <CustomSkillsGroup
+            skills={skills}
+            onToggle={handleToggle}
+            stagedChanges={stagedChanges}
+            rejectedFlags={rejectedFlags}
+          />
+          <CustomPluginsGroup
+            plugins={plugins}
+            onToggle={handleToggle}
+            stagedChanges={stagedChanges}
+            rejectedFlags={rejectedFlags}
+          />
+          <CustomHooksGroup
+            hooks={hooks}
+            onToggle={handleToggle}
+            stagedChanges={stagedChanges}
+            rejectedFlags={rejectedFlags}
+          />
+          <CustomBuiltinsGroup
+            items={builtins}
+            onToggle={handleToggle}
+            stagedChanges={stagedChanges}
+            rejectedFlags={rejectedFlags}
+          />
         </>
+      )}
+
+      {stagedChanges.size > 0 && (
+        <div
+          className="sticky bottom-0 z-10 flex items-center justify-between p-3 mt-4 rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] shadow-md"
+          data-testid="token-custom-action-bar"
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className="text-[13px] font-medium text-[var(--text-main)]"
+              data-testid="token-custom-staged-count"
+            >
+              {stagedChanges.size} {stagedChanges.size === 1 ? 'change' : 'changes'}
+            </span>
+            <Badge tone="warning">staged</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleDiscard}
+              disabled={applying}
+              data-testid="token-custom-discard"
+            >
+              Discard
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handlePreviewClick}
+              disabled={applying}
+              data-testid="token-custom-preview"
+            >
+              Preview
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {pendingProvider && (
+        <Dialog
+          onClose={handleCancelProviderSwitch}
+          width={440}
+          data-testid="token-custom-discard-dialog"
+        >
+          <DialogHeader
+            title="Discard staged changes?"
+            description="You have unsaved staged changes for the current provider."
+            closeLabel="Close"
+          />
+          <DialogBody>
+            <p className="text-[13px] text-[var(--text-sub)] m-0">
+              Switching providers will discard your {stagedChanges.size} staged{' '}
+              {stagedChanges.size === 1 ? 'change' : 'changes'}. Do you want to discard them or stay?
+            </p>
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              onClick={handleCancelProviderSwitch}
+              data-testid="token-custom-stay-btn"
+            >
+              Stay
+            </Button>
+            <Button
+              variant="dangerTinted"
+              onClick={handleConfirmProviderSwitch}
+              data-testid="token-custom-discard-confirm-btn"
+            >
+              Discard & Switch
+            </Button>
+          </DialogFooter>
+        </Dialog>
+      )}
+
+      {previewOpen && (
+        <Dialog
+          onClose={() => {
+            setPreviewOpen(false);
+            setConfirmingWmux(false);
+            setApplyResult(null);
+          }}
+          width={560}
+          data-testid="token-custom-preview-dialog"
+        >
+          <DialogHeader
+            title="Preview Changes"
+            description="Review changes before applying to CLI configuration."
+            closeLabel="Close"
+          />
+          <DialogBody className="flex flex-col gap-3 max-h-[60vh] overflow-y-auto">
+            {previewLoading && (
+              <div className="text-[12px] text-[var(--text-sub)] py-4 text-center">
+                Loading preview...
+              </div>
+            )}
+
+            {previewError && (
+              <div className="text-[12px] text-[var(--danger)] py-2">
+                Failed to generate preview: {previewError}
+              </div>
+            )}
+
+            {previewData && !applyResult && (
+              <>
+                {previewData.edits.length === 0 && previewData.rejected.length === 0 && (
+                  <div className="text-[12px] text-[var(--text-sub)] py-2">
+                    No file edits to preview.
+                  </div>
+                )}
+
+                {previewData.edits.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
+                      File Edits ({previewData.edits.length})
+                    </span>
+                    <div className="rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-base)] divide-y divide-[var(--border-hairline)] overflow-hidden">
+                      {previewData.edits.map((edit, idx) => (
+                        <div key={idx} className="p-2.5 flex flex-col gap-1 text-[12px]" data-testid={`preview-edit-${idx}`}>
+                          <span className="ui-code text-[11px] text-[var(--text-main)] font-medium">
+                            {edit.path}
+                          </span>
+                          <span className="text-[var(--text-sub)]">
+                            {edit.summary}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {previewData.rejected.length > 0 && (
+                  <div className="flex flex-col gap-2" data-testid="token-custom-preview-rejected">
+                    <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--danger)]">
+                      Rejected Changes ({previewData.rejected.length})
+                    </span>
+                    <div className="rounded-[10px] border border-[var(--danger)] bg-[var(--bg-base)] divide-y divide-[var(--border-hairline)] overflow-hidden">
+                      {previewData.rejected.map((rej, idx) => (
+                        <div key={idx} className="p-2.5 flex flex-col gap-0.5 text-[12px]">
+                          <span className="font-medium text-[var(--danger)]">
+                            {rej.itemId}
+                          </span>
+                          <span className="text-[var(--text-sub)]">
+                            {rej.reason}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <span className="text-[11px] text-[var(--text-sub)]">
+                      Rejected items have been un-staged.
+                    </span>
+                  </div>
+                )}
+
+                {previewData.requiresNewSession && (
+                  <div className="text-[11px] text-[var(--text-sub)]">
+                    Takes effect in the next CLI session.
+                  </div>
+                )}
+
+                {confirmingWmux && (
+                  <div
+                    className="rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-3 text-[12px] flex flex-col gap-1.5"
+                    data-testid="token-custom-wmux-confirm"
+                  >
+                    <span className="font-semibold text-[var(--accent)]">
+                      Warning: wmux required item
+                    </span>
+                    <p className="text-[var(--text-main)] m-0">
+                      wmux needs this item; disabling it can break wmux features in that CLI
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {applyResult && (
+              <div className="flex flex-col gap-3 py-2" data-testid="token-custom-apply-result">
+                {applyResult.ok ? (
+                  <>
+                    <div className="text-[13px] font-medium text-[var(--success)]">
+                      Changes applied successfully.
+                    </div>
+                    {applyResult.backups.length > 0 && (
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-[11px] font-semibold text-[var(--text-sub)] uppercase tracking-wider">
+                          Backups created:
+                        </span>
+                        <ul className="list-disc pl-5 m-0 text-[11px] ui-code text-[var(--text-sub)] space-y-1">
+                          {applyResult.backups.map((b, i) => (
+                            <li key={i}>{b}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div className="text-[12px] text-[var(--text-sub)]">
+                      Takes effect in the next CLI session.
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    <div className="text-[13px] font-medium text-[var(--danger)]">
+                      Failed to apply changes: {applyResult.error}
+                    </div>
+                    <div className="text-[12px] text-[var(--text-sub)]">
+                      Please check the configuration, reload the inventory, and retry.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            {!applyResult ? (
+              <>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    if (confirmingWmux) {
+                      setConfirmingWmux(false);
+                    } else {
+                      setPreviewOpen(false);
+                    }
+                  }}
+                  disabled={applying}
+                  data-testid="token-custom-preview-back"
+                >
+                  {confirmingWmux ? 'Cancel' : 'Back'}
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={handleApplyClick}
+                  disabled={previewLoading || applying || stagedChanges.size === 0}
+                  data-testid="token-custom-apply"
+                >
+                  {applying
+                    ? 'Applying...'
+                    : confirmingWmux
+                    ? 'Confirm & Apply'
+                    : 'Apply'}
+                </Button>
+              </>
+            ) : (
+              <>
+                {!applyResult.ok && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => setApplyResult(null)}
+                    data-testid="token-custom-apply-back"
+                  >
+                    Back
+                  </Button>
+                )}
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    if (applyResult.ok) {
+                      setPreviewOpen(false);
+                      setApplyResult(null);
+                    } else {
+                      handleApplyClick();
+                    }
+                  }}
+                  data-testid={applyResult.ok ? 'token-custom-apply-done' : 'token-custom-apply-retry'}
+                >
+                  {applyResult.ok ? 'Done' : 'Retry'}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </Dialog>
       )}
     </SettingsSection>
   );
