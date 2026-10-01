@@ -9,24 +9,24 @@ import type {
   SurfacePreview,
 } from '../../../shared/tokenUsage/surfaceTypes';
 
+import { readInventory, type InventoryDeps } from '../../surfaces/inventory';
+
 // Skeleton: owned by the inventory work item (read side) and, later, the writers (preview/apply).
 // Replace the bodies; keep the channels and result types.
 
-export function registerTokenUsageSurfaceHandlers(): () => void {
+export function registerTokenUsageSurfaceHandlers(deps?: Partial<InventoryDeps>): () => void {
   ipcMain.removeHandler(IPC.TOKEN_SURFACE_INVENTORY);
   ipcMain.handle(
     IPC.TOKEN_SURFACE_INVENTORY,
     wrapHandler(
       IPC.TOKEN_SURFACE_INVENTORY,
-      async (_event, request: SurfaceInventoryRequest): Promise<ProviderInventory> => ({
-        provider: request.provider,
-        cliVersion: null,
-        versionSupported: false,
-        writable: false,
-        items: [],
-        warnings: ['Inventory is not implemented yet.'],
-        scannedAtMs: Date.now(),
-      }),
+      async (_event, request: SurfaceInventoryRequest): Promise<ProviderInventory> => {
+        const provider = request?.provider;
+        if (provider !== 'claude' && provider !== 'codex' && provider !== 'agy') {
+          throw new Error(`Unknown provider: ${String(provider)}`);
+        }
+        return readInventory(provider, deps);
+      },
     ),
   );
 
