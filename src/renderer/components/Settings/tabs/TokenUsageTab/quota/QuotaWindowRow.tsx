@@ -13,10 +13,10 @@ export function QuotaWindowRow({ window, delta, nowMs }: QuotaWindowRowProps) {
 
   const barColor =
     usedPct != null && usedPct >= 90
-      ? 'bg-[var(--accent-red,#D96C6C)]'
+      ? 'bg-[var(--accent-red)]'
       : usedPct != null && usedPct >= 70
-        ? 'bg-[var(--accent,#E8A33D)]'
-        : 'bg-[var(--text-sub,#A5A29C)]';
+        ? 'bg-[var(--accent)]'
+        : 'bg-[var(--text-sub)]';
 
   const resetsIn = formatResetsIn(window.resetAtMs, nowMs);
   const deltaText = formatDeltaLine(delta);
