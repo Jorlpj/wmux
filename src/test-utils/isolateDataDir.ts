@@ -9,7 +9,10 @@ if (!process.env.WMUX_TEST_REAL_HOME) {
 
 // mkdtempSync a directory under os.tmpdir() ('wmux-test-'), set HOME and USERPROFILE,
 // and default WMUX_DATA_SUFFIX to '-vitest'.
-const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-test-'));
+// realpath: on macOS os.tmpdir() is under /var, a symlink to /private/var. Code that
+// resolves paths (resolveBrowserExportPath) returns the /private form, so a HOME
+// left in the symlinked form would never compare equal to what it computes.
+const tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-test-')));
 process.env.HOME = tempDir;
 // USERPROFILE only exists on Windows. getWmuxHomeDir() prefers USERPROFILE over
 // HOME, so defining it on POSIX would shadow a test's own HOME override (a test
