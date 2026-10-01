@@ -55,3 +55,21 @@ export function formatCapturedAgo(capturedAtMs: number | null, nowMs = Date.now(
   if (mins < 1) return 'captured just now';
   return `captured ${mins}m ago`;
 }
+
+export function formatAvgTokensPerMessage(
+  provider: QuotaProviderId,
+  avgTokens: number | null,
+  sampleSize?: number | null,
+  partial?: boolean,
+): string | null {
+  if (avgTokens !== null) {
+    const lastPart = sampleSize != null && sampleSize > 0 ? ` (last ${sampleSize})` : '';
+    const partialPart = partial ? ' (partial)' : '';
+    return `~${avgTokens} tokens/message${lastPart}${partialPart}`;
+  }
+  if (provider === 'agy') {
+    return 'not available for agy';
+  }
+  return null;
+}
+

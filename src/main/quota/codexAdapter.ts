@@ -1,12 +1,16 @@
 import * as path from 'path';
 import type { ProviderQuota, QuotaWindow } from '../../shared/tokenUsage/quotaTypes';
 import type { CodexAccountStatus } from '../../shared/phoneCodexAccountStatus';
+import { scanCodexTranscripts, type TranscriptScanDeps, type TranscriptScanResult } from './transcripts';
 
 export type CodexStatusReader = (codeHome: string) => Promise<CodexAccountStatus | null>;
 
 export interface CodexAdapterDeps {
   now?: () => number;
   homeDir?: string;
+  sessionsDir?: string;
+  scanTranscripts?: (dir: string, deps?: TranscriptScanDeps) => Promise<TranscriptScanResult>;
+  transcriptScanDeps?: TranscriptScanDeps;
   readCodex?: CodexStatusReader;
 }
 
@@ -28,12 +32,26 @@ export async function readCodexQuota(deps: CodexAdapterDeps = {}): Promise<Provi
   const home = deps.homeDir ?? process.env.USERPROFILE ?? process.env.HOME ?? '';
   const codeHome = path.join(home, '.codex');
 
+  let avgTokensPerMessage: number | null = null;
+  let scanDetails: { sampleSize?: number; partial?: boolean } | undefined;
+  try {
+    const sessionsDir = deps.sessionsDir ?? path.join(codeHome, 'sessions');
+    const scanFn = deps.scanTranscripts ?? scanCodexTranscripts;
+    const scanResult = await scanFn(sessionsDir, deps.transcriptScanDeps);
+    if (scanResult && scanResult.sampleSize > 0 && scanResult.average !== null) {
+      avgTokensPerMessage = Math.round(scanResult.average);
+      scanDetails = { sampleSize: scanResult.sampleSize, partial: scanResult.partial };
+    }
+  } catch {
+    avgTokensPerMessage = null;
+  }
+
   const base: Omit<ProviderQuota, 'status' | 'windows' | 'planLabel' | 'creditsLabel' | 'message'> = {
     provider: 'codex',
     capturedAtMs: null,
     fetchedAtMs: now(),
     contextUsage: null,
-    avgTokensPerMessage: null,
+    avgTokensPerMessage,
   };
 
   if (!deps.readCodex) {
@@ -174,7 +192,7 @@ export async function readCodexQuota(deps: CodexAdapterDeps = {}): Promise<Provi
     };
   }
 
-  return {
+  const result: ProviderQuota = {
     ...base,
     status: 'ok',
     windows,
@@ -183,4 +201,8 @@ export async function readCodexQuota(deps: CodexAdapterDeps = {}): Promise<Provi
     fetchedAtMs: status.fetchedAt || base.fetchedAtMs,
     message: null,
   };
+  if (scanDetails) {
+    Object.assign(result, scanDetails);
+  }
+  return result;
 }

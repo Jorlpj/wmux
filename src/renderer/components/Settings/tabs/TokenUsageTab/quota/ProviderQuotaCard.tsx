@@ -5,7 +5,7 @@ import type {
 } from '../../../../../../shared/tokenUsage/quotaTypes';
 import Button from '../../../../ui/Button';
 import Badge from '../../../../ui/Badge';
-import { formatCapturedAgo, providerDisplayName } from './quotaFormatters';
+import { formatAvgTokensPerMessage, formatCapturedAgo, providerDisplayName } from './quotaFormatters';
 import { QuotaWindowRow } from './QuotaWindowRow';
 
 export interface ProviderQuotaCardProps {
@@ -16,6 +16,9 @@ export interface ProviderQuotaCardProps {
   agySensorStatus?: AgySensorStatus | null;
   onInstallSensor?: () => void;
   installingSensor?: boolean;
+  avgTokensPerMessage?: number | null;
+  sampleSize?: number | null;
+  partial?: boolean;
 }
 
 export function ProviderQuotaCard({
@@ -26,9 +29,29 @@ export function ProviderQuotaCard({
   agySensorStatus,
   onInstallSensor,
   installingSensor = false,
+  avgTokensPerMessage: propsAvgTokens,
+  sampleSize: propsSampleSize,
+  partial: propsPartial,
 }: ProviderQuotaCardProps) {
   const quota = reading?.quota;
   const deltas = reading?.deltas ?? [];
+
+  const quotaAny = quota as Record<string, unknown> | undefined;
+  const avgTokens = propsAvgTokens !== undefined ? propsAvgTokens : (quota?.avgTokensPerMessage ?? null);
+  const sampleSize =
+    propsSampleSize !== undefined
+      ? propsSampleSize
+      : (typeof quotaAny?.sampleSize === 'number'
+          ? quotaAny.sampleSize
+          : typeof quotaAny?.avgTokensSampleSize === 'number'
+            ? quotaAny.avgTokensSampleSize
+            : null);
+  const isPartial =
+    propsPartial !== undefined
+      ? propsPartial
+      : Boolean(quotaAny?.partial ?? quotaAny?.avgTokensPartial);
+
+  const avgTokensText = formatAvgTokensPerMessage(provider, avgTokens, sampleSize, isPartial);
 
   const displayName = providerDisplayName(provider);
   const planLabel = quota?.planLabel;
@@ -107,6 +130,15 @@ export function ProviderQuotaCard({
               </Button>
             </div>
           )}
+        </div>
+      )}
+
+      {!(loading && !reading) && avgTokensText && (
+        <div
+          className="text-[11px] text-[var(--text-sub)] pt-1 border-t border-[var(--border-subtle)]"
+          data-testid={`quota-avg-tokens-${provider}`}
+        >
+          {avgTokensText}
         </div>
       )}
     </div>

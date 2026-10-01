@@ -28,12 +28,17 @@ import {
   type LastCheckStoreData,
 } from './lastCheckStore';
 
+import type { TranscriptScanDeps, TranscriptScanResult } from './transcripts';
+
 export interface QuotaServiceDeps {
   now?: () => number;
   homeDir?: string;
   loadClaudeCred?: (configDir?: string) => Promise<LoadResult>;
   fetchClaude?: (token: string) => Promise<UsageSnapshot>;
   readCodex?: CodexStatusReader;
+  scanClaudeTranscripts?: (dir: string, deps?: TranscriptScanDeps) => Promise<TranscriptScanResult>;
+  scanCodexTranscripts?: (dir: string, deps?: TranscriptScanDeps) => Promise<TranscriptScanResult>;
+  transcriptScanDeps?: TranscriptScanDeps;
   readAgyFile?: (filePath: string) => Promise<string | null>;
   readAgySettings?: (filePath: string) => Promise<string | null>;
   installAgySensorFn?: (
@@ -92,14 +97,19 @@ export class QuotaService {
         if (provider === 'claude') {
           quota = await readClaudeQuota({
             now: this.now,
+            homeDir: this.homeDir,
             loadCredential: this.deps.loadClaudeCred,
             fetchClaude: this.deps.fetchClaude,
+            scanTranscripts: this.deps.scanClaudeTranscripts,
+            transcriptScanDeps: this.deps.transcriptScanDeps,
           });
         } else if (provider === 'codex') {
           quota = await readCodexQuota({
             now: this.now,
             homeDir: this.homeDir,
             readCodex: this.deps.readCodex,
+            scanTranscripts: this.deps.scanCodexTranscripts,
+            transcriptScanDeps: this.deps.transcriptScanDeps,
           });
         } else if (provider === 'agy') {
           quota = await readAgyQuota({
