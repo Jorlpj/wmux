@@ -94,4 +94,6 @@ export interface SurfaceInventoryRequest {
 export interface SurfaceChangeRequest {
   provider: SurfaceProviderId;
   changes: SurfaceChange[];
+  /** Must be true to toggle items wmux itself needs (its MCP server and hooks). */
+  allowWmuxRequired?: boolean;
 }

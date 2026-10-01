@@ -10,22 +10,42 @@ import type {
 } from '../../../shared/tokenUsage/surfaceTypes';
 
 import { readInventory, type InventoryDeps } from '../../surfaces/inventory';
+import {
+  applySurfaceChanges,
+  previewSurfaceChanges,
+  type SurfaceChangeOptions,
+} from '../../surfaces/writers';
 
-// Skeleton: owned by the inventory work item (read side) and, later, the writers (preview/apply).
-// Replace the bodies; keep the channels and result types.
+const PROVIDERS = ['claude', 'codex', 'agy'];
 
-export function registerTokenUsageSurfaceHandlers(deps?: Partial<InventoryDeps>): () => void {
+function assertProvider(provider: unknown): void {
+  if (typeof provider !== 'string' || !PROVIDERS.includes(provider)) {
+    throw new Error(`Unknown provider: ${String(provider)}`);
+  }
+}
+
+function assertChangeRequest(request: SurfaceChangeRequest): void {
+  assertProvider(request?.provider);
+  const valid =
+    Array.isArray(request.changes) &&
+    request.changes.every((c) => typeof c?.itemId === 'string' && typeof c?.enabled === 'boolean');
+  if (!valid) throw new Error('Invalid change request');
+}
+
+export function registerTokenUsageSurfaceHandlers(
+  deps?: Partial<InventoryDeps>,
+  writerOptions: SurfaceChangeOptions = {},
+): () => void {
+  const options: SurfaceChangeOptions = { inventoryDeps: deps, ...writerOptions };
+
   ipcMain.removeHandler(IPC.TOKEN_SURFACE_INVENTORY);
   ipcMain.handle(
     IPC.TOKEN_SURFACE_INVENTORY,
     wrapHandler(
       IPC.TOKEN_SURFACE_INVENTORY,
       async (_event, request: SurfaceInventoryRequest): Promise<ProviderInventory> => {
-        const provider = request?.provider;
-        if (provider !== 'claude' && provider !== 'codex' && provider !== 'agy') {
-          throw new Error(`Unknown provider: ${String(provider)}`);
-        }
-        return readInventory(provider, deps);
+        assertProvider(request?.provider);
+        return readInventory(request.provider, deps);
       },
     ),
   );
@@ -33,30 +53,19 @@ export function registerTokenUsageSurfaceHandlers(deps?: Partial<InventoryDeps>)
   ipcMain.removeHandler(IPC.TOKEN_SURFACE_PREVIEW);
   ipcMain.handle(
     IPC.TOKEN_SURFACE_PREVIEW,
-    wrapHandler(
-      IPC.TOKEN_SURFACE_PREVIEW,
-      async (_event, request: SurfaceChangeRequest): Promise<SurfacePreview> => ({
-        provider: request.provider,
-        edits: [],
-        rejected: request.changes.map((c) => ({ itemId: c.itemId, reason: 'Writing is not implemented yet.' })),
-        requiresNewSession: true,
-      }),
-    ),
+    wrapHandler(IPC.TOKEN_SURFACE_PREVIEW, async (_event, request: SurfaceChangeRequest): Promise<SurfacePreview> => {
+      assertChangeRequest(request);
+      return previewSurfaceChanges(request, options);
+    }),
   );
 
   ipcMain.removeHandler(IPC.TOKEN_SURFACE_APPLY);
   ipcMain.handle(
     IPC.TOKEN_SURFACE_APPLY,
-    wrapHandler(
-      IPC.TOKEN_SURFACE_APPLY,
-      async (_event, request: SurfaceChangeRequest): Promise<SurfaceApplyResult> => ({
-        provider: request.provider,
-        ok: false,
-        appliedItemIds: [],
-        backups: [],
-        error: 'Writing is not implemented yet.',
-      }),
-    ),
+    wrapHandler(IPC.TOKEN_SURFACE_APPLY, async (_event, request: SurfaceChangeRequest): Promise<SurfaceApplyResult> => {
+      assertChangeRequest(request);
+      return applySurfaceChanges(request, options);
+    }),
   );
 
   return () => {
