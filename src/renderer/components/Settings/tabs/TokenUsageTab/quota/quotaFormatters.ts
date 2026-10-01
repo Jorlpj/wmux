@@ -1,4 +1,7 @@
 import type { QuotaProviderId, QuotaWindowDelta } from '../../../../../../shared/tokenUsage/quotaTypes';
+import { t as defaultT } from '../../../../../i18n';
+
+type TranslateFn = (key: string, vars?: Record<string, string | number>) => string;
 
 export function providerDisplayName(provider: QuotaProviderId): string {
   switch (provider) {
@@ -21,39 +24,49 @@ export function formatTime(epochMs: number): string {
   return `${hh}:${mm}`;
 }
 
-export function formatDeltaLine(delta?: QuotaWindowDelta | null): string | null {
+export function formatDeltaLine(delta?: QuotaWindowDelta | null, t: TranslateFn = defaultT as TranslateFn): string | null {
   if (!delta) return null;
-  if (delta.windowReset) return 'window reset';
+  if (delta.windowReset) return t('settings.tokenUsage.windowReset');
   if (delta.deltaPct !== null) {
     const sign = delta.deltaPct > 0 ? '+' : '';
-    const timeStr = delta.previousCheckedAtMs > 0 ? ` since ${formatTime(delta.previousCheckedAtMs)}` : '';
-    return `${sign}${delta.deltaPct}%${timeStr}`;
+    const pct = delta.deltaPct;
+    if (delta.previousCheckedAtMs > 0) {
+      const time = formatTime(delta.previousCheckedAtMs);
+      return t('settings.tokenUsage.deltaSince', { sign, pct, time });
+    }
+    return t('settings.tokenUsage.deltaOnly', { sign, pct });
   }
   return null;
 }
 
-export function formatResetsIn(resetAtMs: number | null, nowMs = Date.now()): string | null {
+export function formatResetsIn(resetAtMs: number | null, nowMs = Date.now(), t: TranslateFn = defaultT as TranslateFn): string | null {
   if (resetAtMs === null || resetAtMs <= 0) return null;
   const diff = resetAtMs - nowMs;
-  if (diff <= 0) return 'resets soon';
+  if (diff <= 0) return t('settings.tokenUsage.resetsSoon');
   const mins = Math.ceil(diff / 60000);
-  if (mins < 60) return `resets in ${mins}m`;
+  if (mins < 60) return t('settings.tokenUsage.resetsInMinutes', { m: mins });
   if (mins < 1440) {
     const h = Math.floor(mins / 60);
     const m = mins % 60;
-    return `resets in ${h}h${m > 0 ? ` ${m}m` : ''}`;
+    if (m > 0) {
+      return t('settings.tokenUsage.resetsInHoursMinutes', { h, m });
+    }
+    return t('settings.tokenUsage.resetsInHours', { h });
   }
   const d = Math.floor(mins / 1440);
   const h = Math.floor((mins % 1440) / 60);
-  return `resets in ${d}d${h > 0 ? ` ${h}h` : ''}`;
+  if (h > 0) {
+    return t('settings.tokenUsage.resetsInDaysHours', { d, h });
+  }
+  return t('settings.tokenUsage.resetsInDays', { d });
 }
 
-export function formatCapturedAgo(capturedAtMs: number | null, nowMs = Date.now()): string | null {
+export function formatCapturedAgo(capturedAtMs: number | null, nowMs = Date.now(), t: TranslateFn = defaultT as TranslateFn): string | null {
   if (capturedAtMs === null || capturedAtMs <= 0) return null;
   const diff = Math.max(0, nowMs - capturedAtMs);
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'captured just now';
-  return `captured ${mins}m ago`;
+  if (mins < 1) return t('settings.tokenUsage.capturedJustNow');
+  return t('settings.tokenUsage.capturedMinutesAgo', { m: mins });
 }
 
 export function formatAvgTokensPerMessage(
@@ -61,14 +74,23 @@ export function formatAvgTokensPerMessage(
   avgTokens: number | null,
   sampleSize?: number | null,
   partial?: boolean,
+  t: TranslateFn = defaultT as TranslateFn,
 ): string | null {
   if (avgTokens !== null) {
-    const lastPart = sampleSize != null && sampleSize > 0 ? ` (last ${sampleSize})` : '';
-    const partialPart = partial ? ' (partial)' : '';
-    return `~${avgTokens} tokens/message${lastPart}${partialPart}`;
+    const hasSample = sampleSize != null && sampleSize > 0;
+    if (hasSample && partial) {
+      return t('settings.tokenUsage.avgTokensSampledPartial', { count: avgTokens, sampleSize: sampleSize! });
+    }
+    if (hasSample) {
+      return t('settings.tokenUsage.avgTokensSampled', { count: avgTokens, sampleSize: sampleSize! });
+    }
+    if (partial) {
+      return t('settings.tokenUsage.avgTokensPartial', { count: avgTokens });
+    }
+    return t('settings.tokenUsage.avgTokens', { count: avgTokens });
   }
   if (provider === 'agy') {
-    return 'not available for agy';
+    return t('settings.tokenUsage.avgTokensNotAvailableAgy');
   }
   return null;
 }

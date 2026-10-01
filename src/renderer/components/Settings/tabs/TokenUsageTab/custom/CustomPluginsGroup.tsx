@@ -1,4 +1,5 @@
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
+import { useT } from '../../../../../hooks/useT';
 import Badge from '../../../../ui/Badge';
 import Switch from '../../../../ui/Switch';
 
@@ -15,12 +16,13 @@ export function CustomPluginsGroup({
   stagedChanges,
   rejectedFlags,
 }: CustomPluginsGroupProps) {
+  const t = useT();
   if (plugins.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2 my-4" data-testid="token-custom-plugins-group">
       <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
-        Plugins ({plugins.length})
+        {t('settings.tokenUsage.pluginsHeader', { count: plugins.length })}
       </span>
       <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
         {plugins.map((plugin) => {
@@ -40,7 +42,7 @@ export function CustomPluginsGroup({
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-[var(--text-main)]">{plugin.name}</span>
                 <Badge tone="neutral">{plugin.source}</Badge>
-                {isStaged && <Badge tone="warning">staged</Badge>}
+                {isStaged && <Badge tone="warning">{t('settings.tokenUsage.staged')}</Badge>}
                 {rejectionReason && (
                   <Badge tone="danger">{rejectionReason}</Badge>
                 )}
@@ -53,12 +55,12 @@ export function CustomPluginsGroup({
                   <Switch
                     checked={isEnabled}
                     onCheckedChange={() => onToggle(plugin.id)}
-                    aria-label={`Toggle ${plugin.name}`}
+                    aria-label={t('settings.tokenUsage.toggleAria', { name: plugin.name })}
                     data-testid={`toggle-plugin-${plugin.name}`}
                   />
                 ) : (
                   <Badge tone={isEnabled ? 'success' : 'neutral'}>
-                    {isEnabled ? 'Enabled' : 'Disabled'}
+                    {isEnabled ? t('settings.tokenUsage.enabled') : t('settings.tokenUsage.disabled')}
                   </Badge>
                 )}
               </div>

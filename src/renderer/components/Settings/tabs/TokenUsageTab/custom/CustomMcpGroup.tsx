@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
+import { useT } from '../../../../../hooks/useT';
 import Badge from '../../../../ui/Badge';
 import Switch from '../../../../ui/Switch';
 
@@ -22,6 +23,7 @@ export function CustomMcpGroup({
   stagedChanges,
   rejectedFlags,
 }: CustomMcpGroupProps) {
+  const t = useT();
   const displayServers = useMemo(() => {
     const list: Array<{ server: SurfaceItem; dimmed: boolean }> = [];
     const seenServerNames = new Set<string>();
@@ -63,7 +65,7 @@ export function CustomMcpGroup({
   return (
     <div className="flex flex-col gap-2 my-4" data-testid="token-custom-mcp-group">
       <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
-        MCP Servers & Tools ({displayServers.length})
+        {t('settings.tokenUsage.mcpServersHeader', { count: displayServers.length })}
       </span>
       <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
         {displayServers.map(({ server, dimmed }) => {
@@ -93,13 +95,13 @@ export function CustomMcpGroup({
                   <Badge tone="neutral">{server.source}</Badge>
                   {stagedToolsCount > 0 && (
                     <span className="text-[11px] text-[var(--text-sub)]">
-                      {stagedToolsCount} staged {stagedToolsCount === 1 ? 'tool' : 'tools'}
+                      {stagedToolsCount === 1 ? t('settings.tokenUsage.stagedToolOne') : t('settings.tokenUsage.stagedToolMany', { count: stagedToolsCount })}
                     </span>
                   )}
                   {isWmux && (
-                    <Badge tone="warning">needed by wmux</Badge>
+                    <Badge tone="warning">{t('settings.tokenUsage.neededByWmux')}</Badge>
                   )}
-                  {isServerStaged && <Badge tone="warning">staged</Badge>}
+                  {isServerStaged && <Badge tone="warning">{t('settings.tokenUsage.staged')}</Badge>}
                   {serverRejection && (
                     <Badge tone="danger">{serverRejection}</Badge>
                   )}
@@ -112,12 +114,12 @@ export function CustomMcpGroup({
                     <Switch
                       checked={isServerEnabled}
                       onCheckedChange={() => onToggle(server.id)}
-                      aria-label={`Toggle ${server.name}`}
+                      aria-label={t('settings.tokenUsage.toggleAria', { name: server.name })}
                       data-testid={`toggle-mcp-server-${server.name}`}
                     />
                   ) : (
                     <Badge tone={isServerEnabled ? 'success' : 'neutral'}>
-                      {isServerEnabled ? 'Enabled' : 'Disabled'}
+                      {isServerEnabled ? t('settings.tokenUsage.enabled') : t('settings.tokenUsage.disabled')}
                     </Badge>
                   )}
                 </div>
@@ -142,7 +144,7 @@ export function CustomMcpGroup({
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-[var(--text-sub)]">↳</span>
                           <span className="ui-code text-[var(--text-main)]">{tool.name}</span>
-                          {isToolStaged && <Badge tone="warning">staged</Badge>}
+                          {isToolStaged && <Badge tone="warning">{t('settings.tokenUsage.staged')}</Badge>}
                           {toolRejection && (
                             <Badge tone="danger">{toolRejection}</Badge>
                           )}
@@ -155,12 +157,12 @@ export function CustomMcpGroup({
                             <Switch
                               checked={toolEnabled}
                               onCheckedChange={() => onToggle(tool.id)}
-                              aria-label={`Toggle ${tool.name}`}
+                              aria-label={t('settings.tokenUsage.toggleAria', { name: tool.name })}
                               data-testid={`toggle-mcp-tool-${tool.name}`}
                             />
                           ) : (
                             <Badge tone={toolEnabled ? 'success' : 'neutral'}>
-                              {toolEnabled ? 'Enabled' : 'Disabled'}
+                              {toolEnabled ? t('settings.tokenUsage.enabled') : t('settings.tokenUsage.disabled')}
                             </Badge>
                           )}
                         </div>

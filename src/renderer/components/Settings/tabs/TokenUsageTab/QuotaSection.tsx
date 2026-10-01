@@ -7,6 +7,7 @@ import {
 } from '../../../../../shared/tokenUsage/quotaTypes';
 import { SettingNote, SettingsSection } from '../../SettingsLayout';
 import Button from '../../../ui/Button';
+import { useT } from '../../../../hooks/useT';
 import { ProviderQuotaCard } from './quota/ProviderQuotaCard';
 
 import type { ReactElement } from 'react';
@@ -18,7 +19,8 @@ export interface QuotaSectionProps {
 }
 
 export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
-  const { t } = props;
+  const defaultT = useT();
+  const t = props.t ?? defaultT;
   const activeList = props.providers ?? props.activeProviders;
   const active = useMemo<QuotaProviderId[]>(() => {
     return activeList !== undefined ? activeList : [...QUOTA_PROVIDERS];
@@ -128,9 +130,7 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
     }
   }, [active.length, handleUpdateAll]);
 
-  const title = t && t('settings.tokenQuota') !== 'settings.tokenQuota'
-    ? t('settings.tokenQuota')
-    : 'Quota per provider';
+  const title = t('settings.tokenUsage.quotaTitle');
 
   return (
     <SettingsSection
@@ -144,7 +144,7 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
           disabled={loadingAll || active.length === 0}
           data-testid="quota-update-all"
         >
-          {loadingAll ? 'Updating...' : 'Update all'}
+          {loadingAll ? t('settings.tokenUsage.updating') : t('settings.tokenUsage.updateAll')}
         </Button>
       }
       data-testid="token-quota-section"
@@ -152,7 +152,7 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
       <div className="flex flex-col gap-3 p-3">
         {active.length === 0 ? (
           <SettingNote data-testid="token-quota-empty">
-            No supported agent is bound to a role
+            {t('settings.tokenUsage.noSupportedAgentBound')}
           </SettingNote>
         ) : (
           active.map((provider) => (

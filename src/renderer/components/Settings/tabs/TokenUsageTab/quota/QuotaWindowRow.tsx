@@ -1,4 +1,5 @@
 import type { QuotaWindow, QuotaWindowDelta } from '../../../../../../shared/tokenUsage/quotaTypes';
+import { useT } from '../../../../../hooks/useT';
 import { formatDeltaLine, formatResetsIn } from './quotaFormatters';
 
 export interface QuotaWindowRowProps {
@@ -8,6 +9,7 @@ export interface QuotaWindowRowProps {
 }
 
 export function QuotaWindowRow({ window, delta, nowMs }: QuotaWindowRowProps) {
+  const t = useT();
   const usedPct = window.usedPct;
   const pctClamped = usedPct != null ? Math.min(100, Math.max(0, usedPct)) : 0;
 
@@ -18,8 +20,8 @@ export function QuotaWindowRow({ window, delta, nowMs }: QuotaWindowRowProps) {
         ? 'bg-[var(--accent)]'
         : 'bg-[var(--text-sub)]';
 
-  const resetsIn = formatResetsIn(window.resetAtMs, nowMs);
-  const deltaText = formatDeltaLine(delta);
+  const resetsIn = formatResetsIn(window.resetAtMs, nowMs, t);
+  const deltaText = formatDeltaLine(delta, t);
 
   return (
     <div className="flex flex-col gap-1 py-1.5" data-testid={`quota-window-${window.id}`}>
@@ -36,7 +38,7 @@ export function QuotaWindowRow({ window, delta, nowMs }: QuotaWindowRowProps) {
         aria-valuenow={usedPct ?? 0}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label={`${window.label} quota utilization`}
+        aria-label={t('settings.tokenUsage.quotaUtilizationAria', { label: window.label })}
       >
         <div
           className={`h-full rounded-full transition-all duration-300 ${barColor}`}
