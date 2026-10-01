@@ -610,6 +610,7 @@ export const IPC = {
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',
   MCP_UNREGISTER: 'mcp:unregister',
+  MCP_REGISTER_TARGET: 'mcp:register-target',
   // Settings -> Token usage: quota (manual refresh only) and the CLI "surface" inventory / toggles.
   TOKEN_QUOTA_READ: 'tokenUsage:quota:read',
   TOKEN_QUOTA_SENSOR_STATUS: 'tokenUsage:quota:sensor-status',
