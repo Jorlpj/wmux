@@ -194,12 +194,12 @@ export function installAgyQuotaSensor(
             error: 'settings.json does not contain a JSON object',
           };
         }
-      } catch (err) {
+      } catch {
         return {
           ok: false,
           action: 'noop',
           settingsPath,
-          error: `Failed to parse settings.json: ${err instanceof Error ? err.message : String(err)}`,
+          error: 'settings.json is not valid JSON; fix or remove it and try again',
         };
       }
     }

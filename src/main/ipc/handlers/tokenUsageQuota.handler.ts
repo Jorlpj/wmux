@@ -1,66 +1,60 @@
 import { ipcMain } from 'electron';
+import * as os from 'os';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import {
-  QUOTA_PROVIDERS,
   type AgySensorInstallResult,
   type AgySensorStatus,
-  type ProviderQuotaReading,
-  type QuotaProviderId,
   type QuotaReadRequest,
   type QuotaReadResult,
 } from '../../../shared/tokenUsage/quotaTypes';
+import { QuotaService } from '../../quota/QuotaService';
+import { createCodexAccountStatusReader } from '../../../daemon/web/codexAccountStatus';
 
-// Skeleton: owned by the quota work item. Replace the bodies; keep the channels and result types.
+let defaultQuotaService: QuotaService | null = null;
 
-function unavailableReading(provider: QuotaProviderId): ProviderQuotaReading {
-  return {
-    quota: {
-      provider,
-      status: 'unavailable',
-      windows: [],
-      planLabel: null,
-      creditsLabel: null,
-      capturedAtMs: null,
-      fetchedAtMs: Date.now(),
-      contextUsage: null,
-      avgTokensPerMessage: null,
-      message: 'Quota reporting is not implemented yet.',
-    },
-    deltas: [],
-  };
+export function getDefaultQuotaService(): QuotaService {
+  if (!defaultQuotaService) {
+    const codexReader = createCodexAccountStatusReader();
+    defaultQuotaService = new QuotaService({
+      homeDir: os.homedir(),
+      readCodex: async (codeHome) => {
+        try {
+          return await codexReader.read(codeHome);
+        } catch {
+          return null;
+        }
+      },
+    });
+  }
+  return defaultQuotaService;
 }
 
-export function registerTokenUsageQuotaHandlers(): () => void {
+export function registerTokenUsageQuotaHandlers(service?: QuotaService): () => void {
+  const svc = service ?? getDefaultQuotaService();
+
   ipcMain.removeHandler(IPC.TOKEN_QUOTA_READ);
   ipcMain.handle(
     IPC.TOKEN_QUOTA_READ,
     wrapHandler(IPC.TOKEN_QUOTA_READ, async (_event, request?: QuotaReadRequest): Promise<QuotaReadResult> => {
-      const wanted = request?.providers?.length ? request.providers : [...QUOTA_PROVIDERS];
-      return { readings: wanted.map(unavailableReading) };
+      return svc.readQuota(request);
     }),
   );
 
   ipcMain.removeHandler(IPC.TOKEN_QUOTA_SENSOR_STATUS);
   ipcMain.handle(
     IPC.TOKEN_QUOTA_SENSOR_STATUS,
-    wrapHandler(IPC.TOKEN_QUOTA_SENSOR_STATUS, async (): Promise<AgySensorStatus> => ({
-      state: 'error',
-      settingsPath: '',
-      hasData: false,
-      message: 'Not implemented yet.',
-    })),
+    wrapHandler(IPC.TOKEN_QUOTA_SENSOR_STATUS, async (): Promise<AgySensorStatus> => {
+      return svc.getAgySensorStatus();
+    }),
   );
 
   ipcMain.removeHandler(IPC.TOKEN_QUOTA_SENSOR_INSTALL);
   ipcMain.handle(
     IPC.TOKEN_QUOTA_SENSOR_INSTALL,
-    wrapHandler(IPC.TOKEN_QUOTA_SENSOR_INSTALL, async (): Promise<AgySensorInstallResult> => ({
-      ok: false,
-      action: 'failed',
-      message: 'Not implemented yet.',
-      status: { state: 'error', settingsPath: '', hasData: false, message: 'Not implemented yet.' },
-    })),
+    wrapHandler(IPC.TOKEN_QUOTA_SENSOR_INSTALL, async (): Promise<AgySensorInstallResult> => {
+      return svc.installAgySensor();
+    }),
   );
 
   return () => {

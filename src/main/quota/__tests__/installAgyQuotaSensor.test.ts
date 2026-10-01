@@ -521,7 +521,25 @@ describe('installAgyQuotaSensor', () => {
 
       expect(outcome.ok).toBe(false);
       expect(outcome.action).toBe('noop');
-      expect(outcome.error).toContain('Failed to parse settings.json');
+      expect(outcome.error).toBe('settings.json is not valid JSON; fix or remove it and try again');
+    });
+
+    it('never echoes secret or file fragments in error message when settings.json is corrupted', () => {
+      const settingsPath = settingsFilePath();
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      const secret = 'super-secret-api-key-xyz-12345';
+      fs.writeFileSync(settingsPath, `{"apiKey": "${secret}", broken json...`, 'utf8');
+
+      const outcome = installAgyQuotaSensor(tmpHome, {
+        sourceScriptPath: mockSinkSource,
+      });
+
+      expect(outcome.ok).toBe(false);
+      expect(outcome.action).toBe('noop');
+      expect(outcome.error).toBe('settings.json is not valid JSON; fix or remove it and try again');
+      expect(outcome.error).not.toContain(secret);
+      expect(outcome.error).not.toContain('super-secret');
+      expect(outcome.error).not.toContain('apiKey');
     });
 
     it('fails and does not write settings.json when quota-sink source script is missing', () => {
