@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { HookCostHint, ProviderInventory, SurfaceItem, SurfaceSource } from '../../../shared/tokenUsage/surfaceTypes';
+import { SurfacesStore } from '../safeWrite';
 import {
   normalizePath,
   parseSkillFrontmatter,
@@ -15,10 +16,41 @@ import {
   type InventoryDeps,
 } from './types';
 
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  const objA = a as Record<string, unknown>;
+  const objB = b as Record<string, unknown>;
+  const keysA = Object.keys(objA);
+  const keysB = Object.keys(objB);
+  if (keysA.length !== keysB.length) return false;
+  for (const k of keysA) {
+    if (!Object.prototype.hasOwnProperty.call(objB, k)) return false;
+    if (!deepEqual(objA[k], objB[k])) return false;
+  }
+  return true;
+}
+
+interface LiveHookInfo {
+  event: string;
+  handler: Record<string, unknown>;
+  groupMeta?: Record<string, unknown>;
+  originPath: string;
+}
+
 export async function readClaudeInventory(deps: InventoryDeps): Promise<ProviderInventory> {
   const warnings: string[] = [];
   const items: SurfaceItem[] = [];
   const seenItemIds = new Set<string>();
+  const liveHooks: LiveHookInfo[] = [];
 
   function addItem(item: SurfaceItem): void {
     const uniqueId = allocateUniqueItemId(seenItemIds, item.id, item.source);
@@ -167,41 +199,225 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
         const hookList: unknown[] = Array.isArray(eventHooks) ? eventHooks : [eventHooks];
         for (const hookDef of hookList) {
           if (!hookDef || typeof hookDef !== 'object') continue;
-          const h = hookDef as Record<string, unknown>;
-          const type = typeof h.type === 'string' ? h.type : 'command';
-          let hookCost: HookCostHint = 'none';
-          if (type === 'prompt' || type === 'agent') {
-            hookCost = 'calls-model';
-          } else if (event === 'Stop' || event === 'SubagentStop') {
-            hookCost = 'extra-turn';
-          } else if (['SessionStart', 'UserPromptSubmit', 'UserPromptExpansion'].includes(event)) {
-            hookCost = 'injects-context';
+          const groupOrHandler = hookDef as Record<string, unknown>;
+          if (Array.isArray(groupOrHandler.hooks)) {
+            const groupMeta: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(groupOrHandler)) {
+              if (k !== 'hooks') groupMeta[k] = v;
+            }
+            for (const item of groupOrHandler.hooks) {
+              if (!item || typeof item !== 'object') continue;
+              const h = item as Record<string, unknown>;
+              liveHooks.push({ event, handler: h, groupMeta, originPath: sp });
+              addLiveHookItem(event, h, sp);
+            }
+          } else {
+            const h = groupOrHandler;
+            liveHooks.push({ event, handler: h, originPath: sp });
+            addLiveHookItem(event, h, sp);
           }
-
-          const cmd = String(h.command ?? h.prompt ?? h.script ?? '');
-          const isWmux = cmd.includes('wmux') || cmd.includes('.wmux');
-          const isManaged = h.managed === true;
-          const hookName = (typeof h.name === 'string' && h.name) || `${event}-${type}`;
-          const source: SurfaceSource = isWmux ? 'wmux' : isManaged ? 'managed' : 'user';
-
-          addItem(
-            makeItem({
-              provider: 'claude',
-              kind: 'hook',
-              name: hookName,
-              source,
-              enabled: !disableAllHooks,
-              effect: 'removes',
-              toggleable: !isManaged,
-              readOnlyReason: isManaged ? 'Managed hooks cannot be toggled' : null,
-              hookEvent: event,
-              hookCost,
-              originPath: sp,
-              wmuxRequired: isWmux,
-            }),
-          );
         }
       }
+    }
+  }
+
+  function addLiveHookItem(event: string, h: Record<string, unknown>, originPath: string): void {
+    const type = typeof h.type === 'string' ? h.type : 'command';
+    let hookCost: HookCostHint = 'none';
+    if (type === 'prompt' || type === 'agent') {
+      hookCost = 'calls-model';
+    } else if (event === 'Stop' || event === 'SubagentStop') {
+      hookCost = 'extra-turn';
+    } else if (['SessionStart', 'UserPromptSubmit', 'UserPromptExpansion'].includes(event)) {
+      hookCost = 'injects-context';
+    }
+
+    const cmd = String(h.command ?? h.prompt ?? h.script ?? '');
+    const isWmux = cmd.includes('wmux') || cmd.includes('.wmux');
+    const isManaged = h.managed === true;
+    const hookName = (typeof h.name === 'string' && h.name) || `${event}-${type}`;
+    const isProject = deps.projectDir ? normalizePath(originPath).startsWith(normalizePath(deps.projectDir)) : false;
+    const source: SurfaceSource = isWmux ? 'wmux' : isManaged ? 'managed' : isProject ? 'project' : 'user';
+
+    addItem(
+      makeItem({
+        provider: 'claude',
+        kind: 'hook',
+        name: hookName,
+        source,
+        enabled: !disableAllHooks,
+        effect: 'removes',
+        toggleable: !isManaged,
+        readOnlyReason: isManaged ? 'Managed hooks cannot be toggled' : null,
+        hookEvent: event,
+        hookCost,
+        originPath,
+        wmuxRequired: isWmux,
+      }),
+    );
+  }
+
+  // 1b. Load removed hooks from surfaces.json store read-only
+  const storePath = deps.surfacesStorePath ?? path.join(deps.homeDir, '.wmux', 'surfaces.json');
+  const store = new SurfacesStore(storePath);
+  try {
+    store.load();
+  } catch {
+    warnings.push('The surfaces store file is corrupt and could not be read.');
+  }
+
+  for (const w of store.warnings) {
+    let msg: string;
+    if (w.startsWith('Corrupt surfaces store')) {
+      msg = 'The surfaces store file is corrupt and could not be read.';
+    } else if (w.startsWith('Unknown or unsupported surfaces store version')) {
+      msg = 'The surfaces store has an unsupported or newer version.';
+    } else {
+      msg = 'The surfaces store could not be read.';
+    }
+    if (!warnings.includes(msg)) {
+      warnings.push(msg);
+    }
+  }
+
+  const liveItemsCount = items.length;
+  try {
+    const rawHooksStore = (store as unknown as { removedHooksStore?: Record<string, unknown> }).removedHooksStore;
+    const rawClaude = rawHooksStore?.claude;
+    if (rawClaude !== undefined && !Array.isArray(rawClaude)) {
+      throw new Error('removedHooks.claude is not an array');
+    }
+
+    const removedHooks = store.removedHooks.list('claude');
+    let hasInvalidEntries = false;
+
+    for (const rawEntry of removedHooks) {
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+        hasInvalidEntries = true;
+        continue;
+      }
+
+      const entry = rawEntry as unknown as Record<string, unknown>;
+
+      if (typeof entry.id !== 'string' || entry.id.trim() === '') {
+        hasInvalidEntries = true;
+        continue;
+      }
+
+      if (entry.originPath !== undefined && entry.originPath !== null && typeof entry.originPath !== 'string') {
+        hasInvalidEntries = true;
+        continue;
+      }
+
+      if (!entry.definition || typeof entry.definition !== 'object' || Array.isArray(entry.definition)) {
+        hasInvalidEntries = true;
+        continue;
+      }
+
+      if (seenItemIds.has(entry.id) || items.some((i) => i.id === entry.id)) {
+        continue;
+      }
+
+      const def = entry.definition as Record<string, unknown>;
+      let cleanHandler: Record<string, unknown>;
+      if (def.handler && typeof def.handler === 'object' && !Array.isArray(def.handler)) {
+        cleanHandler = def.handler as Record<string, unknown>;
+      } else {
+        const fallback: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(def)) {
+          if (k !== 'event' && k !== 'groupMeta') {
+            fallback[k] = v;
+          }
+        }
+        cleanHandler = fallback;
+      }
+
+      const event = typeof def.event === 'string' ? def.event : 'PreToolUse';
+      const groupMeta = def.groupMeta && typeof def.groupMeta === 'object' && !Array.isArray(def.groupMeta)
+        ? (def.groupMeta as Record<string, unknown>)
+        : undefined;
+
+      const originPathStr = typeof entry.originPath === 'string' && entry.originPath.trim().length > 0
+        ? entry.originPath
+        : null;
+
+      const alreadyPresentInFile = liveHooks.some((live) => {
+        if (live.event !== event) return false;
+        if (originPathStr && normalizePath(live.originPath) !== normalizePath(originPathStr)) {
+          return false;
+        }
+        if (!deepEqual(live.handler, cleanHandler)) return false;
+        if (groupMeta !== undefined) {
+          if (!live.groupMeta || !deepEqual(live.groupMeta, groupMeta)) return false;
+        } else {
+          if (live.groupMeta !== undefined) return false;
+        }
+        return true;
+      });
+
+      if (alreadyPresentInFile) {
+        continue;
+      }
+
+      const type = typeof cleanHandler.type === 'string' ? cleanHandler.type : 'command';
+      let hookCost: HookCostHint = 'none';
+      if (type === 'prompt' || type === 'agent') {
+        hookCost = 'calls-model';
+      } else if (event === 'Stop' || event === 'SubagentStop') {
+        hookCost = 'extra-turn';
+      } else if (['SessionStart', 'UserPromptSubmit', 'UserPromptExpansion'].includes(event)) {
+        hookCost = 'injects-context';
+      }
+
+      const cmd = String(cleanHandler.command ?? cleanHandler.prompt ?? cleanHandler.script ?? '');
+      const isWmux = cmd.includes('wmux') || cmd.includes('.wmux');
+      const isManaged = cleanHandler.managed === true;
+      const hookName = (typeof cleanHandler.name === 'string' && cleanHandler.name) || `${event}-${type}`;
+      const isProject = deps.projectDir && originPathStr
+        ? normalizePath(originPathStr).startsWith(normalizePath(deps.projectDir))
+        : false;
+      const source: SurfaceSource = isWmux ? 'wmux' : isManaged ? 'managed' : isProject ? 'project' : 'user';
+
+      const toggleable = versionSupported && !isManaged;
+      const readOnlyReason = isManaged
+        ? 'Managed hooks cannot be toggled'
+        : (!versionSupported ? 'CLI version not supported (read-only)' : null);
+
+      seenItemIds.add(entry.id);
+      items.push({
+        id: entry.id,
+        provider: 'claude',
+        kind: 'hook',
+        name: hookName,
+        parent: null,
+        source,
+        enabled: false,
+        effect: 'removes',
+        toggleable,
+        readOnlyReason,
+        hookEvent: event,
+        hookCost,
+        descriptionChars: null,
+        originPath: originPathStr,
+        wmuxRequired: isWmux,
+      });
+    }
+
+    if (hasInvalidEntries) {
+      const msg = 'One or more removed hooks in the surfaces store are invalid and were skipped.';
+      if (!warnings.includes(msg)) {
+        warnings.push(msg);
+      }
+    }
+  } catch {
+    items.length = liveItemsCount;
+    seenItemIds.clear();
+    for (const it of items) {
+      seenItemIds.add(it.id);
+    }
+    const msg = 'The surfaces store could not be read.';
+    if (!warnings.includes(msg)) {
+      warnings.push(msg);
     }
   }
 
