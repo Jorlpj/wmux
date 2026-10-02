@@ -7,8 +7,8 @@ import {
   parseComputerErrorMessage,
 } from '../errors';
 import { computeScreenshotScale, scaledSize, screenshotPointToWindow } from '../scale';
-import { COMPUTER_ACTIONS, isControlAction, parseHelperLine } from '../protocol';
-import { blockReasonFor } from '../blocklist';
+import { COMPUTER_ACTIONS, isControlAction, isKey, normalizeKey, normalizeModifier, parseHelperLine, parseHotkey } from '../protocol';
+import { blockReasonFor, osChordRefusal, osPointerModifierRefusal } from '../blocklist';
 
 describe('computer errors', () => {
   it('gives every code at least one next step', () => {
@@ -78,7 +78,7 @@ describe('helper protocol', () => {
   it('parses a hello line', () => {
     const line = JSON.stringify({
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       os: 'win32',
       helperVersion: '0.1.0',
       capabilities: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } },
@@ -140,5 +140,111 @@ describe('blocklist', () => {
   it('allows ordinary apps', () => {
     expect(blockReasonFor(app('C:\\Windows\\System32\\notepad.exe'))).toBeNull();
     expect(blockReasonFor(app('/System/Applications/TextEdit.app', 'com.apple.TextEdit'))).toBeNull();
+  });
+});
+
+describe('key vocabulary', () => {
+  it('normalizes case and aliases to the canonical spelling', () => {
+    expect(normalizeKey('enter')).toBe('Enter');
+    expect(normalizeKey('Return')).toBe('Enter');
+    expect(normalizeKey('esc')).toBe('Escape');
+    expect(normalizeKey('PGDN')).toBe('PageDown');
+    expect(normalizeKey('f12')).toBe('F12');
+    expect(normalizeKey('A')).toBe('a');
+    expect(normalizeKey('7')).toBe('7');
+    expect(normalizeKey(' ')).toBe('Space');
+  });
+
+  it('refuses names outside the vocabulary', () => {
+    for (const bad of ['F13', 'PrintScreen', 'é', 'ab', '', 'ctrl', '/', 'Insert']) {
+      expect(normalizeKey(bad)).toBeNull();
+    }
+    // Prototype names never resolve through the alias tables.
+    for (const proto of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      expect(normalizeKey(proto), proto).toBeNull();
+      expect(normalizeModifier(proto), proto).toBeNull();
+    }
+    expect(isKey('Enter')).toBe(true);
+    expect(isKey('enter')).toBe(false);
+  });
+
+  it('maps OS modifier names onto the four wire modifiers', () => {
+    expect(normalizeModifier('Cmd')).toBe('meta');
+    expect(normalizeModifier('win')).toBe('meta');
+    expect(normalizeModifier('option')).toBe('alt');
+    expect(normalizeModifier('Control')).toBe('ctrl');
+    expect(normalizeModifier('hyper')).toBeNull();
+  });
+
+  it('parses a hotkey into ordered modifiers and exactly one key', () => {
+    expect(parseHotkey(['S', 'shift', 'cmd'])).toEqual({ modifiers: ['shift', 'meta'], key: 's' });
+    expect(parseHotkey(['ctrl', 'ctrl', 'Tab'])).toEqual({ modifiers: ['ctrl'], key: 'Tab' });
+    expect(parseHotkey(['ctrl', 'shift'])).toHaveProperty('error');
+    expect(parseHotkey(['a', 'b'])).toHaveProperty('error');
+    expect(parseHotkey(['ctrl', 'PrintScreen'])).toHaveProperty('error');
+    expect(parseHotkey(['ctrl', 3])).toHaveProperty('error');
+  });
+});
+
+describe('blocklist additions', () => {
+  const app = (path: string, bundleId?: string) => ({ pid: 99, path, ...(bundleId && { bundleId }) });
+
+  it('blocks system settings, script runners and process managers on both OSes', () => {
+    for (const exe of ['C:\\Windows\\System32\\Taskmgr.exe', 'C:\\Windows\\regedit.exe', 'C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe']) {
+      expect(blockReasonFor(app(exe)), exe).toBe('system-tool');
+    }
+    for (const id of ['com.apple.systempreferences', 'com.apple.ScriptEditor2', 'com.apple.Automator', 'com.apple.shortcuts', 'com.apple.ActivityMonitor']) {
+      expect(blockReasonFor(app(`/Applications/${id}.app`, id)), id).toBe('system-tool');
+    }
+  });
+
+  it('blocks more shells and terminals', () => {
+    expect(blockReasonFor(app('C:\\Windows\\System32\\wsl.exe'))).toBe('terminal');
+    for (const host of ['powershell_ise.exe', 'mshta.exe', 'wscript.exe', 'cscript.exe']) {
+      expect(blockReasonFor(app(`C:\\Windows\\System32\\${host}`)), host).toBe('system-tool');
+    }
+    expect(blockReasonFor(app('C:\\Program Files\\Git\\git-bash.exe'))).toBe('terminal');
+    expect(blockReasonFor(app('/Applications/Warp.app', 'dev.warp.Warp-Preview'))).toBe('terminal');
+    expect(blockReasonFor(app('/Applications/Rio.app', 'com.raphaelamorim.rio'))).toBe('terminal');
+  });
+
+  it('still lets ordinary apps through', () => {
+    expect(blockReasonFor(app('C:\\Windows\\notepad.exe'))).toBeNull();
+    expect(blockReasonFor(app('/System/Applications/TextEdit.app', 'com.apple.TextEdit'))).toBeNull();
+  });
+});
+
+describe('OS-wide chord refusal', () => {
+  it('lets ordinary bare keys through', () => {
+    for (const key of ['Escape', 'Tab', 'Enter', 'F5', 'a']) {
+      expect(osChordRefusal('win32', [], key)).toBeNull();
+      expect(osChordRefusal('darwin', [], key)).toBeNull();
+    }
+    expect(osChordRefusal('win32', [], 'F11')).toBeNull();
+  });
+
+  it('refuses the macOS function keys bound to system UI by default', () => {
+    for (const key of ['F3', 'F4', 'F11', 'F12']) expect(osChordRefusal('darwin', [], key), key).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta'], 'F3')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta'], 'F5')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta', 'alt'], 'F5')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta', 'alt'], '8')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['ctrl', 'alt', 'meta'], '8')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta'], '8')).toBeNull();
+  });
+
+  it('refuses Alt+Space on Windows', () => {
+    expect(osChordRefusal('win32', ['alt'], 'Space')).not.toBeNull();
+    expect(osChordRefusal('win32', ['ctrl'], 'Space')).toBeNull();
+  });
+
+  it('refuses a Windows-key click but not other modified clicks', () => {
+    expect(osPointerModifierRefusal('win32', ['meta'])).not.toBeNull();
+    expect(osPointerModifierRefusal('win32', ['ctrl', 'shift'])).toBeNull();
+    expect(osPointerModifierRefusal('darwin', ['meta'])).toBeNull();
+  });
+
+  it('refuses the stop key on every platform', () => {
+    expect(osChordRefusal('linux', ['ctrl', 'alt', 'shift'], 'Escape')).not.toBeNull();
   });
 });
