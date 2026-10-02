@@ -147,6 +147,8 @@ export const IPC = {
   FANOUT_WORKER_MODE_SET: 'fanout:workerMode:set',
   FANOUT_REQUIRE_APPROVAL_GET: 'fanout:requireApproval:get',
   FANOUT_REQUIRE_APPROVAL_SET: 'fanout:requireApproval:set',
+  FANOUT_TRUST_AGY_FOLDERS_GET: 'fanout:trustAgyFolders:get',
+  FANOUT_TRUST_AGY_FOLDERS_SET: 'fanout:trustAgyFolders:set',
   FANOUT_AUDIT_RECENT: 'fanout:audit:recent',
   FANOUT_LINEAGE: 'fanout:lineage',
   FANOUT_PRESETS_GET: 'fanout:presets:get',
