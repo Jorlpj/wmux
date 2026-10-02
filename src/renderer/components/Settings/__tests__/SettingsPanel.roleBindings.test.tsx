@@ -222,6 +222,69 @@ describe('RoleBindingsView render', () => {
   });
 });
 
+describe('role preset button (owner decision B)', () => {
+  type Btn = ReactElement<{ onClick: () => void; children?: unknown; title?: string; 'data-role-preset-bypass'?: string }>;
+  const presetButton = (bindings: RoleBindingsViewProps['bindings'], role: string, extra: Partial<RoleBindingsViewProps> = {}) => {
+    const onChange = vi.fn();
+    const tree = RoleBindingsView({ bindings, onChange, t: translate, ...extra });
+    const row = findByProp(tree, 'data-role-binding-preset', role);
+    const button = row ? (findByProp(row.props.children, 'onClick') as Btn | undefined) : undefined;
+    return { onChange, button };
+  };
+
+  it('names the bypass in the label and the tooltip', () => {
+    const html = renderToStaticMarkup(
+      createElement(RoleBindingsView, { bindings: { Builder: { agent: 'claude' } }, onChange: () => undefined, t: translate }),
+    );
+    expect(html).toContain('Apply Builder preset (skips permission prompts)');
+    expect(html).toContain('turns on skip permissions');
+  });
+
+  it('asks first, and applies nothing when the operator declines', () => {
+    const confirm = vi.fn(() => false);
+    const { onChange, button } = presetButton({ Builder: { agent: 'claude', model: 'claude-opus-5-5' } }, 'Builder', { confirm });
+    expect(button).toBeDefined();
+    button?.props.onClick();
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('skip permissions'));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('applies the preset after a yes, keeping the chosen model', () => {
+    const confirm = vi.fn(() => true);
+    const { onChange, button } = presetButton({ Builder: { agent: 'claude', model: 'claude-opus-5-5' } }, 'Builder', { confirm });
+    button?.props.onClick();
+    expect(onChange).toHaveBeenCalledWith('Builder', expect.objectContaining({
+      agent: 'claude', model: 'claude-opus-5-5', effort: 'high', skipPermissions: true,
+    }));
+  });
+
+  it('does not ask, nor claim a bypass, for an agent without a verified skip flag', () => {
+    const confirm = vi.fn(() => false);
+    const { onChange, button } = presetButton({ Tester: { agent: 'gemini' } }, 'Tester', { confirm });
+    expect(button?.props['data-role-preset-bypass']).toBeUndefined();
+    button?.props.onClick();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(onChange).toHaveBeenCalled();
+  });
+});
+
+/** Depth-first search for an element carrying `prop` (optionally equal to `value`). */
+function findByProp(node: unknown, prop: string, value?: unknown): ReactElement<Record<string, unknown> & { children?: unknown }> | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findByProp(child, prop, value);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!isValidElement(node)) return undefined;
+  const props = node.props as Record<string, unknown> & { children?: unknown };
+  if (prop in props && (value === undefined || props[prop] === value)) {
+    return node as ReactElement<Record<string, unknown> & { children?: unknown }>;
+  }
+  return findByProp(props.children, prop, value);
+}
+
 type Handled = ReactElement<{
   'aria-label'?: string;
   children?: unknown;

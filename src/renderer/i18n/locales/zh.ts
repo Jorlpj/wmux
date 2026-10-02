@@ -1284,8 +1284,14 @@ export const zh = {
   'settings.roleBindingRefreshModels': '刷新模型',
   'settings.rolePresetApply': '应用 {role} 预设',
   'settings.rolePresetApplied': '已应用 {role} 预设',
+  'settings.rolePresetApplyBypass':
+    '应用 {role} 预设（跳过权限提示）',
+  'settings.rolePresetTooltipNoSkip':
+    '将此角色设为 {tier} 推理强度，保留你选择的智能体、模型和额外参数。此智能体没有经过验证的跳过权限参数，因此权限提示保持开启。',
+  'settings.rolePresetConfirmBypass':
+    '要应用 {role} 预设吗？它会开启跳过权限：每次以 {role} 启动（包括分派给 {role} 的 fan-out 任务）都会在不先询问你的情况下编辑文件和运行命令。',
   'settings.rolePresetTooltip':
-    '将此角色设为 {tier} 推理强度并跳过权限提示，保留你选择的智能体和额外参数（未选择时为 agy）。agy 的工具、技能和 MCP 设置无法按角色区分，仍由所有角色共享。',
+    '将此角色设为 {tier} 推理强度，并开启跳过权限：每次以 {role} 启动（包括分派给 {role} 的 fan-out 任务）都不会出现权限提示。保留你选择的智能体、模型和额外参数；仅在为空时填入智能体（agy）或模型。agy 的推理强度是模型名后缀，因此 Flash 模型会改为其 {tier} 变体，其他模型保持不变。agy 的工具、技能和 MCP 设置无法按角色区分，仍由所有角色共享。',
   'deck.fleet.enforcedLaunch': '强制启动：{binding}',
   'pane.enforcedLaunch': '按角色强制启动：{binding}',
   'pane.enforcedSkipBadge': '绕过',

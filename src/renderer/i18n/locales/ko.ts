@@ -732,8 +732,14 @@ export const ko = {
   'settings.roleBindingRefreshModels': '모델 새로고침',
   'settings.rolePresetApply': '{role} 프리셋 적용',
   'settings.rolePresetApplied': '{role} 프리셋 적용됨',
+  'settings.rolePresetApplyBypass':
+    '{role} 프리셋 적용 (권한 확인 건너뜀)',
+  'settings.rolePresetTooltipNoSkip':
+    '이 역할을 {tier} 추론 강도로 설정하고, 선택한 에이전트·모델·추가 인수는 유지합니다. 이 에이전트는 검증된 권한 건너뛰기 플래그가 없어 권한 확인은 그대로 켜져 있습니다.',
+  'settings.rolePresetConfirmBypass':
+    '{role} 프리셋을 적용할까요? 권한 확인 건너뛰기가 켜져, {role}로 실행되는 모든 에이전트(이 역할로 보내진 fan-out 작업 포함)가 먼저 묻지 않고 파일을 수정하고 명령을 실행합니다.',
   'settings.rolePresetTooltip':
-    '이 역할을 {tier} 추론 강도와 권한 건너뛰기로 설정합니다. 선택한 에이전트와 추가 인수는 유지됩니다(없으면 agy). agy는 도구·스킬·MCP 설정을 역할별로 나눌 수 없어 모든 역할이 함께 공유합니다.',
+    '이 역할을 {tier} 추론 강도로 설정하고 권한 확인 건너뛰기를 켭니다. {role}로 실행되는 모든 에이전트(이 역할로 보내진 fan-out 작업 포함)가 권한 확인 없이 실행됩니다. 선택한 에이전트·모델·추가 인수는 유지되며, 비어 있을 때만 에이전트(agy)나 모델을 채웁니다. agy는 추론 강도가 모델 이름 끝부분이라 Flash 모델은 {tier} 변형으로 바뀌고 다른 모델은 그대로 둡니다. agy는 도구·스킬·MCP 설정을 역할별로 나눌 수 없어 모든 역할이 함께 공유합니다.',
   'deck.fleet.enforcedLaunch': '강제 실행: {binding}',
   'pane.enforcedLaunch': '역할이 강제한 실행: {binding}',
   'pane.enforcedSkipBadge': '바이패스',

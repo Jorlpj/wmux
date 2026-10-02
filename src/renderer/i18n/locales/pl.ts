@@ -1204,8 +1204,14 @@ export const pl = {
   'settings.roleBindingRefreshModels': 'Odśwież modele',
   'settings.rolePresetApply': 'Zastosuj preset {role}',
   'settings.rolePresetApplied': 'Preset {role} zastosowany',
+  'settings.rolePresetApplyBypass':
+    'Zastosuj preset {role} (pomija pytania o uprawnienia)',
+  'settings.rolePresetTooltipNoSkip':
+    'Ustawia tę rolę na wysiłek {tier}, zachowując wybranego agenta, model i dodatkowe argumenty. Ten agent nie ma zweryfikowanej flagi pomijania uprawnień, więc pytania o uprawnienia pozostają włączone.',
+  'settings.rolePresetConfirmBypass':
+    'Zastosować preset {role}? Włącza pomijanie uprawnień: każde uruchomienie {role}, także zadania fan-out kierowane do {role}, będzie edytować pliki i uruchamiać polecenia bez pytania.',
   'settings.rolePresetTooltip':
-    'Ustawia tę rolę na wysiłek {tier} z pominięciem uprawnień, zachowując wybranego agenta i dodatkowe argumenty (agy, gdy brak). Narzędzia, skille i MCP nie są per rola dla agy — pozostają wspólne dla wszystkich ról.',
+    'Ustawia tę rolę na wysiłek {tier} ORAZ włącza pomijanie uprawnień: każde uruchomienie {role}, także zadania fan-out kierowane do {role}, działa bez pytań o uprawnienia. Zachowuje wybranego agenta, model i dodatkowe argumenty; uzupełnia tylko pustego agenta (agy) lub model. W agy wysiłek jest końcówką nazwy modelu, więc model Flash przechodzi na wariant {tier}, a każdy inny model zostaje bez zmian. Narzędzia, skille i MCP nie są per rola dla agy; pozostają wspólne dla wszystkich ról.',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Wymuszone uruchomienie: {binding}',
   'pane.enforcedLaunch': 'Uruchomienie wymuszone rolą: {binding}',

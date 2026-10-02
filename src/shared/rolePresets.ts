@@ -14,8 +14,16 @@
 //            and run unattended.
 //   Tester   runs the suite and reads the output: a cheaper tier, same skip.
 //
-// Agent, extra args and fresh-context are kept as the operator set them. An
-// unbound role gets agy, the CLI both roles are run on here.
+// Agent, MODEL, extra args and fresh-context are kept as the operator set them
+// (owner decision: a preset fills a model only when none is chosen). An unbound
+// role gets agy, the CLI both roles are run on here. For agy the effort IS the
+// model id suffix, so the preset moves a chosen model to the tier's suffix
+// within the SAME family when that family has the tier (Flash: low|medium|high)
+// and leaves any other model exactly as chosen.
+//
+// Skip permissions is part of both presets, and the Settings button says so
+// in its label and asks before applying (owner decision): one click turns
+// every launch of the role, role-routed fan-out tasks included, to bypass.
 
 import { agyFamilyOf } from './modelCatalog';
 import { launchGrammarFor } from './agentLaunchOptions';
@@ -51,13 +59,15 @@ export function applyRolePreset(role: RolePresetRole, current: RoleBinding | und
   const spec = ROLE_PRESET_SPECS[role];
   const next: RoleBinding = { ...current, agent: current?.agent || ROLE_PRESET_DEFAULT_AGENT };
   if (next.agent === 'agy') {
-    // Effort is the model id suffix. Keep a Flash family the operator chose; any
-    // other family has no `-medium` variant (3.1 Pro), so it moves to Flash.
+    // Effort is the model id suffix. No model yet: the Flash default at this
+    // tier. A Flash model: same family, this tier. Any other family (3.1 Pro
+    // has no `-medium`) keeps the model the operator chose, untouched.
     const family = current?.model ? agyFamilyOf(current.model) : '';
-    next.model = `${/-flash$/.test(family) ? family : DEFAULT_AGY_FLASH}-${spec.tier}`;
+    if (!current?.model) next.model = `${DEFAULT_AGY_FLASH}-${spec.tier}`;
+    else if (/-flash$/.test(family)) next.model = `${family}-${spec.tier}`;
     delete next.effort;
   } else if (next.agent === 'claude') {
-    next.model = spec.claudeModel;
+    next.model = current?.model || spec.claudeModel;
     next.effort = spec.tier;
   } else if (next.agent === 'codex') {
     next.effort = spec.tier;
@@ -65,6 +75,12 @@ export function applyRolePreset(role: RolePresetRole, current: RoleBinding | und
   // Only for an agent with a verified skip flag; elsewhere it would be inert.
   if (spec.skipPermissions && launchGrammarFor(next.agent)?.skipPermissionsFlag) next.skipPermissions = true;
   return next;
+}
+
+/** Will applying the preset turn on skip permissions for this role? (Only for
+ *  an agent with a verified skip flag; the button and confirm say so.) */
+export function rolePresetSkipsPermissions(role: RolePresetRole, current: RoleBinding | undefined): boolean {
+  return applyRolePreset(role, current).skipPermissions === true;
 }
 
 /** Does the role's binding already equal what its preset would write? */
