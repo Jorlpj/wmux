@@ -1,4 +1,5 @@
 import { applyWmuxToolsToCommand, isWmuxToolsHint } from '../../agents/toolSurfaceLaunch';
+import { codexConfigPath, codexHasWmuxServer } from '../../../shared/mcpRegistration';
 import { WSL_RPC_TIMEOUT_MS } from '../../../shared/wsl';
 import { ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
@@ -136,7 +137,9 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   if (!options || options.wmuxTools === undefined) return options;
   const { wmuxTools, ...rest } = options;
   if (!rest.initialCommand || !isWmuxToolsHint(wmuxTools)) return rest;
-  const initialCommand = applyWmuxToolsToCommand(rest.initialCommand, wmuxTools);
+  const initialCommand = applyWmuxToolsToCommand(rest.initialCommand, wmuxTools, {
+    codexHasWmuxServer: () => codexHasWmuxServer(codexConfigPath(rest.env)),
+  });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
 }

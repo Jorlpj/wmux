@@ -8,10 +8,18 @@
 // claude reads a config FILE (no JSON on a PowerShell line), written next to the
 // bundle; codex takes `-c "mcp_servers.wmux.args=['…']"`. A line that already
 // configures the wmux server by hand is left alone (the operator's line wins).
+//
+// codex only accepts those overrides on top of a registered server: with no
+// `[mcp_servers.wmux]` table in its config.toml, both `-c mcp_servers.wmux.args=…`
+// and `-c mcp_servers.wmux.enabled=false` abort the launch with "invalid
+// transport in `mcp_servers.wmux`" (codex-cli 0.158). So a codex line gets the
+// flags only when its config already holds a wmux server with a command; it
+// otherwise launches unchanged, with the full tool list.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { getWmuxHomeDir } from '../../shared/constants';
+import { codexConfigPath, codexHasWmuxServer } from '../../shared/mcpRegistration';
 import { tokenize, launcherStem } from '../../shared/agentResume';
 import { WMUX_TOOLS, type WmuxTools } from '../../shared/orchestratorRole';
 import { resolveRoleName, toolSurfaceShellFlags, wmuxServerArgs } from '../../shared/roleSurfaces';
@@ -31,6 +39,10 @@ export interface ToolSurfaceDeps {
   mcpDir?: string;
   exists?: (p: string) => boolean;
   writeFile?: (p: string, data: string) => void;
+  /** Whether the codex config this launch will read registers a wmux server. */
+  codexHasWmuxServer?: () => boolean;
+  /** Where a skipped splice is reported. */
+  log?: (line: string) => void;
 }
 
 export function applyWmuxToolsToCommand(command: string, hint: WmuxToolsHint, deps: ToolSurfaceDeps = {}): string {
@@ -50,6 +62,14 @@ export function applyWmuxToolsToCommand(command: string, hint: WmuxToolsHint, de
   const configFile = path.join(mcpDir, `surface-${hint.tools}${role ? `-${role.toLowerCase()}` : ''}.json`);
   const flags = toolSurfaceShellFlags(stem, hint.tools, entry, role, configFile);
   if (!flags) return command;
+  if (stem === 'codex') {
+    const hasServer = deps.codexHasWmuxServer ?? (() => codexHasWmuxServer(codexConfigPath()));
+    if (!hasServer()) {
+      const log = deps.log ?? ((line: string) => console.warn(line));
+      log(`[pty:create] wmux tool level '${hint.tools}' not applied: codex has no wmux MCP server registered, and codex refuses to start on a -c mcp_servers.wmux override without one`);
+      return command;
+    }
+  }
   if (stem === 'claude') {
     try {
       writeFile(configFile, JSON.stringify({ mcpServers: { wmux: { command: 'node', args: wmuxServerArgs(entry, hint.tools, role) } } }, null, 2));

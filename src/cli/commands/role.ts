@@ -18,6 +18,7 @@ import path from 'node:path';
 import { dataSuffix, getWmuxHomeDir } from '../../shared/constants';
 import { ROLE_TOOL_SURFACES, resolveRoleName, roleMcpArgv } from '../../shared/roleSurfaces';
 import { CORE_TOOL_SURFACE } from '../../shared/coreSurface';
+import { codexConfigPath, codexHasWmuxServer } from '../../shared/mcpRegistration';
 import {
   applyRoleBinding, bindingEnforcesFreshContext, bindingEnforcesSkipPermissions, normalizeRoleBindings,
   type RoleBinding, type WmuxTools,
@@ -58,6 +59,8 @@ export interface ResolvedRole {
   /** The role's wmux MCP surface. `argv` is opt-in: append it to the launch to
    *  narrow the agent's wmux tools (see src/shared/roleSurfaces.ts). */
   mcp?: { level: WmuxTools; tools: string[]; argv: string[] };
+  /** Why a tool level the binding asks for has no `mcp` argv. */
+  mcpUnavailable?: string;
 }
 
 /** The stdio bundle the CLI configs register (McpRegistrar stabilizes it there). */
@@ -65,7 +68,12 @@ export function defaultMcpEntry(): string {
   return path.join(getWmuxHomeDir(), 'mcp', 'index.js');
 }
 
-export function resolveRole(role: string, binding: RoleBinding, mcpEntry = defaultMcpEntry()): ResolvedRole {
+export function resolveRole(
+  role: string,
+  binding: RoleBinding,
+  mcpEntry = defaultMcpEntry(),
+  codexRegistered: () => boolean = () => codexHasWmuxServer(codexConfigPath(process.env)),
+): ResolvedRole {
   const agent = binding.agent;
   const effort = agent === 'agy' ? (binding.model ? agyEffortOf(binding.model) : undefined) : binding.effort;
   const argv = agent
@@ -82,7 +90,7 @@ export function resolveRole(role: string, binding: RoleBinding, mcpEntry = defau
     freshContext: bindingEnforcesFreshContext(binding),
     argv,
     flags: argv.slice(1),
-    ...mcpFor(role, agent, binding.tools, mcpEntry),
+    ...mcpFor(role, agent, binding.tools, mcpEntry, codexRegistered),
   };
 }
 
@@ -93,8 +101,14 @@ function mcpFor(
   agent: string | undefined,
   tools: WmuxTools | undefined,
   entry: string,
-): Pick<ResolvedRole, 'mcp'> {
+  codexRegistered: () => boolean,
+): Pick<ResolvedRole, 'mcp' | 'mcpUnavailable'> {
   if (!agent || !tools) return {};
+  // codex refuses to start on a -c mcp_servers.wmux override when its config
+  // registers no wmux server (same rule as main's launch splice).
+  if (agent === 'codex' && !codexRegistered()) {
+    return { mcpUnavailable: 'codex has no wmux MCP server registered; codex would refuse a -c mcp_servers.wmux override' };
+  }
   const known = resolveRoleName(role);
   if (tools === 'role' && known.kind !== 'role') return {};
   const orchRole = known.kind === 'role' ? known.role : undefined;

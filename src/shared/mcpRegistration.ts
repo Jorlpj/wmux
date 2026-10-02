@@ -11,6 +11,7 @@
 //   - all writes atomic (tmp + rename)
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
 import {
@@ -136,6 +137,30 @@ export function profileOf(entry: McpServerEntry | null): RegisteredProfile {
 
 export function readAllTargetStatuses(home: string): TargetRegStatus[] {
   return MCP_TARGETS.map((t) => readTargetStatus(t, home));
+}
+
+/** The config.toml a codex launch reads: CODEX_HOME (the launch env first,
+ *  then this process's), else <home>/.codex. */
+export function codexConfigPath(
+  env?: Record<string, string | undefined>,
+  home: string = os.homedir(),
+): string {
+  const codexHome = env?.CODEX_HOME || process.env.CODEX_HOME || path.join(home, '.codex');
+  return path.join(codexHome, 'config.toml');
+}
+
+/** True when the codex config at `configPath` holds a `[mcp_servers.wmux]`
+ *  table with a command. codex refuses to start on a `-c mcp_servers.wmux.*`
+ *  override (args or enabled) without one: "invalid transport in
+ *  `mcp_servers.wmux`" (codex-cli 0.158). Missing / unreadable / malformed →
+ *  false. Any owner's entry counts: the override only needs the transport. */
+export function codexHasWmuxServer(configPath: string): boolean {
+  try {
+    const parsed = parseConfig(fs.readFileSync(configPath, 'utf8'), 'toml');
+    return getMcpServerEntry(parsed, 'toml', WMUX_SERVER_KEY)?.command != null;
+  } catch {
+    return false;
+  }
 }
 
 function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
