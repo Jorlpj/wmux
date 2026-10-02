@@ -215,7 +215,7 @@ enabled = false
 
       const deps: InventoryDeps = {
         homeDir: tempDir,
-        run: async () => '0.160.0', // Unsupported version
+        run: async () => '0.150.0', // older than the tested minimum
       };
 
       const inventory = await readCodexInventory(deps);
@@ -224,6 +224,20 @@ enabled = false
       const srv = inventory.items.find((i) => i.name === 'srv');
       expect(srv?.toggleable).toBe(false);
       expect(srv?.readOnlyReason).toBe('CLI version not supported (read-only)');
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a release newer than the last tested one writable, with a warning', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-version-newer-'));
+    try {
+      await fs.mkdir(path.join(tempDir, '.codex'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, '.codex', 'config.toml'), '[mcp_servers.srv]\ncommand="node"', 'utf8');
+      const inventory = await readCodexInventory({ homeDir: tempDir, run: async () => '0.160.0' } as InventoryDeps);
+      expect(inventory.versionSupported).toBe(true);
+      expect(inventory.writable).toBe(true);
+      expect(inventory.warnings.some((w) => w.includes('newer than the last version wmux tested'))).toBe(true);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
