@@ -1877,6 +1877,8 @@ export const ko = {
   'fanout.skipPermissionsUnsupported':
     'wmux가 아는 우회 플래그는 `claude` 것뿐입니다. 위 명령에 사용하는 CLI의 플래그를 직접 입력하세요 — 다음 실행에도 그대로 남습니다.',
   'fanout.skipPermissionsWarning': '모든 도구가 확인 없이 실행됩니다. 태스크는 격리 worktree에서 돌지만 에이전트는 셸 전체를 씁니다.',
+  'fanout.agyReadsIgnoredFiles':
+    'agy는 .gitignore, .geminiignore, .agyignore를 따르지 않으며, 절대 경로로 어떤 파일이든 읽을 수 있습니다(예: fan-out worktree에서 메인 체크아웃의 .env). 권한 확인 건너뛰기를 켜면 계정이 읽을 수 있는 모든 파일을 읽을 수 있습니다.',
   'fanout.skipPermissionsStale': '`{agent}`는 claude 전용 플래그를 받지 않는데 명령에 아직 남아 있습니다.',
   'fanout.skipPermissionsStrip': '플래그 제거',
   'fanout.commandPreviewLabel': '실행 명령 (다음에도 유지)',

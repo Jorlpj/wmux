@@ -222,6 +222,17 @@ describe('RoleBindingsView render', () => {
   });
 });
 
+describe('agy reads ignored files (owner decision C)', () => {
+  const html = (agent: string) =>
+    renderToStaticMarkup(createElement(RoleBindingsView, { bindings: { Builder: { agent } }, onChange: () => undefined, t: translate }));
+
+  it('warns on a row bound to agy, and only there', () => {
+    expect(html('agy')).toContain('data-role-binding-agy-warning="Builder"');
+    expect(html('agy')).toContain('.geminiignore');
+    expect(html('claude')).not.toContain('data-role-binding-agy-warning');
+  });
+});
+
 describe('role preset button (owner decision B)', () => {
   type Btn = ReactElement<{ onClick: () => void; children?: unknown; title?: string; 'data-role-preset-bypass'?: string }>;
   const presetButton = (bindings: RoleBindingsViewProps['bindings'], role: string, extra: Partial<RoleBindingsViewProps> = {}) => {
