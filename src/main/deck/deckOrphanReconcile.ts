@@ -250,13 +250,16 @@ export async function reconcileOrphanDeckState(
           }
         }
 
-        // Archive before teardown
+        // Archive before teardown. A record that cannot be archived is not
+        // torn down: its workspace keeps all of its Deck state for now.
         try {
           archiveDeckWork(work, dir);
           archived.push(id);
           log(`archived active work ${work.id} for orphan ${id}`);
         } catch (err) {
-          log(`failed to archive work for orphan ${id}: ${String(err)}`);
+          skippedIds.push(id);
+          log(`skipping orphan ${id}: failed to archive its work: ${String(err)}`);
+          continue;
         }
       }
 
@@ -264,6 +267,7 @@ export async function reconcileOrphanDeckState(
       try {
         await teardownWorkspaceDeckState(id, {
           dir,
+          archiveActiveWork: false,
           onStrandedWork: () => {
             /* noop: do not raise decisions for workspaces that do not exist */
           },
