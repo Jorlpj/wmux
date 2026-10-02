@@ -68,29 +68,49 @@ describe('wmux tool level on a role-bound launch line', () => {
   });
 });
 
-describe('locating the MCP bundle like McpRegistrar', () => {
-  const home = path.join('C:', 'u');
-  const res = path.join('C:', 'app', 'resources');
-  const has = (...present: string[]) => (p: string) => present.includes(p);
+// Run against BOTH path flavours on every OS: the locator walks parents with
+// resolve(), so a fixture root must be absolute under the rules in force (a
+// `D:/repo` literal is a relative path on POSIX). Each flavour gets its own
+// absolute root and builds every expected path with its own join.
+describe.each([
+  ['posix', path.posix, '/'],
+  ['win32', path.win32, 'D:\\'],
+] as const)('locating the MCP bundle like McpRegistrar (%s paths)', (_name, p, root) => {
+  const home = p.join(root, 'home', 'u');
+  const res = p.join(root, 'app', 'resources');
+  const has = (...present: string[]) => (candidate: string) => present.includes(candidate);
 
   it('packaged: prefers the unsuffixed stable copy, then the versioned resources bundle', () => {
-    const stable = path.join(home, '.wmux', 'mcp', 'index.js');
-    const versioned = path.join(res, 'mcp-bundle', 'index.js');
-    const base = { home, isPackaged: true, resourcesPath: res };
+    const stable = p.join(home, '.wmux', 'mcp', 'index.js');
+    const versioned = p.join(res, 'mcp-bundle', 'index.js');
+    const legacy = p.join(res, 'mcp', 'mcp', 'index.js');
+    const base = { home, isPackaged: true, resourcesPath: res, pathApi: p };
     expect(locateWmuxMcpEntry({ ...base, exists: has(stable, versioned) })).toBe(stable);
     expect(locateWmuxMcpEntry({ ...base, exists: has(versioned) })).toBe(versioned);
-    expect(locateWmuxMcpEntry({ ...base, exists: has(path.join(res, 'mcp', 'mcp', 'index.js')) })).toBe(path.join(res, 'mcp', 'mcp', 'index.js'));
+    expect(locateWmuxMcpEntry({ ...base, exists: has(legacy) })).toBe(legacy);
     expect(locateWmuxMcpEntry({ ...base, exists: has() })).toBeNull();
     // A suffixed data dir is never where the bundle is.
-    expect(locateWmuxMcpEntry({ ...base, exists: has(path.join(home, '.wmux-dev', 'mcp', 'index.js')) })).toBeNull();
+    expect(locateWmuxMcpEntry({ ...base, exists: has(p.join(home, '.wmux-dev', 'mcp', 'index.js')) })).toBeNull();
   });
 
   it('dev: dist/mcp/mcp/entry.js under the app path or a parent', () => {
-    const appPath = path.join('D:', 'repo', '.vite', 'build');
-    const dist = path.join('D:', 'repo', 'dist', 'mcp', 'mcp', 'entry.js');
-    expect(locateWmuxMcpEntry({ home, isPackaged: false, appPath, exists: has(dist) })).toBe(dist);
-    expect(locateWmuxMcpEntry({ home, isPackaged: false, appPath, exists: has() })).toBeNull();
+    const repo = p.join(root, 'work', 'repo');
+    const appPath = p.join(repo, '.vite', 'build');
+    const base = { home, isPackaged: false, appPath, pathApi: p };
+    // Found two levels up (the app path is .vite/build inside the checkout)…
+    const dist = p.join(repo, 'dist', 'mcp', 'mcp', 'entry.js');
+    expect(locateWmuxMcpEntry({ ...base, exists: has(dist) })).toBe(dist);
+    // …and directly under the app path, which wins over a parent's.
+    const own = p.join(appPath, 'dist', 'mcp', 'mcp', 'entry.js');
+    expect(locateWmuxMcpEntry({ ...base, exists: has(dist, own) })).toBe(own);
+    expect(locateWmuxMcpEntry({ ...base, exists: has() })).toBeNull();
+    // The walk stops at the filesystem root instead of looping.
+    expect(locateWmuxMcpEntry({ ...base, appPath: root, exists: has(p.join(root, 'dist', 'mcp', 'mcp', 'entry.js')) }))
+      .toBe(p.join(root, 'dist', 'mcp', 'mcp', 'entry.js'));
   });
+});
+
+describe('the splice and the located entry', () => {
 
   it('the splice uses the located entry and writes the claude config under the data dir', () => {
     const dist = path.join('D:', 'repo', 'dist', 'mcp', 'mcp', 'entry.js');
