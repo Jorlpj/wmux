@@ -148,3 +148,17 @@ describe('parseWorkspaceMirrorPayload — roleBindings passthrough (3-way review
     expect(parsed?.roleBindings).toBeUndefined();
   });
 });
+
+describe('parseWorkspaceMirrorPayload — sessionRestored (startup Deck reconcile gate)', () => {
+  const base = { ts: 1, entries: [], fleets: [] };
+
+  it('forwards a literal true', () => {
+    expect(parseWorkspaceMirrorPayload({ ...base, sessionRestored: true })?.sessionRestored).toBe(true);
+  });
+
+  it.each([false, 'true', 1, null, undefined])('treats %s as not restored', (value) => {
+    const parsed = parseWorkspaceMirrorPayload({ ...base, sessionRestored: value });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.sessionRestored).toBeUndefined();
+  });
+});

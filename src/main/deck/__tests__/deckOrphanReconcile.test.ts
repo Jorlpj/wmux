@@ -288,6 +288,7 @@ describe('deckOrphanReconcile', () => {
       ts: Date.now(),
       entries: [{ id: 'ws-live', name: 'Live Workspace' }],
       fleets: [],
+      sessionRestored: true,
     });
 
     // Now mirror is ready -> runs reconcile, returns true
@@ -298,5 +299,50 @@ describe('deckOrphanReconcile', () => {
     // Subsequent calls return true immediately (runs at most once per process)
     const done3 = await tryStartupDeckReconcile({ dir });
     expect(done3).toBe(true);
+  });
+
+  // P1 data loss: a failed / null / empty session.load() still flips the pane
+  // gate, and the mirror then holds ONE freshly generated default workspace.
+  // Every real workspace on disk must keep its Deck state.
+  it.each([
+    ['session load failed or returned nothing (flag false)', false],
+    ['an old renderer that does not send the flag', undefined],
+  ])('tryStartupDeckReconcile deletes nothing when %s', async (_label, sessionRestored) => {
+    const old = Date.now() - 100 * 3600 * 1000;
+    beginOrContinueDeckWork('ws-real', 'real work', dir, old);
+    setDeckWorkBootId('fresh-boot-id');
+    await startLoop('ws-real', { objective: 'loop', steps: [] }, dir);
+    await setWorkspaceMode('ws-real', 'danger', dir);
+    await saveCommanderSession('ws-real', 'sess-real', dir);
+    await raiseDecision('ws-real', { question: 'q', options: ['a', 'b'], context: 'c' }, dir);
+    const filesBefore = collectDeckWorkspaceFiles(dir);
+
+    getWorkspaceMirror().setSnapshot({
+      ts: Date.now(),
+      entries: [{ id: 'ws-fresh-default', name: 'Workspace 1' }],
+      fleets: [],
+      ...(sessionRestored === undefined ? {} : { sessionRestored }),
+    });
+
+    const lines: string[] = [];
+    const done = await tryStartupDeckReconcile({ dir, log: (l) => lines.push(l) });
+
+    // Settled for this process (no retry loop), but nothing was touched.
+    expect(done).toBe(true);
+    expect(lines.join(' ')).toMatch(/did not restore a saved session/);
+    expect(loadActiveDeckWork('ws-real', dir)).not.toBeNull();
+    expect(loadArchivedDeckWorks(dir)).toEqual([]);
+    expect(collectDeckWorkspaceIds(dir).has('ws-real')).toBe(true);
+    expect(collectDeckWorkspaceFiles(dir)).toEqual(filesBefore);
+
+    // A later push (same process) does not resurrect the pass.
+    getWorkspaceMirror().setSnapshot({
+      ts: Date.now(),
+      entries: [{ id: 'ws-fresh-default', name: 'Workspace 1' }],
+      fleets: [],
+      sessionRestored: true,
+    });
+    await tryStartupDeckReconcile({ dir });
+    expect(loadActiveDeckWork('ws-real', dir)).not.toBeNull();
   });
 });

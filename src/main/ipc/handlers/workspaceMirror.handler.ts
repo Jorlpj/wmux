@@ -150,6 +150,8 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
     }
     out.roleBindings = bindings;
   }
+  // Only a literal true counts: anything else keeps the startup Deck reconcile off.
+  if (raw.sessionRestored === true) out.sessionRestored = true;
   return out;
 }
 
