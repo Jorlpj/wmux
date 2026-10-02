@@ -927,6 +927,15 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                 {t(hint.key, hint.params)}
               </p>
             )}
+            {/* Owner decision C: wmux cannot mitigate it, so say it where agy is picked. */}
+            {b.agent === 'agy' && (
+              <p
+                className="ui-field-description m-0 mt-1 pl-[84px] text-[var(--accent-red)]"
+                data-role-binding-agy-warning={role}
+              >
+                {t('fanout.agyReadsIgnoredFiles')}
+              </p>
+            )}
           </div>
         );
       })}

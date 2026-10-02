@@ -1914,6 +1914,8 @@ export const zh = {
   'fanout.roleNone': '无角色',
   'fanout.skipPermissionsUnsupported': 'wmux 只知道 `claude` 的此绕过标志。请在上面的命令中键入你自己的智能体标志 — 下次会自动记住。',
   'fanout.skipPermissionsWarning': '每个工具都会在无询问的情况下运行。任务在隔离的工作树中运行，但智能体仍拥有完整的 shell 访问权限。',
+  'fanout.agyReadsIgnoredFiles':
+    'agy 不遵守 .gitignore、.geminiignore 或 .agyignore，并且可以通过绝对路径读取任何文件，包括从 fan-out worktree 读取主检出中的 .env。开启跳过权限时，它可以读取你的账户能读取的一切。',
   'fanout.skipPermissionsStale': '`{agent}` 不接受这个仅限 Claude 的标志，但命令仍会携带它。',
   'fanout.skipPermissionsStrip': '移除标志',
   'fanout.commandPreviewLabel': '启动命令（下次会记住）',

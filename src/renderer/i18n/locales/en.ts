@@ -2425,6 +2425,8 @@ export const en = {
   'fanout.skipPermissionsUnsupported':
     'wmux only knows this bypass flag for `claude`. Type your agent\'s own flag into the command above — it is remembered for next time.',
   'fanout.skipPermissionsWarning': 'Every tool runs without asking. Tasks run in isolated worktrees, but the agent still has full shell access.',
+  'fanout.agyReadsIgnoredFiles':
+    'agy does not honour .gitignore, .geminiignore or .agyignore, and it can read any file by absolute path, including the main checkout\'s .env from a fan-out worktree. With skip permissions on, it can read anything your account can.',
   'fanout.skipPermissionsStale': '`{agent}` does not take this Claude-only flag, but the command still carries it.',
   'fanout.skipPermissionsStrip': 'Remove flag',
   'fanout.commandPreviewLabel': 'launch command (remembered for next time)',

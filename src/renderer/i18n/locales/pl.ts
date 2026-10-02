@@ -2388,6 +2388,8 @@ export const pl = {
   'fanout.skipPermissionsUnsupported':
     'wmux zna tę flagę obejścia tylko dla `claude`. Wpisz własną flagę Twojego agenta w poleceniu powyżej — zostanie zapamiętana na następny raz.',
   'fanout.skipPermissionsWarning': 'Każde narzędzie działa bez pytania. Zadania działają w izolowanych worktree, ale agent nadal ma pełny dostęp do powłoki.',
+  'fanout.agyReadsIgnoredFiles':
+    'agy nie respektuje .gitignore, .geminiignore ani .agyignore i może odczytać dowolny plik po ścieżce bezwzględnej, w tym .env głównego checkoutu z worktree fan-out. Z włączonym pomijaniem uprawnień może czytać wszystko, do czego ma dostęp Twoje konto.',
   'fanout.skipPermissionsStale': '`{agent}` nie przyjmuje tej flagi specyficznej dla Claude, ale polecenie nadal ją niesie.',
   'fanout.skipPermissionsStrip': 'Usuń flagę',
   'fanout.commandPreviewLabel': 'polecenie uruchomienia (zapamiętane na następny raz)',
