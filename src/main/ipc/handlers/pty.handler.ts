@@ -1,7 +1,7 @@
-import { applyWmuxToolsToCommand, isWmuxToolsHint } from '../../agents/toolSurfaceLaunch';
+import { applyWmuxToolsToCommand, isWmuxToolsHint, locateWmuxMcpEntry } from '../../agents/toolSurfaceLaunch';
 import { codexConfigPath, codexHasWmuxServer } from '../../../shared/mcpRegistration';
 import { WSL_RPC_TIMEOUT_MS } from '../../../shared/wsl';
-import { ipcMain, BrowserWindow } from 'electron';
+import { app, ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
@@ -131,6 +131,20 @@ type PtyCreateOptions = {
 };
 
 
+/** The MCP bundle this app would register (packaged stable copy or dev dist). */
+function currentMcpEntry(): string | null {
+  try {
+    return locateWmuxMcpEntry({
+      home: app.getPath('home'),
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** Splice a role binding's wmux tool level into the typed launch line, then
  *  drop the hint so it never reaches a spawn API. Invalid hints are ignored. */
 function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions | undefined {
@@ -138,6 +152,7 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   const { wmuxTools, ...rest } = options;
   if (!rest.initialCommand || !isWmuxToolsHint(wmuxTools)) return rest;
   const initialCommand = applyWmuxToolsToCommand(rest.initialCommand, wmuxTools, {
+    entry: currentMcpEntry(),
     codexHasWmuxServer: () => codexHasWmuxServer(codexConfigPath(rest.env)),
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });

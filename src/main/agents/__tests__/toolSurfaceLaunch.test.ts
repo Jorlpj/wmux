@@ -2,17 +2,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { applyWmuxToolsToCommand, isWmuxToolsHint } from '../toolSurfaceLaunch';
+import { applyWmuxToolsToCommand, isWmuxToolsHint, locateWmuxMcpEntry } from '../toolSurfaceLaunch';
 import { codexConfigPath, codexHasWmuxServer } from '../../../shared/mcpRegistration';
 
-const mcpDir = path.join('C:', 'u', '.wmux', 'mcp');
-const entry = path.join(mcpDir, 'index.js');
+// Config files go to the instance's (suffixed) data dir; the bundle lives in
+// the unsuffixed stable copy McpRegistrar keeps.
+const mcpDir = path.join('C:', 'u', '.wmux-dev', 'mcp');
+const entry = path.join('C:', 'u', '.wmux', 'mcp', 'index.js');
 
 function run(command: string, tools: 'full' | 'core' | 'role', role?: string, exists = true, codexRegistered = true) {
   const written: Record<string, string> = {};
   const logs: string[] = [];
   const out = applyWmuxToolsToCommand(command, { tools, ...(role ? { role } : {}) }, {
     mcpDir,
+    entry,
     exists: () => exists,
     writeFile: (p, d) => { written[p] = d; },
     codexHasWmuxServer: () => codexRegistered,
@@ -62,6 +65,44 @@ describe('wmux tool level on a role-bound launch line', () => {
     expect(isWmuxToolsHint({ tools: 'core', role: 'Planner' })).toBe(true);
     expect(isWmuxToolsHint({ tools: 'all' })).toBe(false);
     expect(isWmuxToolsHint('core')).toBe(false);
+  });
+});
+
+describe('locating the MCP bundle like McpRegistrar', () => {
+  const home = path.join('C:', 'u');
+  const res = path.join('C:', 'app', 'resources');
+  const has = (...present: string[]) => (p: string) => present.includes(p);
+
+  it('packaged: prefers the unsuffixed stable copy, then the versioned resources bundle', () => {
+    const stable = path.join(home, '.wmux', 'mcp', 'index.js');
+    const versioned = path.join(res, 'mcp-bundle', 'index.js');
+    const base = { home, isPackaged: true, resourcesPath: res };
+    expect(locateWmuxMcpEntry({ ...base, exists: has(stable, versioned) })).toBe(stable);
+    expect(locateWmuxMcpEntry({ ...base, exists: has(versioned) })).toBe(versioned);
+    expect(locateWmuxMcpEntry({ ...base, exists: has(path.join(res, 'mcp', 'mcp', 'index.js')) })).toBe(path.join(res, 'mcp', 'mcp', 'index.js'));
+    expect(locateWmuxMcpEntry({ ...base, exists: has() })).toBeNull();
+    // A suffixed data dir is never where the bundle is.
+    expect(locateWmuxMcpEntry({ ...base, exists: has(path.join(home, '.wmux-dev', 'mcp', 'index.js')) })).toBeNull();
+  });
+
+  it('dev: dist/mcp/mcp/entry.js under the app path or a parent', () => {
+    const appPath = path.join('D:', 'repo', '.vite', 'build');
+    const dist = path.join('D:', 'repo', 'dist', 'mcp', 'mcp', 'entry.js');
+    expect(locateWmuxMcpEntry({ home, isPackaged: false, appPath, exists: has(dist) })).toBe(dist);
+    expect(locateWmuxMcpEntry({ home, isPackaged: false, appPath, exists: has() })).toBeNull();
+  });
+
+  it('the splice uses the located entry and writes the claude config under the data dir', () => {
+    const dist = path.join('D:', 'repo', 'dist', 'mcp', 'mcp', 'entry.js');
+    const written: Record<string, string> = {};
+    const out = applyWmuxToolsToCommand('claude', { tools: 'core' }, {
+      mcpDir, entry: dist, exists: (p) => p === dist, writeFile: (p, d) => { written[p] = d; },
+    });
+    const file = path.join(mcpDir, 'surface-core.json');
+    expect(out).toBe(`claude --mcp-config "${file}"`);
+    expect(JSON.parse(written[file]).mcpServers.wmux.args[0]).toBe(dist);
+    // No bundle found: the line is left alone.
+    expect(applyWmuxToolsToCommand('claude', { tools: 'core' }, { mcpDir, entry: null })).toBe('claude');
   });
 });
 
