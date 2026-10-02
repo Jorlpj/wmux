@@ -43,6 +43,9 @@ export interface McpEntryLocation {
   resourcesPath?: string;
   appPath?: string;
   exists?: (p: string) => boolean;
+  /** Path rules to resolve with (default: this platform's). Tests pass
+   *  path.posix / path.win32 to cover both on any OS. */
+  pathApi?: path.PlatformPath;
 }
 
 /**
@@ -56,18 +59,19 @@ export interface McpEntryLocation {
  */
 export function locateWmuxMcpEntry(loc: McpEntryLocation): string | null {
   const exists = loc.exists ?? fs.existsSync;
+  const p = loc.pathApi ?? path;
   const candidates: string[] = [];
   if (loc.isPackaged) {
-    candidates.push(path.join(loc.home, '.wmux', 'mcp', 'index.js'));
+    candidates.push(p.join(loc.home, '.wmux', 'mcp', 'index.js'));
     if (loc.resourcesPath) {
-      candidates.push(path.join(loc.resourcesPath, 'mcp-bundle', 'index.js'));
-      candidates.push(path.join(loc.resourcesPath, 'mcp', 'mcp', 'index.js'));
+      candidates.push(p.join(loc.resourcesPath, 'mcp-bundle', 'index.js'));
+      candidates.push(p.join(loc.resourcesPath, 'mcp', 'mcp', 'index.js'));
     }
   } else if (loc.appPath) {
     let current = loc.appPath;
     for (let i = 0; i < 6; i++) {
-      candidates.push(path.join(current, 'dist', 'mcp', 'mcp', 'entry.js'));
-      const parent = path.resolve(current, '..');
+      candidates.push(p.join(current, 'dist', 'mcp', 'mcp', 'entry.js'));
+      const parent = p.resolve(current, '..');
       if (parent === current) break;
       current = parent;
     }
