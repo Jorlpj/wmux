@@ -26,7 +26,7 @@ agent ──MCP──> wmux MCP server ──pipe RPC──> main: computer.rpc.
                               ┌───────────────────┴──────────────────┐
                  native/computer-use-windows            native/computer-use-macos
                  C# NativeAOT exe (CsWin32 UIA,          Swift .app (AXUIElement,
-                 SendInput, PrintWindow/BitBlt)          CGEvent, ScreenCaptureKit)
+                 SendInput, PrintWindow)                 CGEvent, ScreenCaptureKit)
 ```
 
 - **One OS switch.** `ComputerService` picks the helper binary once through
@@ -342,13 +342,17 @@ by localized message text.
 
 ## Windows specifics (phase 1)
 
+The helper as built, its trust model, signing and the dogfood checklist:
+`docs/computer-use-windows.md`. Like the macOS helper it types Unicode only
+and never uses the clipboard.
+
 - CsWin32 bindings with NativeAOT give a single exe with no runtime
   dependency. FlaUI is not used because its COM interop does not support
   NativeAOT.
 - UIA3 through a CacheRequest: one round-trip per subtree, all UIA work on one
   STA thread.
-- Capture order: PrintWindow with `PW_RENDERFULLCONTENT`, then BitBlt of the
-  window rectangle when PrintWindow returns black. Windows.Graphics.Capture is
+- Capture: PrintWindow with `PW_RENDERFULLCONTENT` only, never a screen copy
+  (it could include covering windows). Windows.Graphics.Capture is
   not used because an unpackaged exe cannot hide its yellow border. DWM
   extended frame bounds are used to avoid shadow trim.
 - **The helper must be Authenticode-signed with the installer's identity.**
@@ -357,8 +361,9 @@ by localized message text.
 - **Packaged builds spawn only the bundled helper.** The `WMUX_COMPUTER_HELPER`
   override (an absolute path to a locally built helper) works only in dev
   builds, so an environment variable cannot swap the input-injecting process
-  in an installed wmux. Main does not verify the helper's signature before
-  spawning it yet; that publisher check belongs to the helper PR.
+  in an installed wmux. A packaged wmux checks the helper against a SHA-256
+  pinned at build time and keeps computer use off until the helper is
+  release-signed (`docs/computer-use-windows.md`).
 
 ## Performance targets (spike acceptance)
 
