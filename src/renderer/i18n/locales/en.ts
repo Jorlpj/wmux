@@ -1125,7 +1125,7 @@ export const en = {
   'agyAccounts.useNow': "Use now",
   'agyAccounts.removeTitle': "Remove this agy account from wmux",
   'agyAccounts.labelPlaceholder': "Label (optional)",
-  'agyAccounts.waitingForSignIn': "Waiting for you to sign in to agy in the new tab…",
+  'agyAccounts.waitingForSignIn': "Waiting for you to sign in to agy in the new tab… Sign in with the other account; close other agy sessions first so they do not sign the previous account back in.",
   'agyAccounts.addCurrent': "Add {email}",
   'agyAccounts.signInAnother': "Sign in another account",
   'agyAccounts.loginTabTitle': "agy sign-in",

@@ -435,7 +435,7 @@ export const zh = {
   'agyAccounts.useNow': "立即使用",
   'agyAccounts.removeTitle': "从 wmux 移除此 agy 账号",
   'agyAccounts.labelPlaceholder': "标签（可选）",
-  'agyAccounts.waitingForSignIn': "正在等待你在新标签页中登录 agy…",
+  'agyAccounts.waitingForSignIn': "正在等待你在新标签页中登录 agy… 请使用另一个账号登录；先关闭其他 agy 会话，以免它们把之前的账号重新登录回来。",
   'agyAccounts.addCurrent': "添加 {email}",
   'agyAccounts.signInAnother': "登录其他账号",
   'agyAccounts.loginTabTitle': "agy 登录",

@@ -59,6 +59,7 @@ function sanitizeAccount(raw: unknown): AgyAccount | null {
     addedAt: typeof o.addedAt === 'number' ? o.addedAt : 0,
     ...(o.needsReauth === true ? { needsReauth: true } : {}),
     ...(typeof o.cooldownUntil === 'number' && Number.isFinite(o.cooldownUntil) ? { cooldownUntil: o.cooldownUntil } : {}),
+    ...(typeof o.cooldownSetAtMs === 'number' && Number.isFinite(o.cooldownSetAtMs) ? { cooldownSetAtMs: o.cooldownSetAtMs } : {}),
   };
 }
 
@@ -245,14 +246,14 @@ export class AgyAccountService {
     const until = availableAtMs && availableAtMs > this.now() ? availableAtMs : this.now() + AGY_DEFAULT_COOLDOWN_MS;
     await this.mutate((file) => {
       const a = file.accounts.find((x) => x.email === email);
-      if (a) a.cooldownUntil = until;
+      if (a) { a.cooldownUntil = until; a.cooldownSetAtMs = this.now(); }
     });
   }
 
   async clearCooldown(id: string): Promise<void> {
     await this.mutate((file) => {
       const a = file.accounts.find((x) => x.id === id);
-      if (a) delete a.cooldownUntil;
+      if (a) { delete a.cooldownUntil; delete a.cooldownSetAtMs; }
     });
   }
 
@@ -288,7 +289,11 @@ export class AgyAccountService {
   async pollLogin(): Promise<void> {
     if (!this.login.pending) return;
     const email = this.deps.vault?.activeEmail() ?? null;
-    if (email) {
+    // An agy session left running refreshes its token and rewrites the slot
+    // with the account just signed out; that is not the new sign-in.
+    if (email && email === this.login.previousEmail) {
+      this.deps.vault?.signOutActive();
+    } else if (email) {
       this.login = { ...this.login, pending: false, lastResult: email };
       this.loginTimer = null;
       await this.addCurrent();

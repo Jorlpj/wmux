@@ -1111,7 +1111,7 @@ export const pl = {
   'agyAccounts.useNow': "Użyj teraz",
   'agyAccounts.removeTitle': "Usuń to konto agy z wmux",
   'agyAccounts.labelPlaceholder': "Etykieta (opcjonalnie)",
-  'agyAccounts.waitingForSignIn': "Czekam, aż zalogujesz się do agy w nowej karcie…",
+  'agyAccounts.waitingForSignIn': "Czekam, aż zalogujesz się do agy w nowej karcie… Zaloguj się innym kontem; najpierw zamknij inne sesje agy, aby nie zalogowały z powrotem poprzedniego konta.",
   'agyAccounts.addCurrent': "Dodaj {email}",
   'agyAccounts.signInAnother': "Zaloguj inne konto",
   'agyAccounts.loginTabTitle': "logowanie agy",
