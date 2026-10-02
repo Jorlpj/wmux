@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { TESTED_CLI_VERSIONS } from '../../../shared/tokenUsage/capabilities';
+import { cliVersionSupport, newerCliVersionWarning } from '../../../shared/tokenUsage/capabilities';
 import type { HookCostHint, ProviderInventory, SurfaceItem, SurfaceSource } from '../../../shared/tokenUsage/surfaceTypes';
 import {
   CODEX_HOOK_EVENTS,
@@ -38,7 +38,9 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
   }
 
   const cliVersion = await queryCliVersion('codex', deps.run);
-  const versionSupported = cliVersion === TESTED_CLI_VERSIONS.codex.min;
+  const support = cliVersionSupport('codex', cliVersion);
+  const versionSupported = support !== 'unsupported';
+  if (support === 'newer' && cliVersion) warnings.push(newerCliVersionWarning('codex', cliVersion));
   const writable = versionSupported;
 
   const configPath = path.join(deps.homeDir, '.codex', 'config.toml');
