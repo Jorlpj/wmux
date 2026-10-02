@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
-import type { AppInfo, AppState, HelperMethod, WindowInfo } from '../../../shared/computer/protocol';
+import { SNAPSHOT_TTL_MS, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
 import { ApprovalQueue } from '../../mcp/ApprovalQueue';
 import type { PluginTrustStore } from '../../mcp/PluginTrustStore';
 import { createComputerConsentRequester } from '../computerConsent';
@@ -8,6 +8,7 @@ import {
   ABORT_COOLDOWN_MS,
   ComputerService,
   INPUT_LOCK_IDLE_MS,
+  computerUseShutDown,
   type ComputerAgent,
   type ConsentAnswer,
   type HelperLike,
@@ -70,6 +71,7 @@ function makeService(opts: {
   consent?: ConsentAnswer | (() => Promise<ConsentAnswer>);
   elevated?: boolean;
   stopKeyHolds?: boolean;
+  platform?: string;
 } = {}) {
   let now = 1_000_000;
   const { helper, calls } = fakeHelper({
@@ -88,8 +90,9 @@ function makeService(opts: {
     stopKey,
     blockContext: () => ({ selfPids: new Set([1]) }),
     now: () => now,
+    platform: opts.platform ?? 'win32',
   });
-  return { service, calls, consent, stopKey, advance: (ms: number) => { now += ms; } };
+  return { service, calls, consent, stopKey, helperRef: helper, advance: (ms: number) => { now += ms; } };
 }
 
 const AGENT_A: ComputerAgent = { key: 'agent-a', label: 'agent-a' };
@@ -147,9 +150,30 @@ describe('ComputerService', () => {
 
   it('lists a blocked app\'s windows without their titles', async () => {
     const { service } = makeService();
-    const { windows } = await service.listWindows();
+    await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const { windows } = await service.listWindows(AGENT_A);
     expect(windows.find((w) => w.pid === keepass.pid)).toMatchObject({ title: '', blocked: expect.stringMatching(/password/) });
     expect(windows.find((w) => w.pid === notepad.pid)?.title).toBe('Notepad window');
+  });
+
+  it('sends window titles only for apps this agent has consent for', async () => {
+    const { service } = makeService();
+    const before = await service.listWindows(AGENT_A);
+    // Ids and bounds stay; the title waits for the person's consent.
+    expect(before.windows.find((w) => w.pid === notepad.pid)).toMatchObject({ id: `w-${notepad.pid}`, title: '', bounds: { width: 1600 } });
+    await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect((await service.listWindows(AGENT_A)).windows.find((w) => w.pid === notepad.pid)?.title).toBe('Notepad window');
+    // Consent is per agent: another session still sees a blank title.
+    expect((await service.listWindows(AGENT_B)).windows.find((w) => w.pid === notepad.pid)?.title).toBe('');
+    // An unidentified caller (empty key) never gets a title.
+    expect((await service.listWindows({ key: '', label: 'x' })).windows.every((w) => w.title === '')).toBe(true);
+  });
+
+  it('blanks titles again after the stop key clears consent', async () => {
+    const { service } = makeService();
+    await service.getAppState(AGENT_A, { app: 'Notepad' });
+    service.abort();
+    expect((await service.listWindows(AGENT_A)).windows.find((w) => w.pid === notepad.pid)?.title).toBe('');
   });
 
   it('blocks a password manager before consent is asked or the tree is read', async () => {
@@ -228,6 +252,121 @@ describe('ComputerService', () => {
     expect(await codeOf(service.control(AGENT_A, { action: 'type', snapshotId, text: '' }))).toBe('invalid_argument');
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['hyper' as never] }))).toBe('invalid_argument');
     expect(await codeOf(service.control(AGENT_A, { action: 'setValue', snapshotId, index: 3, value: '안녕' }))).toBe('resolved');
+  });
+
+  it('sends only canonical keys, with the vetted window as the target', async () => {
+    const { service, calls } = makeService();
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    await service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'return' });
+    await service.control(AGENT_A, { action: 'hotkey', snapshotId, keys: ['S', 'Control'] });
+    const sent = calls.filter((c) => c.method === 'pressKey' || c.method === 'hotkey').map((c) => c.params);
+    expect(sent).toEqual([
+      { snapshotId, target: { pid: notepad.pid, windowId: `w-${notepad.pid}` }, key: 'Enter', repeat: 1 },
+      { snapshotId, target: { pid: notepad.pid, windowId: `w-${notepad.pid}` }, modifiers: ['ctrl'], key: 's' },
+    ]);
+  });
+
+  it('refuses keys outside the vocabulary before they reach the helper', async () => {
+    const { service, calls } = makeService();
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const before = calls.length;
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'PrintScreen' }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'meta' }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys: ['ctrl', 'shift'] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys: ['ctrl', 'a', 'b'] }))).toBe('invalid_argument');
+    expect(calls.length).toBe(before);
+  });
+
+  it('refuses OS-wide chords on Windows before consent, lock or helper', async () => {
+    const { service, calls, consent } = makeService({ platform: 'win32' });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    consent.mockClear();
+    const before = calls.length;
+    for (const keys of [['win', 'r'], ['meta', 'd'], ['alt', 'tab'], ['alt', 'shift', 'Tab'], ['alt', 'esc'], ['ctrl', 'Escape'], ['ctrl', 'shift', 'esc'], ['ctrl', 'alt', 'shift', 'esc'], ['ctrl', 'alt', 'delete']]) {
+      const err = await service.control(AGENT_A, { action: 'hotkey', snapshotId, keys }).catch((e: unknown) => e);
+      expect(err, keys.join('+')).toBeInstanceOf(ComputerError);
+      expect((err as ComputerError).code).toBe('shortcut_blocked');
+    }
+    expect(calls.length).toBe(before);
+    expect(service.inputHolder()).toBeNull();
+    // App-level chords still go through.
+    for (const keys of [['ctrl', 's'], ['alt', 'F4'], ['ctrl', 'shift', 'Tab']]) {
+      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys }))).toBe('resolved');
+    }
+  });
+
+  it('refuses OS-wide chords on macOS but keeps Cmd shortcuts', async () => {
+    const { service } = makeService({ platform: 'darwin' });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    for (const keys of [['cmd', 'tab'], ['cmd', 'space'], ['ctrl', 'space'], ['cmd', 'option', 'esc'], ['ctrl', 'cmd', 'q'], ['cmd', 'shift', 'q'], ['cmd', 'opt', 'd'], ['cmd', 'shift', '4'], ['ctrl', 'up'], ['ctrl', 'F2'], ['ctrl', 'alt', 'shift', 'esc']]) {
+      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('shortcut_blocked');
+    }
+    for (const keys of [['cmd', 's'], ['cmd', 'q'], ['ctrl', 'cmd', 'f'], ['cmd', 'shift', 't'], ['alt', 'tab']]) {
+      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('resolved');
+    }
+  });
+
+  it('refuses modifiers on actions that would drop them, and a Windows-key click', async () => {
+    const { service, calls } = makeService({ platform: 'win32' });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const before = calls.length;
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'a', modifiers: ['ctrl'] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'type', snapshotId, text: 'x', modifiers: ['shift'] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'scroll', snapshotId, index: 1, modifiers: ['ctrl'] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['meta'] }))).toBe('shortcut_blocked');
+    expect(calls.length).toBe(before);
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['ctrl'] }))).toBe('resolved');
+  });
+
+  it('re-checks the snapshot and the stop cooldown after a long consent wait', async () => {
+    let resolveConsent: (a: ConsentAnswer) => void = () => undefined;
+    const { service, advance, consent } = makeService();
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    // Consent is dropped (as after a stop) and the next prompt waits long.
+    (service as unknown as { grants: Map<string, boolean> }).grants.clear();
+    consent.mockImplementationOnce(() => new Promise<ConsentAnswer>((r) => { resolveConsent = r; }));
+    const parked = service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'Enter' });
+    await Promise.resolve();
+    advance(SNAPSHOT_TTL_MS + 1);
+    resolveConsent('approved');
+    expect(await codeOf(parked)).toBe('snapshot_unknown');
+    expect(service.inputHolder()).toBeNull();
+  });
+
+  it('always re-vets the window the helper answered for and refuses one that is not the app\'s', async () => {
+    const { service, helperRef } = makeService();
+    const original = helperRef.request;
+    helperRef.request = (async (method: HelperMethod, params: never) => {
+      const result = await original(method as never, params);
+      if (method === 'getAppState') return { ...(result as AppState), window: { ...(result as AppState).window, pid: 999 } };
+      return result;
+    }) as HelperLike['request'];
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('internal');
+    helperRef.request = (async (method: HelperMethod, params: never) => {
+      const result = await original(method as never, params);
+      if (method === 'getAppState') return { ...(result as AppState), window: { ...(result as AppState).window, elevated: true } };
+      return result;
+    }) as HelperLike['request'];
+    // Same ids as the resolved pair, but now elevated: re-vetted and refused.
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('target_elevated');
+  });
+
+  it('a call during quit starts no helper and does not take the stop key again', async () => {
+    let created = 0;
+    const stopKey = fakeStopKey();
+    const service = new ComputerService({
+      isEnabled: () => true,
+      createHelper: () => { created += 1; return fakeHelper({}).helper; },
+      requestConsent: async () => 'approved',
+      stopKey,
+      blockContext: () => ({}),
+    });
+    service.dispose();
+    expect(computerUseShutDown()).toBe(true);
+    expect(await codeOf(service.listApps())).toBe('helper_unavailable');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('helper_unavailable');
+    expect(created).toBe(0);
+    expect(stopKey.arm).not.toHaveBeenCalled();
   });
 
   it('lets one agent drive at a time until its lock goes idle', async () => {
