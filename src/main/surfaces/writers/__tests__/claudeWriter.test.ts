@@ -9,6 +9,22 @@ import { ConfigChangedError, SurfacesStore } from '../../safeWrite';
 import type { WriterDeps } from '../types';
 import type { SurfaceItem } from '../../../../shared/tokenUsage/surfaceTypes';
 
+/**
+ * Make `file` impossible to replace, on every platform. A read-only file
+ * blocks the atomic rename on Windows only; on Linux/macOS rename(2) needs
+ * write permission on the DIRECTORY, so the parent is locked too there.
+ * Returns the function that undoes both.
+ */
+function makeUnwritable(file: string): () => void {
+  const dir = path.dirname(file);
+  fs.chmodSync(file, 0o444);
+  if (process.platform !== 'win32') fs.chmodSync(dir, 0o555);
+  return () => {
+    try { if (process.platform !== 'win32') fs.chmodSync(dir, 0o755); } catch { /* best-effort */ }
+    try { fs.chmodSync(file, 0o666); } catch { /* best-effort */ }
+  };
+}
+
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -521,7 +537,7 @@ describe('claudeWriter', () => {
     };
 
     // Make the settings file read-only on disk to trigger write failure in applyConfigEdit
-    fs.chmodSync(settingsPath, 0o444);
+    const restoreWritable = makeUnwritable(settingsPath);
 
     const writer = createClaudeWriter();
     const result = await writer.apply({
@@ -539,9 +555,7 @@ describe('claudeWriter', () => {
     });
 
     // Restore permissions
-    try {
-      fs.chmodSync(settingsPath, 0o666);
-    } catch {}
+    restoreWritable();
 
     // Writer should report failure
     expect(result.ok).toBe(false);
@@ -892,7 +906,7 @@ describe('claudeWriter', () => {
     store.save();
 
     // Make settings.json read-only so applyConfigEdit fails on write
-    fs.chmodSync(settingsPath, 0o444);
+    const restoreWritable = makeUnwritable(settingsPath);
 
     const writer = createClaudeWriter();
     const result = await writer.apply({
@@ -910,9 +924,7 @@ describe('claudeWriter', () => {
     });
 
     // Restore permissions
-    try {
-      fs.chmodSync(settingsPath, 0o666);
-    } catch {}
+    restoreWritable();
 
     expect(result.ok).toBe(false);
 
@@ -1279,7 +1291,7 @@ describe('claudeWriter', () => {
     store.save();
 
     // Trigger failure by making settingsPath read-only
-    fs.chmodSync(settingsPath, 0o444);
+    const restoreWritable = makeUnwritable(settingsPath);
 
     const writer = createClaudeWriter();
     const result = await writer.apply({
@@ -1296,9 +1308,7 @@ describe('claudeWriter', () => {
       changes: [{ item: hookItem, enabled: true }],
     });
 
-    try {
-      fs.chmodSync(settingsPath, 0o666);
-    } catch {}
+    restoreWritable();
 
     expect(result.ok).toBe(false);
     expect(result.error).toBeDefined();
@@ -1342,7 +1352,7 @@ describe('claudeWriter', () => {
     };
 
     // Make settingsPath read-only so the second edit fails
-    fs.chmodSync(settingsPath, 0o444);
+    const restoreWritable = makeUnwritable(settingsPath);
 
     const writer = createClaudeWriter();
     const result = await writer.apply({
@@ -1359,9 +1369,7 @@ describe('claudeWriter', () => {
       changes: [{ item: projServerItem, enabled: true }],
     });
 
-    try {
-      fs.chmodSync(settingsPath, 0o666);
-    } catch {}
+    restoreWritable();
 
     expect(result.ok).toBe(false);
     expect(result.appliedItemIds).not.toContain(projServerItem.id);
