@@ -1082,7 +1082,7 @@ registerWorktaskHandlers(() => daemonClient, (services: WorktaskServices) => {
       project: { getState: (cwd: string) => getProjectConfigStore().getState(cwd) },
     }),
   });
-});
+}, ptyManager);
 // ── Press-scope fact feed (main → daemon) ───────────────────────────────────
 // The daemon decides whether an AUTOMATED approval press may land in a pane,
 // and the two facts that decision needs — is this a WorkTask task workspace,
