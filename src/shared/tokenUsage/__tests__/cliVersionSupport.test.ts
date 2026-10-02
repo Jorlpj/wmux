@@ -3,10 +3,10 @@ import { cliVersionSupport } from '../capabilities';
 
 describe('cliVersionSupport', () => {
   it.each([
-    ['agy', '1.2.13', 'tested'],
+    ['agy', '1.2.14', 'tested'],
     ['agy', '1.2.15', 'tested'],
     ['agy', '1.3.0', 'newer'],
-    ['agy', '1.2.12', 'unsupported'],
+    ['agy', '1.2.13', 'unsupported'],
     ['agy', '2.0.0', 'unsupported'],
     ['codex', '0.156.1', 'tested'],
     ['codex', '0.159.2', 'tested'],
