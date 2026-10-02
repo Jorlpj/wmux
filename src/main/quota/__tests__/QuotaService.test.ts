@@ -448,7 +448,14 @@ describe('QuotaService', () => {
   });
 
   it('no timers or background polling scheduled', async () => {
-    const service = new QuotaService({ homeDir: tmpHome });
+    // Stub the credential and codex readers: the defaults read the real
+    // ~/.claude login and would start a network request (and its timeout
+    // timer) on a machine that is signed in.
+    const service = new QuotaService({
+      homeDir: tmpHome,
+      loadClaudeCred: async () => ({ ok: false, reason: 'not-found' }),
+      readCodex: async () => { throw new Error('codex not installed'); },
+    });
     await service.readQuota();
     expect(vi.getTimerCount()).toBe(0);
   });
