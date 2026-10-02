@@ -54,7 +54,7 @@ import {
 import { inheritTaskAutonomy } from './taskAutonomy';
 import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
 import { loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
-import { commandChoosesModel } from '../../shared/orchestratorRole';
+import { commandChoosesModel, promptFlagForLauncher } from '../../shared/orchestratorRole';
 import {
   MODEL_ENV_MARKER,
   WORKER_GATEWAY_ENV,
@@ -1195,6 +1195,11 @@ export function buildInitialCommand(
   platform: NodeJS.Platform = process.platform,
 ): string {
   if (promptPath === undefined) return agentCmd;
+  // A CLI that refuses a positional first prompt (agy) gets its prompt flag
+  // right before the argument, so a launcher typed in the Fan-out dialog runs
+  // the same `agy -i "<prompt>"` a role swap produces.
+  const promptFlag = promptFlagForLauncher(agentCmd);
+  if (promptFlag) agentCmd = `${agentCmd} ${promptFlag}`;
   if (platform === 'win32') {
     // PowerShell 단일따옴표 리터럴: 내부 `'`는 `''`로 이스케이프. -LiteralPath로
     // glob·경로 특수문자 해석까지 봉쇄.

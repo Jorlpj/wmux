@@ -16,7 +16,7 @@ import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { applyTaskQueryView } from '../../shared/a2aTaskQueryView';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
-import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
+import { applyRoleAgent, bindingEnforcesModel, launchRefusesPositionalPrompt, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import {
   FANOUT_EXTRA_AGENT_STEMS,
   applyFanoutAgentFlags,
@@ -1187,7 +1187,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // before addWorkspace: nothing may await between that and pty.create. The
     // launcher is final after the swap (later steps only add flags). A failure
     // is not fatal — agy's own screen is then the fallback.
-    if (cwd && commandLauncherStem(swap.command) === 'agy') {
+    if (cwd && commandLauncherStem(swap.command) === 'agy' && launchRefusesPositionalPrompt(swap.command)) {
+      // Never trust a folder for a launch agy will reject anyway.
+      console.warn('[wmux:fanout] agy line has no prompt flag; folder not pre-trusted', { cwd });
+    } else if (cwd && commandLauncherStem(swap.command) === 'agy') {
       try {
         const trusted = await window.electronAPI.agentModels?.trustAgyFolder?.(cwd);
         if (trusted && !trusted.ok) console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, reason: trusted.reason });

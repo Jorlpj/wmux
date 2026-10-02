@@ -219,6 +219,55 @@ export function applyRoleAgent(
  *  and keeps the session open. Verified 2026-09-30 in a real PTY, agy 1.2.14. */
 const PROMPT_FLAG_BY_STEM: Readonly<Record<string, string>> = { agy: '-i' };
 
+/** Every flag such a CLI reads its first prompt from (agy: "-p/--print,
+ *  -i/--prompt-interactive"). A line already carrying one needs no other. */
+const PROMPT_TAKING_FLAGS_BY_STEM: Readonly<Record<string, readonly string[]>> = {
+  agy: ['-i', '--prompt-interactive', '-p', '--print'],
+};
+
+/** Stem of the raw first word: tokenize() treats `\` as an escape, which would
+ *  mangle a Windows launcher path (`C:\Tools\agy.exe`). */
+function rawLauncherStem(command: string): string {
+  return launcherStem(/^\s*(\S+)/.exec(command)?.[1] ?? '');
+}
+
+function hasPromptTakingFlag(stem: string, args: readonly { value: string; quoted: boolean }[]): boolean {
+  const flags = PROMPT_TAKING_FLAGS_BY_STEM[stem] ?? [];
+  return args.some((t) => !t.quoted && flags.some((f) => t.value === f || t.value.startsWith(`${f}=`)));
+}
+
+/**
+ * The flag a prompt argument appended to `agentCmd` must be preceded by, or
+ * undefined when none is needed: the CLI takes a positional prompt, or the
+ * command already carries a prompt-taking flag. Used where wmux assembles
+ * `<agentCmd> "<prompt>"` itself (fan-out worker lines), so a human-typed
+ * `agy` in the Fan-out dialog launches as `agy -i "<prompt>"` too.
+ */
+export function promptFlagForLauncher(agentCmd: string): string | undefined {
+  const tokens = tokenize(agentCmd);
+  if (tokens.length === 0) return undefined;
+  const stem = rawLauncherStem(agentCmd);
+  const flag = PROMPT_FLAG_BY_STEM[stem];
+  if (!flag) return undefined;
+  return hasPromptTakingFlag(stem, tokens.slice(1)) ? undefined : flag;
+}
+
+/**
+ * Will this fan-out worker line be refused for its prompt? For a line wmux
+ * assembled as `<agentCmd> "<prompt>"` (any argument means a prompt is
+ * there): true when the launcher rejects a positional first prompt and no
+ * prompt-taking flag is present (agy answers "Prompts are read only from
+ * -p/--print, -i/--prompt-interactive, or stdin" and exits). A bare launcher
+ * (no prompt) is never refused.
+ */
+export function launchRefusesPositionalPrompt(command: string): boolean {
+  const tokens = tokenize(command);
+  if (tokens.length < 2) return false;
+  const stem = rawLauncherStem(command);
+  if (!PROMPT_FLAG_BY_STEM[stem]) return false;
+  return !hasPromptTakingFlag(stem, tokens.slice(1));
+}
+
 /**
  * Will this binding actually cause a model flag to be spliced into a launch?
  *
