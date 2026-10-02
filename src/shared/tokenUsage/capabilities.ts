@@ -16,12 +16,48 @@ export interface SurfaceCapability {
   mechanism: string;
 }
 
-/** CLI version ranges the writers were tested against. Outside the range an adapter is read-only. */
+/** CLI versions the writers were tested against: `min` is the oldest, `max` the newest one a
+ *  write was verified on (agy and codex re-verified 2026-10-02 on agy 1.2.15 and codex-cli
+ *  0.156.1 — the config files they read did not change). */
 export const TESTED_CLI_VERSIONS = {
-  agy: { min: '1.2.14', max: '1.2.14' },
-  codex: { min: '0.159.2', max: '0.159.2' },
+  agy: { min: '1.2.13', max: '1.2.15' },
+  codex: { min: '0.156.0', max: '0.159.2' },
   claude: { min: '0.0.0', max: '999.0.0' },
 } as const satisfies Record<SurfaceProviderId, { min: string; max: string }>;
+
+export type CliVersionSupport = 'tested' | 'newer' | 'unsupported';
+
+function semverParts(v: string | null | undefined): [number, number, number] | null {
+  const m = typeof v === 'string' ? /^v?(\d+)\.(\d+)\.(\d+)/.exec(v.trim()) : null;
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+function cmp(a: [number, number, number], b: [number, number, number]): number {
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+/**
+ * Whether wmux may write a CLI's config at `version`. agy and codex ship
+ * several releases a week, so pinning one exact version turned the Custom
+ * panel read-only after every update. Writable from `min` up through any
+ * later release of the same major version: `tested` up to `max`, `newer`
+ * beyond it (the inventory then warns; every write is still backed up and
+ * re-read before it lands). Older than `min`, another major, or unknown
+ * stays read-only.
+ */
+export function cliVersionSupport(provider: SurfaceProviderId, version: string | null | undefined): CliVersionSupport {
+  const v = semverParts(version);
+  const range = TESTED_CLI_VERSIONS[provider];
+  const min = semverParts(range.min);
+  const max = semverParts(range.max);
+  if (!v || !min || !max) return 'unsupported';
+  if (cmp(v, min) < 0 || v[0] !== max[0]) return 'unsupported';
+  return cmp(v, max) <= 0 ? 'tested' : 'newer';
+}
+
+export function newerCliVersionWarning(provider: SurfaceProviderId, version: string): string {
+  return `${provider} ${version} is newer than the last version wmux tested (${TESTED_CLI_VERSIONS[provider].max}); changes are backed up before they are written.`;
+}
 
 export const SURFACE_CAPABILITIES: Record<SurfaceProviderId, SurfaceCapability[]> = {
   agy: [
