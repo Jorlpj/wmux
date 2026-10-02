@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -25,10 +26,16 @@ describe('isolateDataDir setup', () => {
   });
 
   it('inside the suite os.homedir() is under os.tmpdir() and WMUX_DATA_SUFFIX is -vitest', () => {
-    const homedir = os.homedir();
-    const tmpdir = os.tmpdir();
-    const norm = (p: string) => path.resolve(p).replace(/\\/g, '/').toLowerCase();
-    expect(norm(homedir).startsWith(norm(tmpdir))).toBe(true);
+    // The setup realpaths the temp HOME, and on macOS os.tmpdir() is the
+    // /var/folders symlink to /private/var/folders, so both sides go through
+    // the same realpath. fs.realpathSync (the JS one the setup uses) rather
+    // than .native: .native expands the Windows runner's 8.3 RUNNER~1 name.
+    const norm = (p: string) =>
+      fs.realpathSync(path.resolve(p)).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+    const homedir = norm(os.homedir());
+    const tmpdir = norm(os.tmpdir());
+    expect(homedir.startsWith(`${tmpdir}/`)).toBe(true);
+    expect(path.posix.basename(homedir).startsWith('wmux-test-')).toBe(true);
     expect(process.env.WMUX_DATA_SUFFIX).toBe('-vitest');
   });
 
