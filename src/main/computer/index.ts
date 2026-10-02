@@ -6,11 +6,13 @@ import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { readComputerUseEnabled, type ComputerUseSettingsPayload } from '../../shared/computer/config';
 import { ComputerError } from '../../shared/computer/errors';
-import { helperStatus, writeComputerUseEnabled } from './settings';
+import { helperStatus as rawHelperStatus, writeComputerUseEnabled, type ComputerHelperStatus } from './settings';
 import { ComputerService, computerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
 import { createHelperVerifier } from './verifyHelper';
+import { WINDOWS_HELPER_PIN, effectiveHelperStatus } from './helperPin';
+import { isSelfElevated } from './selfElevation';
 import { resolveHelperPathFor, type HelperSpec } from './helperPath';
 
 // The macOS helper is a separately signed .app so TCC grants attach to it and
@@ -74,7 +76,9 @@ export function helperMissingError(): ComputerError {
  * after the check, or not executable). HelperProcess puts the OS error, path
  * included, into the message; the agent gets helperMissingError instead.
  */
-const SPAWN_FAILURE = /\b(ENOENT|EACCES|EPERM)\b|could not start the computer-use helper/;
+// UNKNOWN: Defender quarantining the exe fails the spawn with
+// ERROR_VIRUS_INFECTED (225), which libuv reports as UNKNOWN.
+const SPAWN_FAILURE = /\b(ENOENT|EACCES|EPERM|UNKNOWN)\b|could not start the computer-use helper/;
 
 /**
  * The helper as ComputerService sees it. Readiness is re-checked on every
@@ -93,7 +97,7 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
     async request(method, params) {
       if (!ready()) {
         reset();
-        throw helperMissingError();
+        throw notReadyError(command);
       }
       proc ??= new HelperProcess({ command, verify: verifyHelper, log: (m) => console.warn(m) });
       try {
@@ -103,6 +107,10 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
           console.warn(`[computer] ${err.message}`);
           reset();
           throw helperMissingError();
+        }
+        if (err instanceof ComputerError && err.code === 'helper_unavailable' && ELEVATED_EXIT.test(err.message)) {
+          reset();
+          throw elevatedError();
         }
         throw err;
       }
@@ -114,10 +122,41 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
 }
 
 /**
- * Packaged macOS builds spawn the helper only after its code signature checks
- * out (verifyHelper.ts); one verifier, so its verdict cache is shared.
+ * Packaged builds spawn the helper only after it checks out (verifyHelper.ts):
+ * its code signature on macOS, its build-time SHA-256 pin on Windows. One
+ * verifier, so its verdict cache is shared.
  */
-const verifyHelper = createHelperVerifier({ platform: process.platform, isPackaged: app.isPackaged });
+const verifyHelper = createHelperVerifier({
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  windowsPin: WINDOWS_HELPER_PIN,
+});
+
+/** settings.ts's file check, plus the packaged-Windows signing gate (helperPin.ts). */
+function helperStatus(helperPath: string | null): ComputerHelperStatus {
+  return effectiveHelperStatus(rawHelperStatus(helperPath), {
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    pin: WINDOWS_HELPER_PIN,
+    selfElevated: process.platform === 'win32' ? isSelfElevated() : null,
+  });
+}
+
+/** The helper's own refusal to run elevated (native/computer-use-windows, exit 72). */
+const ELEVATED_EXIT = /\bexit code 72\b|refusing to run elevated/;
+
+/** Why a helper that is not ready cannot be used, in words an agent can relay. */
+function notReadyError(helperPath: string | null): ComputerError {
+  return helperStatus(helperPath) === 'elevated' ? elevatedError() : helperMissingError();
+}
+
+function elevatedError(): ComputerError {
+  return new ComputerError(
+    'helper_unavailable',
+    'wmux is running as administrator, and computer use refuses to run elevated (it could drive administrator apps). ' +
+      'Tell the user to restart wmux without "Run as administrator"; do not try other ways to control the desktop',
+  );
+}
 
 let stopKey: StopKey | null = null;
 let liveService: ComputerService | null = null;
@@ -155,7 +194,7 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
         if (!helperReady()) {
           if (key.status() === 'held' || helper?.reset()) service.abort();
           key.release();
-          throw helperMissingError();
+          throw notReadyError(helperPath);
         }
         return key.arm();
       },
