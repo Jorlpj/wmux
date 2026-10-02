@@ -422,6 +422,13 @@ export interface UISlice {
   // cannot overwrite the auto-enabled value with the saved one.
   sessionSettingsLoaded: boolean;
   markSessionSettingsLoaded: () => void;
+  // Non-persisted: a SAVED session's workspaces were installed this boot, so
+  // the workspace ids are the ones on disk. Stays false after a failed or
+  // empty load (the tree is then a fresh default workspace). Rides the
+  // workspace mirror so main's startup Deck reconcile can refuse to treat
+  // every real workspace as an orphan.
+  sessionRestored: boolean;
+  markSessionRestored: () => void;
 
   // #517 backend choice (default 'builtin'). NON-PERSISTED renderer mirror:
   // main owns the authoritative value (userData JSON, read synchronously at
@@ -1395,6 +1402,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   sessionSettingsLoaded: false,
+
+  sessionRestored: false,
+
+  markSessionRestored: () => set((state) => {
+    state.sessionRestored = true;
+  }),
 
   markSessionSettingsLoaded: () => set((state) => {
     state.sessionSettingsLoaded = true;

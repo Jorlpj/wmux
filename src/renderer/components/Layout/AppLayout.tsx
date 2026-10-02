@@ -1393,6 +1393,12 @@ export default function AppLayout() {
 
         sessionLoadedRef.current = true;
         setSessionLoaded(true);
+        // Only a saved session that brought workspaces back counts as
+        // restored: an empty one leaves the fresh default workspace in place,
+        // whose id matches nothing on disk (main's startup Deck reconcile).
+        if (Array.isArray(saved.workspaces) && saved.workspaces.length > 0) {
+          useStore.getState().markSessionRestored();
+        }
 
         if (isFirstAutoUpdateChoice) {
           setShowAutoUpdatePrompt(true);

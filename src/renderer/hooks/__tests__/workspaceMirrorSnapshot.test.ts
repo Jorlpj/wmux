@@ -370,6 +370,13 @@ describe('buildWorkspaceMirrorPayload', () => {
     expect(payload.entries).toHaveLength(2);
     expect(payload.fleets.every((f) => f.ts === 5555)).toBe(true);
   });
+
+  it('carries sessionRestored, false unless the store says a saved session came back', () => {
+    expect(buildWorkspaceMirrorPayload(state(), () => 1).sessionRestored).toBe(false);
+    expect(
+      buildWorkspaceMirrorPayload({ ...state(), sessionRestored: true }, () => 1).sessionRestored,
+    ).toBe(true);
+  });
 });
 
 // ─── Workspace-OWNED walks (#977 review) ─────────────────────────────────────

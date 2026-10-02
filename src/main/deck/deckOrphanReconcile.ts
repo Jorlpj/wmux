@@ -310,6 +310,21 @@ export async function tryStartupDeckReconcile(opts?: {
 
   if (entries && entries.length > 0 && peek && peek.ageMs <= maxAge) {
     startupDeckReconcileDone = true;
+    // A failed or empty session load still flips the renderer's pane gate and
+    // pushes a mirror holding one freshly generated default workspace. Every
+    // real workspace id on disk would then look orphaned and lose its Deck
+    // state for good, although the next healthy boot restores those
+    // workspaces. Same rule session.json saves follow: nothing destructive
+    // unless the saved session actually came back.
+    if (!mirror.isSessionRestored()) {
+      const line = 'skipped startup reconcile: the renderer did not restore a saved session (load failed, was empty, or the renderer is too old to say)';
+      if (opts?.log) opts.log(line);
+      else {
+        // eslint-disable-next-line no-console
+        console.log(`[deck:reconcile] ${line}`);
+      }
+      return true;
+    }
     const liveIds = entries.map((e) => e.id);
     try {
       await reconcileOrphanDeckState(liveIds, opts);
