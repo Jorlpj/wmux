@@ -188,3 +188,53 @@ describe('AgyAccountService', () => {
     expect(agyAccountQuotaPath('a@x.com', '/h')).toBe(path.join('/h', '.wmux', 'quota', 'agy-accounts', `${agyQuotaKey('a@x.com')}.json`));
   });
 });
+
+describe('AgyAccountService — self-healing signals', () => {
+  let dataDir: string;
+  let backend: FakeBackend;
+  let snapshots: Map<string, AgyAccountQuotaSnapshot>;
+  let clock: number;
+
+  const make = () => new AgyAccountService({
+    vault: new AgyVault(backend),
+    dataDir,
+    now: () => clock,
+    readSnapshot: (email) => snapshots.get(email) ?? null,
+    setTimer: () => ({ cancel: () => undefined }),
+  });
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-agy-heal-'));
+    backend = new FakeBackend();
+    snapshots = new Map();
+    clock = NOW;
+  });
+  afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
+
+  it('a newer sensor snapshot with quota lifts a cooldown set from pane text', async () => {
+    const s = make();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
+    await s.addCurrent();
+    await s.markActiveExhausted();
+    expect(s.snapshot().accounts[0].state).toBe('exhausted');
+    snapshots.set('a@x.com', { quota: { 'gemini-5h': { remaining_fraction: 0.8, reset_time: LATER } }, quotaCapturedAtMs: NOW - 1 });
+    expect(s.snapshot().accounts[0].state).toBe('exhausted');
+    snapshots.set('a@x.com', { quota: { 'gemini-5h': { remaining_fraction: 0.8, reset_time: LATER } }, quotaCapturedAtMs: NOW + 1 });
+    expect(s.snapshot().accounts[0].state).toBe('active');
+  });
+
+  it('sign-in ignores the previous account written back by a running session', async () => {
+    const s = make();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
+    await s.addCurrent();
+    await s.beginLogin();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', 'r9'));
+    await s.pollLogin();
+    expect(s.loginState().pending).toBe(true);
+    expect(backend.read(AGY_ACTIVE_TARGET)).toBeNull();
+    expect(JSON.parse(String(backend.read(copyTarget('a@x.com')))).token.refresh_token).toBe('r9');
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('b@x.com'));
+    await s.pollLogin();
+    expect(s.loginState()).toMatchObject({ pending: false, lastResult: 'b@x.com' });
+  });
+});
