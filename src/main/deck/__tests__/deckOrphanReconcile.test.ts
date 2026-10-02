@@ -301,6 +301,22 @@ describe('deckOrphanReconcile', () => {
     expect(done3).toBe(true);
   });
 
+  it('does not tear down an orphan whose work cannot be archived', async () => {
+    beginOrContinueDeckWork('ws-orphan', 'orphan work', dir, Date.now() - 100 * 3600 * 1000);
+    setDeckWorkBootId('fresh-boot-id');
+    await setWorkspaceMode('ws-orphan', 'danger', dir);
+    // Unreadable archive + a FILE where the quarantine folder goes: archiving throws.
+    fs.writeFileSync(path.join(dir, 'deck-work.archive.json'), 'CORRUPT{');
+    fs.writeFileSync(path.join(dir, 'corrupted'), 'not a folder');
+
+    const report = await reconcileOrphanDeckState(['ws-live'], { dir, log: () => undefined });
+
+    expect(report.skippedIds).toEqual(['ws-orphan']);
+    expect(report.tornDown).toEqual([]);
+    expect(loadActiveDeckWork('ws-orphan', dir)).not.toBeNull();
+    expect(collectDeckWorkspaceFiles(dir).get('ws-orphan')?.length).toBeGreaterThan(1);
+  });
+
   // P1 data loss: a failed / null / empty session.load() still flips the pane
   // gate, and the mirror then holds ONE freshly generated default workspace.
   // Every real workspace on disk must keep its Deck state.

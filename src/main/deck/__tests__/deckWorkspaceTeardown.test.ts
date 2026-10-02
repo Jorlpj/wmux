@@ -12,6 +12,10 @@ import {
   recordDeckWorkA2aTask,
   loadActiveDeckWork,
   getDeckWorkPath,
+  archiveDeckWork,
+  getDeckWorkArchivePath,
+  loadArchivedDeckWorks,
+  MAX_ARCHIVED_DECK_WORKS,
   type ActiveDeckWork,
 } from '../deckWorkStore';
 import { raiseDecision, loadWorkspaceDecision, getDeckDecisionPath } from '../deckDecisionStore';
@@ -299,5 +303,63 @@ describe('surfaceStrandedWork shared function', () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(loadWorkspaceDecision('ws-test-2', dir)).toBeNull();
+  });
+});
+
+describe('deckWorkspaceTeardown — archive before clearing (workspace removal)', () => {
+  it('archives the active work record before clearing it', async () => {
+    beginOrContinueDeckWork('ws-a', 'request a', dir);
+    const before = loadActiveDeckWork('ws-a', dir);
+    expect(before).not.toBeNull();
+
+    const report = await teardownWorkspaceDeckState('ws-a', { dir, log: () => undefined });
+
+    expect(report.workArchived).toBe(true);
+    expect(report.workCleared).toBe(true);
+    expect(loadActiveDeckWork('ws-a', dir)).toBeNull();
+    expect(loadArchivedDeckWorks(dir).map((w) => w.id)).toEqual([before?.id]);
+  });
+
+  it('moves an unreadable archive aside instead of overwriting it, then archives', async () => {
+    fs.writeFileSync(getDeckWorkArchivePath(dir), 'CORRUPT{ old history');
+    beginOrContinueDeckWork('ws-b', 'request b', dir);
+
+    const report = await teardownWorkspaceDeckState('ws-b', { dir, log: () => undefined });
+
+    expect(report.workArchived).toBe(true);
+    expect(loadArchivedDeckWorks(dir).map((w) => w.workspaceId)).toEqual(['ws-b']);
+    // The old bytes survive in the atomicWrite quarantine folder.
+    const quarantine = path.join(dir, 'corrupted');
+    const kept = fs.readdirSync(quarantine).filter((f) => f.startsWith('deck-work.archive.json'));
+    expect(kept).toHaveLength(1);
+    expect(fs.readFileSync(path.join(quarantine, kept[0]), 'utf8')).toBe('CORRUPT{ old history');
+  });
+
+  it('keeps the work record when the archive cannot be written', async () => {
+    fs.writeFileSync(getDeckWorkArchivePath(dir), 'CORRUPT{');
+    // A FILE where the quarantine folder should go makes moving the corrupt
+    // archive aside fail, so archiving throws.
+    fs.writeFileSync(path.join(dir, 'corrupted'), 'not a folder');
+    beginOrContinueDeckWork('ws-c', 'request c', dir);
+    const lines: string[] = [];
+
+    const report = await teardownWorkspaceDeckState('ws-c', { dir, log: (l) => lines.push(l) });
+
+    expect(report.workArchived).toBe(false);
+    expect(report.workCleared).toBe(false);
+    expect(loadActiveDeckWork('ws-c', dir)).not.toBeNull();
+    expect(fs.readFileSync(getDeckWorkArchivePath(dir), 'utf8')).toBe('CORRUPT{');
+    expect(lines.join('\n')).toMatch(/kept active work .* archiving it failed/);
+  });
+
+  it('caps the archive, dropping the oldest records first', () => {
+    const extra = 5;
+    for (let i = 0; i < MAX_ARCHIVED_DECK_WORKS + extra; i++) {
+      archiveDeckWork({ id: `w-${i}`, workspaceId: 'ws-cap' } as ActiveDeckWork, dir);
+    }
+    const ids = loadArchivedDeckWorks(dir).map((w) => w.id);
+    expect(ids).toHaveLength(MAX_ARCHIVED_DECK_WORKS);
+    expect(ids[0]).toBe(`w-${extra}`);
+    expect(ids[ids.length - 1]).toBe(`w-${MAX_ARCHIVED_DECK_WORKS + extra - 1}`);
   });
 });

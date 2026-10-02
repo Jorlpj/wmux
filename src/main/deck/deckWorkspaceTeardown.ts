@@ -3,7 +3,9 @@
 // Tears down all Deck-owned state when a workspace is removed from wmux:
 //   1. Loop cadence schedule (deckScheduleStore)
 //   2. Durable loop state (deckLoopStateStore)
-//   3. Active work request (deckWorkStore) — surfaces stranded work to onStrandedWork
+//   3. Active work request (deckWorkStore) — archived first (deck-work.archive.json),
+//      then cleared and surfaced to onStrandedWork. If the archive write fails
+//      the record is KEPT, never deleted unarchived.
 //   4. Autonomy settings (deckAutonomyStore) — deletes the workspace entry
 //   5. Pending / resolved decisions (deckDecisionStore)
 //   6. Commander persisted session keys (commanderSessionStore)
@@ -19,7 +21,9 @@
 import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import {
   type ActiveDeckWork,
+  archiveDeckWork,
   clearActiveDeckWork,
+  loadActiveDeckWork,
   hasPendingDeckWorkA2aTasks,
   renderStrandedDeckWorkBlock,
 } from './deckWorkStore';
@@ -45,6 +49,8 @@ export interface TeardownReport {
   scheduleIds: string[];
   loopCleared: boolean;
   workCleared: boolean;
+  /** The active work record was copied into the archive before it was cleared. */
+  workArchived: boolean;
   strandedWork: ActiveDeckWork | null;
   autonomyDeleted: boolean;
   decisionCleared: boolean;
@@ -53,6 +59,9 @@ export interface TeardownReport {
 
 export interface TeardownOptions {
   dir?: string;
+  /** Archive the active work record before clearing it (default true). The
+   *  startup reconcile archives on its own and passes false. */
+  archiveActiveWork?: boolean;
   onStrandedWork?: (work: ActiveDeckWork) => void;
   log?: (line: string) => void;
 }
@@ -116,6 +125,7 @@ export async function teardownWorkspaceDeckState(
     scheduleIds: [],
     loopCleared: false,
     workCleared: false,
+    workArchived: false,
     strandedWork: null,
     autonomyDeleted: false,
     decisionCleared: false,
@@ -139,6 +149,7 @@ export async function teardownWorkspaceDeckState(
     scheduleIds: [],
     loopCleared: false,
     workCleared: false,
+    workArchived: false,
     strandedWork: null,
     autonomyDeleted: false,
     decisionCleared: false,
@@ -186,9 +197,22 @@ export async function teardownWorkspaceDeckState(
     log(`[loop] failed to clear loop for ${id}: ${String(err)}`);
   }
 
-  // 3. Work Store: clear active work and notify stranded work
+  // 3. Work Store: archive, then clear active work and notify stranded work
   try {
-    const stranded = clearActiveDeckWork(id, dir);
+    let keepWork = false;
+    if (opts?.archiveActiveWork !== false) {
+      const current = loadActiveDeckWork(id, dir);
+      if (current) {
+        try {
+          archiveDeckWork(current, dir);
+          report.workArchived = true;
+        } catch (err) {
+          keepWork = true;
+          log(`[work] kept active work ${current.id} for ${id}: archiving it failed: ${String(err)}`);
+        }
+      }
+    }
+    const stranded = keepWork ? null : clearActiveDeckWork(id, dir);
     if (stranded) {
       report.workCleared = true;
       report.strandedWork = stranded;
@@ -199,8 +223,8 @@ export async function teardownWorkspaceDeckState(
           // notification callback must not break teardown
         }
       }
-      log(`[work] cleared active work ${stranded.id} for ${id}`);
-    } else {
+      log(`[work] ${report.workArchived ? 'archived and ' : ''}cleared active work ${stranded.id} for ${id}`);
+    } else if (!keepWork) {
       log(`[work] no active work found for ${id}`);
     }
   } catch (err) {
