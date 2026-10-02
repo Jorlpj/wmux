@@ -46,6 +46,7 @@ import { registerWebHandlers } from './handlers/web.handler';
 import { registerAutomationHandlers } from './handlers/automation.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
 import { registerAccountRotationHandlers } from './handlers/accountRotation.handler';
+import { registerAgyAccountHandlers } from './handlers/agyAccount.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { applyUiZoom, winOverlayHeight } from '../window/uiZoom';
 import { IPC } from '../../shared/constants';
@@ -233,6 +234,7 @@ export function registerAllHandlers(
   // accounts.json in both local and daemon mode; spawn env is resolved in main).
   const cleanupAccounts = registerAccountHandlers();
   const cleanupAccountRotation = registerAccountRotationHandlers();
+  const cleanupAgyAccounts = registerAgyAccountHandlers(getWindow);
   const cleanupQuickCommands = registerQuickCommandHandlers();
 
   // X1 local-mode context watchers (git HEAD fs.watch + PID-tree ports).
@@ -538,6 +540,7 @@ export function registerAllHandlers(
     cleanupChatV2();
     cleanupAccounts();
     cleanupAccountRotation();
+    cleanupAgyAccounts();
     cleanupQuickCommands();
     // Mirror the register-side removeHandler so a teardown leaves no stale
     // handle behind (handle handlers are not .on listeners — see above).

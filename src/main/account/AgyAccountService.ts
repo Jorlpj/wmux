@@ -1,0 +1,364 @@
+// ─── agy multi-account service — registry, swap, sign-in, quota gate ─────────
+//
+// See src/shared/agyAccounts.ts for why agy accounts are swapped rather than
+// bound per pane. This service owns `agy-accounts.json` in the wmux data dir
+// (labels, cooldowns, the auto-rotate switch — never a secret) and drives the
+// vault. Every agy launch wmux types goes through `prepareLaunch()`: it keeps
+// the active account while it has quota, swaps to the account with the most
+// quota left when it does not, and refuses the launch when no account has
+// quota — so wmux never keeps sending work to an account that is out.
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { getWmuxDir } from '../../daemon/config';
+import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import {
+  AGY_DEFAULT_COOLDOWN_MS,
+  agyAccountRow,
+  chooseAgyAccount,
+  normalizeAgyEmail,
+  type AgyAccount,
+  type AgyAccountQuotaSnapshot,
+  type AgyAccountsSnapshot,
+  type AgyLaunchDecision,
+} from '../../shared/agyAccounts';
+import { AgyVault, getAgyVaultBackend } from './agyVault';
+
+interface AgyAccountsFile {
+  version: number;
+  autoRotate: boolean;
+  accounts: AgyAccount[];
+}
+
+const SCHEMA_VERSION = 1;
+const MAX_ACCOUNTS = 20;
+const MAX_LABEL_CHARS = 80;
+const LOGIN_POLL_MS = 2000;
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** File key for an account's quota snapshot. Must match quota-sink.js. */
+export function agyQuotaKey(email: string): string {
+  return createHash('sha256').update(normalizeAgyEmail(email)).digest('hex').slice(0, 16);
+}
+
+export function agyAccountQuotaPath(email: string, homeDir: string = os.homedir()): string {
+  return path.join(homeDir, '.wmux', 'quota', 'agy-accounts', `${agyQuotaKey(email)}.json`);
+}
+
+function sanitizeAccount(raw: unknown): AgyAccount | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.id !== 'string' || !o.id) return null;
+  if (typeof o.email !== 'string' || !o.email.includes('@')) return null;
+  return {
+    id: o.id,
+    email: normalizeAgyEmail(o.email),
+    label: typeof o.label === 'string' ? o.label.slice(0, MAX_LABEL_CHARS) : '',
+    addedAt: typeof o.addedAt === 'number' ? o.addedAt : 0,
+    ...(o.needsReauth === true ? { needsReauth: true } : {}),
+    ...(typeof o.cooldownUntil === 'number' && Number.isFinite(o.cooldownUntil) ? { cooldownUntil: o.cooldownUntil } : {}),
+  };
+}
+
+function sanitizeFile(raw: unknown): AgyAccountsFile {
+  const o = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const seen = new Set<string>();
+  const accounts = (Array.isArray(o.accounts) ? o.accounts : [])
+    .map(sanitizeAccount)
+    .filter((a): a is AgyAccount => a !== null && !seen.has(a.email) && Boolean(seen.add(a.email)));
+  return { version: SCHEMA_VERSION, autoRotate: o.autoRotate !== false, accounts };
+}
+
+export class AgyAccountError extends Error {
+  constructor(readonly code: 'unsupported' | 'not-found' | 'limit' | 'invalid' | 'busy' | 'swap-failed', message: string) {
+    super(message);
+    this.name = 'AgyAccountError';
+  }
+}
+
+export interface AgyAccountServiceDeps {
+  vault: AgyVault | null;
+  dataDir?: string;
+  homeDir?: string;
+  now?: () => number;
+  readSnapshot?: (email: string) => AgyAccountQuotaSnapshot | null;
+  setTimer?: (fn: () => void, ms: number) => { cancel: () => void };
+}
+
+export interface AgyLoginState {
+  pending: boolean;
+  previousEmail: string | null;
+  startedAt: number | null;
+  /** Email of the account the last sign-in landed on. */
+  lastResult: string | null;
+}
+
+export class AgyAccountService {
+  private readonly filePath: string;
+  private readonly homeDir: string;
+  private readonly now: () => number;
+  private cache: AgyAccountsFile | null = null;
+  private writeChain: Promise<unknown> = Promise.resolve();
+  private login: AgyLoginState = { pending: false, previousEmail: null, startedAt: null, lastResult: null };
+  private loginTimer: { cancel: () => void } | null = null;
+  private readonly listeners = new Set<() => void>();
+
+  constructor(private readonly deps: AgyAccountServiceDeps) {
+    this.filePath = path.join(deps.dataDir ?? getWmuxDir(), 'agy-accounts.json');
+    this.homeDir = deps.homeDir ?? os.homedir();
+    this.now = deps.now ?? Date.now;
+  }
+
+  get supported(): boolean {
+    return this.deps.vault !== null;
+  }
+
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private emit(): void {
+    for (const l of this.listeners) {
+      try { l(); } catch { /* listener faults never break the service */ }
+    }
+  }
+
+  private file(): AgyAccountsFile {
+    if (!this.cache) {
+      let raw: unknown = null;
+      try { raw = atomicReadJSONSync<unknown>(this.filePath); } catch { raw = null; }
+      this.cache = sanitizeFile(raw);
+    }
+    return this.cache;
+  }
+
+  private mutate<T>(fn: (file: AgyAccountsFile) => T): Promise<T> {
+    const run = this.writeChain.then(async () => {
+      const next = structuredClone(this.file());
+      const result = fn(next);
+      await atomicWriteJSON(this.filePath, next);
+      this.cache = next;
+      return result;
+    });
+    this.writeChain = run.catch(() => undefined);
+    return run.then((r) => { this.emit(); return r; });
+  }
+
+  private readSnapshot(email: string): AgyAccountQuotaSnapshot | null {
+    if (this.deps.readSnapshot) return this.deps.readSnapshot(email);
+    try {
+      const raw = JSON.parse(fs.readFileSync(agyAccountQuotaPath(email, this.homeDir), 'utf8')) as unknown;
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as AgyAccountQuotaSnapshot : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private vault(): AgyVault {
+    if (!this.deps.vault) throw new AgyAccountError('unsupported', 'agy accounts need the Windows Credential Manager');
+    return this.deps.vault;
+  }
+
+  snapshot(): AgyAccountsSnapshot {
+    const file = this.file();
+    const activeEmail = this.deps.vault?.activeEmail() ?? null;
+    const now = this.now();
+    return {
+      supported: this.supported,
+      autoRotate: file.autoRotate,
+      activeEmail,
+      accounts: file.accounts.map((a) => agyAccountRow(a, this.readSnapshot(a.email), activeEmail, now)),
+    };
+  }
+
+  loginState(): AgyLoginState {
+    return { ...this.login };
+  }
+
+  /** Register the account agy is signed in with right now (or refresh its vault copy). */
+  async addCurrent(label = ''): Promise<AgyAccount> {
+    const email = this.vault().captureActive();
+    if (!email) throw new AgyAccountError('not-found', 'agy is not signed in');
+    return this.register(email, label);
+  }
+
+  private register(email: string, label: string): Promise<AgyAccount> {
+    return this.mutate((file) => {
+      const existing = file.accounts.find((a) => a.email === email);
+      if (existing) {
+        delete existing.needsReauth;
+        if (label.trim()) existing.label = label.trim().slice(0, MAX_LABEL_CHARS);
+        return { ...existing };
+      }
+      if (file.accounts.length >= MAX_ACCOUNTS) throw new AgyAccountError('limit', `at most ${MAX_ACCOUNTS} agy accounts`);
+      const account: AgyAccount = { id: randomUUID(), email, label: label.trim().slice(0, MAX_LABEL_CHARS), addedAt: this.now() };
+      file.accounts.push(account);
+      return { ...account };
+    });
+  }
+
+  async rename(id: string, label: string): Promise<void> {
+    await this.mutate((file) => {
+      const a = file.accounts.find((x) => x.id === id);
+      if (!a) throw new AgyAccountError('not-found', 'unknown agy account');
+      a.label = label.trim().slice(0, MAX_LABEL_CHARS);
+    });
+  }
+
+  /** Unregister and drop the vault copy. The live sign-in is left alone. */
+  async remove(id: string): Promise<void> {
+    const email = await this.mutate((file) => {
+      const i = file.accounts.findIndex((x) => x.id === id);
+      if (i < 0) throw new AgyAccountError('not-found', 'unknown agy account');
+      return file.accounts.splice(i, 1)[0].email;
+    });
+    this.deps.vault?.removeCopy(email);
+  }
+
+  async setAutoRotate(on: boolean): Promise<void> {
+    await this.mutate((file) => { file.autoRotate = on; });
+  }
+
+  /** Make an account the active agy sign-in. */
+  async activate(id: string): Promise<void> {
+    if (this.login.pending) throw new AgyAccountError('busy', 'an agy sign-in is in progress');
+    const account = this.file().accounts.find((a) => a.id === id);
+    if (!account) throw new AgyAccountError('not-found', 'unknown agy account');
+    if (!this.vault().activate(account.email)) {
+      await this.mutate((file) => {
+        const a = file.accounts.find((x) => x.id === id);
+        if (a) a.needsReauth = true;
+      });
+      throw new AgyAccountError('swap-failed', 'this account has no saved sign-in; sign in to it again');
+    }
+    this.emit();
+  }
+
+  /** Record that the active account ran out (pane output said so). */
+  async markActiveExhausted(availableAtMs?: number): Promise<void> {
+    const email = this.deps.vault?.activeEmail();
+    if (!email) return;
+    if (!this.file().accounts.some((a) => a.email === email)) return;
+    const until = availableAtMs && availableAtMs > this.now() ? availableAtMs : this.now() + AGY_DEFAULT_COOLDOWN_MS;
+    await this.mutate((file) => {
+      const a = file.accounts.find((x) => x.email === email);
+      if (a) a.cooldownUntil = until;
+    });
+  }
+
+  async clearCooldown(id: string): Promise<void> {
+    await this.mutate((file) => {
+      const a = file.accounts.find((x) => x.id === id);
+      if (a) delete a.cooldownUntil;
+    });
+  }
+
+  /**
+   * Start adding an account: save the live sign-in, sign agy out, and wait
+   * for a new sign-in to land in the slot (the user signs in from the agy
+   * pane the renderer opens). The previous account is restored when the
+   * sign-in is cancelled or times out.
+   */
+  async beginLogin(): Promise<AgyLoginState> {
+    const vault = this.vault();
+    if (this.login.pending) return this.loginState();
+    const previousEmail = vault.activeEmail();
+    if (previousEmail && this.file().accounts.some((a) => a.email === previousEmail)) vault.captureActive();
+    else if (previousEmail) await this.addCurrent();
+    if (!vault.signOutActive()) throw new AgyAccountError('swap-failed', 'could not sign agy out');
+    this.login = { pending: true, previousEmail, startedAt: this.now(), lastResult: null };
+    this.emit();
+    this.scheduleLoginPoll();
+    return this.loginState();
+  }
+
+  private scheduleLoginPoll(): void {
+    const set = this.deps.setTimer ?? ((fn: () => void, ms: number) => {
+      const t = setTimeout(fn, ms);
+      t.unref?.();
+      return { cancel: () => clearTimeout(t) };
+    });
+    this.loginTimer = set(() => { void this.pollLogin(); }, LOGIN_POLL_MS);
+  }
+
+  /** One poll step; exposed for tests. */
+  async pollLogin(): Promise<void> {
+    if (!this.login.pending) return;
+    const email = this.deps.vault?.activeEmail() ?? null;
+    if (email) {
+      this.login = { ...this.login, pending: false, lastResult: email };
+      this.loginTimer = null;
+      await this.addCurrent();
+      return;
+    }
+    if (this.now() - (this.login.startedAt ?? 0) > LOGIN_TIMEOUT_MS) {
+      await this.cancelLogin();
+      return;
+    }
+    this.scheduleLoginPoll();
+  }
+
+  async cancelLogin(): Promise<void> {
+    if (!this.login.pending) return;
+    this.loginTimer?.cancel();
+    this.loginTimer = null;
+    const previous = this.login.previousEmail;
+    this.login = { pending: false, previousEmail: null, startedAt: null, lastResult: null };
+    if (previous && !this.deps.vault?.activeEmail()) this.deps.vault?.activate(previous);
+    this.emit();
+  }
+
+  /**
+   * Gate for every agy launch wmux types. Never throws: an unsupported
+   * platform or an empty registry lets the launch through unchanged.
+   */
+  async prepareLaunch(): Promise<AgyLaunchDecision> {
+    if (!this.deps.vault || this.login.pending) return { ok: true, account: null, switched: false };
+    const snap = this.snapshot();
+    if (snap.accounts.length === 0) return { ok: true, account: null, switched: false };
+    // Fold agy's own token refreshes back into the vault copy first.
+    if (snap.activeEmail && snap.accounts.some((a) => a.active)) this.deps.vault.captureActive();
+    if (!snap.autoRotate) {
+      // Rotation off: never swap, but still refuse an active account that is out.
+      const active = snap.accounts.find((a) => a.active);
+      if (!active || active.state === 'active') return { ok: true, account: active ?? null, switched: false };
+      return { ok: false, reason: 'all-exhausted', availableAtMs: active.availableAtMs };
+    }
+    const decision = chooseAgyAccount(snap.accounts);
+    if (!decision.ok || !decision.switched || !decision.account) return decision;
+    if (!this.deps.vault.activate(decision.account.email)) {
+      await this.mutate((file) => {
+        const a = file.accounts.find((x) => x.id === decision.account?.id);
+        if (a) a.needsReauth = true;
+      });
+      return this.prepareLaunch();
+    }
+    console.log(`[agy-accounts] switched agy to account ${decision.account.id} for this launch`);
+    this.emit();
+    return decision;
+  }
+
+  dispose(): void {
+    this.loginTimer?.cancel();
+    this.loginTimer = null;
+    this.listeners.clear();
+  }
+}
+
+let instance: AgyAccountService | null = null;
+
+export function getAgyAccountService(): AgyAccountService {
+  if (!instance) {
+    const backend = getAgyVaultBackend();
+    instance = new AgyAccountService({ vault: backend ? new AgyVault(backend) : null });
+  }
+  return instance;
+}
+
+export function __resetAgyAccountServiceForTests(): void {
+  instance?.dispose();
+  instance = null;
+}
