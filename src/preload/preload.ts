@@ -520,6 +520,9 @@ const electronAPI = {
     getRequireApproval: () => ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_GET) as Promise<boolean>,
     setRequireApproval: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_SET, value) as Promise<boolean>,
+    getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
+    setTrustAgyFolders: (value: boolean) =>
+      ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,
     getWorkerPermissionMode: () =>
       ipcRenderer.invoke(IPC.FANOUT_WORKER_MODE_GET) as Promise<
         import('../shared/workerLaunch').FanoutWorkerPermissionMode

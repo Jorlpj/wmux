@@ -429,6 +429,16 @@ type RpcResult = unknown;
 // Hook
 // ---------------------------------------------------------------------------
 
+/** One notice per burst: a fan-out of N agy tasks hits this N times. */
+const AGY_TRUST_NOTE_INTERVAL_MS = 60_000;
+let lastAgyTrustNoteAt = 0;
+
+function noteAgyTrustScreen(now: number = Date.now()): void {
+  if (now - lastAgyTrustNoteAt < AGY_TRUST_NOTE_INTERVAL_MS) return;
+  lastAgyTrustNoteAt = now;
+  useStore.getState().pushToast({ level: 'warn', message: t('fanout.agyTrustScreenNote'), durationMs: 15_000 });
+}
+
 export function useRpcBridge(): void {
   useEffect(() => {
     // ── RPC command listener ─────────────────────────────────────────────────
@@ -1193,7 +1203,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     } else if (cwd && commandLauncherStem(swap.command) === 'agy') {
       try {
         const trusted = await window.electronAPI.agentModels?.trustAgyFolder?.(cwd);
-        if (trusted && !trusted.ok) console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, reason: trusted.reason });
+        if (trusted && !trusted.ok) {
+          console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, reason: trusted.reason });
+          // Off by default (opt-in setting): say so where the operator looks,
+          // because the task now waits on agy's own trust screen.
+          if (trusted.disabled) noteAgyTrustScreen();
+        }
       } catch (err) {
         console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, err });
       }

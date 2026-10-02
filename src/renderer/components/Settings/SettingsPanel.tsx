@@ -2517,6 +2517,8 @@ function FanoutWorkersSection() {
   // Main-side too: main makes the approval decision, so the switch it reads
   // is the one this row writes.
   const [requireApproval, setRequireApprovalState] = useState(false);
+  // Main-side as well: main refuses the agy trust write while this is off.
+  const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   const [mode, setMode] = useState<FanoutWorkerPermissionMode>(DEFAULT_FANOUT_WORKER_PERMISSION_MODE);
   // Shown as its own line under the row, not in the (one-line) description,
   // so a failure's text is never cut off behind Learn more.
@@ -2533,6 +2535,11 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getRequireApproval?.()
       .then((v) => {
         if (!cancelled && typeof v === 'boolean') setRequireApprovalState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getTrustAgyFolders?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'boolean') setTrustAgyFoldersState(v);
       })
       .catch(() => undefined);
     return () => {
@@ -2552,6 +2559,13 @@ function FanoutWorkersSection() {
     window.electronAPI.fanout
       .setRequireApproval(next)
       .then((stored) => setRequireApprovalState(stored))
+      .catch(() => undefined);
+  };
+
+  const onTrustAgyFoldersChange = (next: boolean) => {
+    window.electronAPI.fanout
+      .setTrustAgyFolders(next)
+      .then((stored) => setTrustAgyFoldersState(stored))
       .catch(() => undefined);
   };
 
@@ -2580,6 +2594,17 @@ function FanoutWorkersSection() {
           checked={requireApproval}
           onChange={onRequireApprovalChange}
           label={t('settings.fanoutRequireApproval')}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanoutagytrust"
+        label={t('settings.fanoutTrustAgyFolders')}
+        description={t('settings.fanoutTrustAgyFoldersDesc')}
+      >
+        <Toggle
+          checked={trustAgyFolders}
+          onChange={onTrustAgyFoldersChange}
+          label={t('settings.fanoutTrustAgyFolders')}
         />
       </SettingRow>
       <SettingRow

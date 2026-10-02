@@ -26,8 +26,10 @@ import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService'
 import { getFanOutGuards, promptDigest } from '../../worktask/fanoutGuards';
 import {
   loadFanoutRequireApproval,
+  loadFanoutTrustAgyFolders,
   loadFanoutWorkerPermissionMode,
   setFanoutRequireApproval,
+  setFanoutTrustAgyFolders,
   setFanoutWorkerPermissionMode,
 } from '../../worktask/fanoutWorkerPolicy';
 import { loadFanoutPresetsReport, saveFanoutPresets } from '../../worktask/fanoutPresets';
@@ -79,6 +81,19 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     IPC.FANOUT_REQUIRE_APPROVAL_SET,
     wrapHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
       setFanoutRequireApproval(value),
+    ),
+  );
+
+  ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET);
+  ipcMain.handle(
+    IPC.FANOUT_TRUST_AGY_FOLDERS_GET,
+    wrapHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET, async () => loadFanoutTrustAgyFolders()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET);
+  ipcMain.handle(
+    IPC.FANOUT_TRUST_AGY_FOLDERS_SET,
+    wrapHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutTrustAgyFolders(value),
     ),
   );
 

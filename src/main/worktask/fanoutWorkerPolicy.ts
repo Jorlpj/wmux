@@ -12,6 +12,10 @@
 //                      Main makes the decision, so a request that arrives
 //                      before the renderer has loaded its session cannot be
 //                      waved through by a not-yet-restored default.
+//   trustAgyFolders  — whether main may list a fan-out task folder in agy's
+//                      own trustedWorkspaces (main/agents/agyTrust). Off by
+//                      default (owner decision): a persistent write into
+//                      another CLI's global settings is opt-in.
 //
 // A missing file is the defaults (auto, no approval — owner decision
 // 2026-09-24). A file that exists but cannot be read resolves to the SAFE side
@@ -28,10 +32,12 @@ import {
 } from '../../shared/workerLaunch';
 
 export const DEFAULT_FANOUT_REQUIRE_APPROVAL = false;
+export const DEFAULT_FANOUT_TRUST_AGY_FOLDERS = false;
 
 interface FanoutPolicy {
   permissionMode: FanoutWorkerPermissionMode;
   requireApproval: boolean;
+  trustAgyFolders: boolean;
 }
 
 export function getFanoutWorkerPolicyPath(dir: string = getWmuxDir()): string {
@@ -41,7 +47,11 @@ export function getFanoutWorkerPolicyPath(dir: string = getWmuxDir()): string {
 function loadPolicy(dir?: string): FanoutPolicy {
   const p = getFanoutWorkerPolicyPath(dir);
   if (!fs.existsSync(p)) {
-    return { permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE, requireApproval: DEFAULT_FANOUT_REQUIRE_APPROVAL };
+    return {
+      permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
+      requireApproval: DEFAULT_FANOUT_REQUIRE_APPROVAL,
+      trustAgyFolders: DEFAULT_FANOUT_TRUST_AGY_FOLDERS,
+    };
   }
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>;
@@ -52,9 +62,11 @@ function loadPolicy(dir?: string): FanoutPolicy {
         : DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
       requireApproval:
         typeof raw.requireApproval === 'boolean' ? raw.requireApproval : DEFAULT_FANOUT_REQUIRE_APPROVAL,
+      // Only a literal true opts in.
+      trustAgyFolders: raw.trustAgyFolders === true,
     };
   } catch {
-    return { permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE, requireApproval: true };
+    return { permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE, requireApproval: true, trustAgyFolders: false };
   }
 }
 
@@ -77,6 +89,18 @@ export async function setFanoutWorkerPermissionMode(
   if (!isFanoutWorkerPermissionMode(mode)) return loadFanoutWorkerPermissionMode(dir);
   await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), permissionMode: mode });
   return mode;
+}
+
+/** Whether main may pre-trust fan-out task folders in agy's settings. */
+export function loadFanoutTrustAgyFolders(dir?: string): boolean {
+  return loadPolicy(dir).trustAgyFolders;
+}
+
+/** Persist the agy trust switch. Only a literal boolean writes. */
+export async function setFanoutTrustAgyFolders(value: unknown, dir?: string): Promise<boolean> {
+  if (typeof value !== 'boolean') return loadFanoutTrustAgyFolders(dir);
+  await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), trustAgyFolders: value });
+  return value;
 }
 
 /** Persist the approval switch. Only a literal boolean writes. */
