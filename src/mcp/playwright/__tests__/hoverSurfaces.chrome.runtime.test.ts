@@ -9,6 +9,7 @@ import {
   type HoverCandidate,
 } from '../hoverSurfaces';
 import { generateSnapshot } from '../snapshot';
+import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 
 // ---------------------------------------------------------------------------
 // Phase 1 and phase 2 against REAL Chrome.
@@ -203,7 +204,13 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
       return;
     }
 
-    const launching = chromium.launch({ channel: 'chrome', headless: mode.headless });
+    // Chrome refuses to start under the isolate setup's temp USERPROFILE on the
+    // Windows runner, which skipped every case here; see realProfileBrowserEnv.
+    const launching = chromium.launch({
+      channel: 'chrome',
+      headless: mode.headless,
+      env: realProfileBrowserEnv(),
+    });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       browser = (await Promise.race([
