@@ -32,6 +32,8 @@ import type { AgentLastMessage } from '../../shared/events';
 import { getWorkspaceMirror, type WorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { agentDisplayToSlug } from '../pty/AgentDetector';
+import { isAgyQuotaExhaustedEvent } from '../../shared/agyAccounts';
+import { getAgyAccountService } from '../account/AgyAccountService';
 import type { ChannelMessage } from '../../shared/channels';
 
 // Mirrors PTYBridge.AGENT_EVENT_SUPPRESSION_MS — same dedup semantics across
@@ -705,6 +707,7 @@ export class DaemonNotificationRouter {
         const win = this.getWindow();
         const ev = payload.event as AgentEventPayload;
         if (!ev || typeof ev !== 'object') return;
+        if (isAgyQuotaExhaustedEvent(ev)) void getAgyAccountService().markActiveExhausted().catch(() => undefined);
 
         // M1 replay — the metadata-only hook kinds (`decision:'activity'`).
         // None of them are emit-class: no toast, no lifecycle tee, no dedup

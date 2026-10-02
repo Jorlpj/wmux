@@ -17,6 +17,8 @@ import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
+import { getAgyAccountService } from '../../account/AgyAccountService';
+import { isAgyLaunchLine } from '../../../shared/agyAccounts';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -157,6 +159,30 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
+}
+
+/**
+ * Quota gate for a typed agy launch. agy has one machine-wide sign-in, so when
+ * several agy accounts are registered the service switches it to an account
+ * that still has quota before the line runs. When none has quota the launch
+ * line is replaced with a notice: sending the work anyway would only collect
+ * another quota error from the same accounts.
+ */
+async function withAgyAccount(options: PtyCreateOptions | undefined): Promise<PtyCreateOptions | undefined> {
+  if (!options?.initialCommand || !isAgyLaunchLine(options.initialCommand)) return options;
+  let decision;
+  try {
+    decision = await getAgyAccountService().prepareLaunch();
+  } catch (err) {
+    console.warn(`[agy-accounts] launch gate failed, launching unchanged: ${String(err)}`);
+    return options;
+  }
+  if (decision.ok) return options;
+  const when = decision.availableAtMs
+    ? ` The first one frees up at ${new Date(decision.availableAtMs).toLocaleString()}.`
+    : '';
+  console.warn('[agy-accounts] agy launch held: every registered agy account is out of quota');
+  return { ...options, initialCommand: `echo "wmux: agy was not started - every registered agy account is out of quota.${when}"` };
 }
 
 /** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
@@ -404,7 +430,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
-      options = withWmuxTools(options);
+      options = await withAgyAccount(withWmuxTools(options));
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -639,7 +665,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
-      options = withWmuxTools(options);
+      options = await withAgyAccount(withWmuxTools(options));
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user
