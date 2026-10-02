@@ -51,7 +51,7 @@ stdio pipes belong to the parent alone, so no socket, token file or peer check
 is needed.
 
 - The helper's first line is
-  `{"type":"hello","protocolVersion":1,"os":"win32","helperVersion":"…","capabilities":{…}}`.
+  `{"type":"hello","protocolVersion":2,"os":"win32","helperVersion":"…","capabilities":{…}}`.
   A request is replayed after a crash only if `hello` was never seen for it.
 - Request: `{"id":7,"method":"getAppState","params":{…}}`.
 - Response: `{"id":7,"ok":true,"result":{…}}` or
@@ -61,8 +61,38 @@ is needed.
 - Only one request is in flight at a time, because UIA and AX calls run on
   one STA / main thread anyway.
 - Timeouts: 15 s for `getAppState`, 8 s for other calls. On timeout the
-  helper is killed, not waited on, and its held modifiers are released
-  (see Safety).
+  helper is killed, not waited on. Killing a helper does not lift keys or
+  buttons it held, so when the killed request was an input action (timeout,
+  stop key, crash) main starts a fresh helper at once and sends
+  `releaseInput`, without waiting for the next request. Until a release
+  answers `released: true`, control requests fail closed (a fresh helper is
+  tried for each). A helper tracks every key and button it pressed, not
+  only modifiers, and releases all of them on stdin EOF or a termination
+  signal; on quit main closes stdin and waits briefly before killing it. A
+  fresh helper does not know what the dead one pressed. Main sends one request
+  at a time, so only the cut-off request can have left input down, and main
+  names what it sent: `releaseInput { keys?, modifiers?, buttons? }` (its
+  `pressKey` key, its `hotkey` modifiers and key, its `click` button and
+  modifiers). With no fields the helper releases the modifiers and mouse
+  buttons only, never a blanket list of ordinary keys: a stray key-up lands in
+  the foreground window, and pages act on key-up.
+- **Key vocabulary.** `pressKey` and `hotkey` carry only canonical names
+  from `protocol.ts`: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`,
+  `Space`, `ArrowUp/Down/Left/Right`, `Home`, `End`, `PageUp`, `PageDown`,
+  `F1`–`F12`, lower-case `a`–`z` and `0`–`9`, plus the modifiers `ctrl`,
+  `alt` (Option), `shift` and `meta` (Command / Windows key). Main
+  normalizes the agent's spelling (`Return`, `Esc`, `cmd`, `win`) and refuses
+  the rest with `invalid_argument`, so a helper maps a closed set and never
+  parses free text. `hotkey` is `{ modifiers, key }` with exactly one key; a
+  modifier is never sent alone.
+- **Control target.** Every control request carries `target: { pid,
+  windowId }`, the window main vetted. Right before each input batch the
+  helper checks that the foreground window (keyboard) or the window under
+  the point (pointer) belongs to it, and otherwise sends nothing and answers
+  `window_not_focused`. Only the helper can do this check without a race.
+- Protocol version 2: the key vocabulary, `target` and `hotkey` as
+  `{ modifiers, key }` replaced the version-1 shape incompatibly. No helper
+  ever shipped speaking 1.
 - Idle exit after 5 minutes. The helper also exits when stdin closes, so it
   never outlives wmux.
 - The maximum line length is 24 MB (base64 screenshots). stderr keeps a 4 KB
@@ -171,7 +201,7 @@ The error codes live in `src/shared/computer/errors.ts`. Each code carries
 `app_not_found`, `app_blocked`, `window_not_found`, `window_not_focused`,
 `element_not_found`, `element_stale`, `action_not_supported`,
 `value_not_settable`, `snapshot_unknown`, `permission_missing`,
-`target_elevated`, `input_busy`, `stop_key_unavailable`, `aborted`, `timeout`,
+`target_elevated`, `input_busy`, `shortcut_blocked`, `stop_key_unavailable`, `aborted`, `timeout`,
 `screenshot_failed`, `helper_unavailable`, `helper_incompatible`,
 `unsupported_platform`, `invalid_argument`, `internal`.
 
@@ -190,17 +220,61 @@ by localized message text.
   also shows the helper status and the stop key, or that the key is unavailable. Turning the switch off also
   aborts whatever is in flight. Running agents see the tool appear or vanish
   only after they restart.
-- **Window titles.** `listApps` and `listWindows` need no per-app consent, so
-  blocked apps are marked, and their window titles are blanked.
+- **Re-vetting.** `getAppState` vets the app and window the helper answered
+  for every time, not only when they differ from the resolved pair, and
+  refuses a window whose pid or app id does not match its app. A control
+  action that waited on a consent prompt re-checks its snapshot's expiry and
+  the stop cooldown on a fresh clock before it takes the input lock.
+- **Window titles.** `listApps` and `listWindows` need no per-app consent,
+  so `listWindows` sends a window's title only when the calling agent already
+  has the person's consent for its app (matched on the window's `appId`);
+  every other window keeps its id and bounds with a blank title. Blocked apps
+  are marked. A caller that sends no identity gets no titles at all.
 - **Hard blocklist in main, not only in the helper.** It covers:
   - password managers;
   - wmux itself;
-  - terminals and other agent hosts (driving them would bypass shell
+  - terminals, shells and other agent hosts (driving them would bypass shell
     approvals);
-  - on Windows, Credential UI / UAC consent.
+  - OS credential prompts: Credential UI / UAC consent on Windows,
+    SecurityAgent and the login window on macOS;
+  - system tools: Windows Settings, Control Panel, Task Manager (which also
+    owns "Run new task"), Registry Editor, MMC and the GUI script hosts
+    (PowerShell ISE, mshta, wscript, cscript); on macOS System Settings
+    (System Preferences), Script Editor, Automator, Shortcuts and Activity
+    Monitor. System Settings is blocked whole rather than pane by pane: an
+    agent on Privacy & Security could grant itself, or any app,
+    accessibility and screen-recording permission, and the panes share one
+    bundle id.
+
+  Known residue, left to per-app consent and chord refusal: Explorer's Run
+  dialog and Control Panel windows are part of explorer.exe, which cannot be
+  blocked wholesale (Win+R is refused as a meta chord; blocking control.exe
+  only stops the launcher). **The Windows helper must close this**: it
+  reports the shell namespace / window class of Explorer windows so main can
+  refuse those two. Terminals inside an IDE and password managers inside a
+  browser share their host's process.
 
   The helper reports the process path and bundle ID of each target; main
   refuses before it forwards the action.
+- **OS-wide chords.** Main refuses a chord that acts on the whole system
+  rather than the vetted window with `shortcut_blocked` (a main-only code
+  helpers never send), before consent, the lock or the helper:
+  - everywhere: Escape with Ctrl+Alt (the stop key and its neighbours);
+  - Windows: any Windows-key chord (a Windows-key click too), Alt+Tab,
+    Alt+Esc, Ctrl+Esc, Ctrl+Shift+Esc, Ctrl+Alt+Delete, Alt+Space;
+  - macOS: Cmd+Tab, Cmd+Space and Ctrl+Space, Cmd+Opt+Esc, Ctrl+Cmd+Q,
+    Cmd+Shift+Q, Cmd+Opt+D, Cmd+Opt+H, Cmd+Shift+3/4/5/6, Ctrl+arrows
+    (Mission Control, Spaces), Ctrl+ and Cmd+F-keys (system UI focus,
+    display mirroring, show desktop, VoiceOver, accessibility shortcuts),
+    Cmd+Opt+8 and Ctrl+Opt+Cmd+8 (Zoom, invert colours), and the bare F3, F4,
+    F11 and F12 (Mission Control, Launchpad, show desktop, widgets by
+    default; a synthetic key cannot tell whether they were remapped).
+
+  Modifiers on `pressKey`, `type` or `scroll` are refused rather than
+  dropped (`hotkey` is the way to send a chord).
+
+  App-level chords stay allowed even when they change the window: Alt+F4 and
+  Cmd+Q close the vetted app, and Ctrl+Cmd+F toggles its full screen.
 - **Approvals.** Plugins need the `computer.observe` capability (list,
   inspect) and the `computer.control` capability (input), both granted through
   the existing enforcer, whose verdict on the `computer` risk class is binding
@@ -232,7 +306,9 @@ by localized message text.
   before it: each stop starts a new prompt epoch.
   - The shortcut is held only while computer use is on: taken on the first
     call (or when Settings shows the switch on), given back when the switch
-    goes off and on quit, when the service is also disposed.
+    goes off and on quit, when the service is also disposed. Disposal is
+    final: a call that arrives during quit starts no helper and does not
+    take the shortcut again.
   - It fails closed: while the shortcut cannot be registered (another app
     owns the chord), every input action is refused with
     `stop_key_unavailable`, and Settings shows the key as unavailable instead

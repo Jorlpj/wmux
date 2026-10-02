@@ -14,13 +14,16 @@
 // into acting on an app main never vetted.
 
 import { ComputerError } from '../../shared/computer/errors';
-import { BLOCK_REASON_TEXT, blockReasonFor, type BlockContext } from '../../shared/computer/blocklist';
+import { BLOCK_REASON_TEXT, blockReasonFor, osChordRefusal, osPointerModifierRefusal, type BlockContext } from '../../shared/computer/blocklist';
 import {
   MODIFIERS,
   OBSERVATION_MODES,
   SNAPSHOT_TTL_MS,
   TREE_MAX_DEPTH,
   TREE_MAX_NODES,
+  KEY_VOCABULARY_TEXT,
+  normalizeKey,
+  parseHotkey,
   type ActionResult,
   type AppInfo,
   type AppState,
@@ -28,6 +31,7 @@ import {
   type HelperCapabilities,
   type HelperMethod,
   type HelperMethods,
+  type Key,
   type Modifier,
   type MouseButton,
   type ObservationMode,
@@ -88,6 +92,8 @@ export interface ComputerServiceDeps {
   stopKey: { arm(): boolean; release(): void };
   blockContext: () => BlockContext;
   now?: () => number;
+  /** Picks the OS-wide chord rules (blocklist.ts); defaults to this process's OS. */
+  platform?: string;
   /** Fires on every accepted control action (drives the agent-cursor overlay). */
   onControl?: (event: { agent: ComputerAgent; action: ComputerControlAction; window: WindowInfo }) => void;
 }
@@ -123,6 +129,16 @@ export interface ControlParams {
   amount?: number;
 }
 
+let shutDown = false;
+
+/**
+ * True once any ComputerService was disposed (app quit). Settings IPC reads it
+ * so opening Settings during quit does not take the stop key back.
+ */
+export function computerUseShutDown(): boolean {
+  return shutDown;
+}
+
 function fail(code: ConstructorParameters<typeof ComputerError>[0], message: string): never {
   throw new ComputerError(code, message);
 }
@@ -144,6 +160,8 @@ export class ComputerService {
    */
   private generation = 0;
   private readonly controlLog = new Map<string, number[]>();
+  /** Set by dispose() (app quit): no new helper, no stop-key re-take, ever. */
+  private disposed = false;
 
   constructor(deps: ComputerServiceDeps) {
     this.deps = deps;
@@ -154,6 +172,9 @@ export class ComputerService {
   }
 
   private ensureReady(): HelperLike {
+    // Checked before anything else: a call that lands during quit must not
+    // take the stop key back or spawn a helper nothing will ever dispose.
+    if (this.disposed) fail('helper_unavailable', 'wmux is shutting down');
     if (!this.deps.isEnabled()) {
       // Turned off, possibly by editing the file by hand: give the chord back.
       this.deps.stopKey.release();
@@ -185,15 +206,21 @@ export class ComputerService {
     };
   }
 
-  async listWindows(app?: string): Promise<{ windows: Array<WindowInfo & { blocked?: string }> }> {
+  /**
+   * Window titles leak content (a vault entry, a mail subject) and this call
+   * asks for no consent, so a title is sent only for apps this agent already
+   * has the person's consent for; every other window keeps its id and bounds
+   * with a blank title. Pass an agent with an empty key when the caller is not
+   * identified: no title at all is sent then.
+   */
+  async listWindows(agent: ComputerAgent, app?: string): Promise<{ windows: Array<WindowInfo & { blocked?: string }> }> {
     const helper = this.ensureReady();
     const [{ windows }, { apps }] = await Promise.all([
       helper.request('listWindows', app ? { app } : {}),
       helper.request('listApps', {}),
     ]);
-    // Window titles leak content (a vault entry, a mail subject), and this call
-    // needs no per-app consent — so a blocked app's windows are listed without
-    // their titles.
+    // Blocked apps are marked so an agent learns why it cannot ask for them;
+    // their titles are blank like any app without consent.
     const ctx = this.deps.blockContext();
     const blockedByPid = new Map<number, string>();
     for (const a of apps) {
@@ -203,7 +230,8 @@ export class ComputerService {
     return {
       windows: windows.map((w) => {
         const blocked = blockedByPid.get(w.pid) ?? (ctx.selfPids?.has(w.pid) ? BLOCK_REASON_TEXT.wmux : undefined);
-        return blocked ? { ...w, title: '', blocked } : w;
+        if (blocked) return { ...w, title: '', blocked };
+        return agent.key && this.grants.get(grantKey(agent, w.appId)) === true ? w : { ...w, title: '' };
       }),
     };
   }
@@ -219,6 +247,7 @@ export class ComputerService {
     this.assertCurrent(generation);
     await this.vet(agent, target.app, target.window, generation);
 
+    assertConsistent(target.app, target.window);
     const state = await helper.request('getAppState', {
       app: target.app.id,
       window: target.window.id,
@@ -227,12 +256,12 @@ export class ComputerService {
       maxDepth: TREE_MAX_DEPTH,
     });
     this.assertCurrent(generation);
-    // The helper answered for a window; re-vet in case it is not the one we
-    // resolved (a window selector can go stale between the two calls). The
-    // window matters on its own: elevation is per window, not per app.
-    if (state.app.id !== target.app.id || state.window.id !== target.window.id) {
-      await this.vet(agent, state.app, state.window, generation);
-    }
+    // Always re-vet what the helper answered for, not only when the ids
+    // changed: the app's path, bundle id or the window's elevation can differ
+    // from the resolved pair, and a vetted window must belong to its app. A
+    // consented app costs no prompt here.
+    assertConsistent(state.app, state.window);
+    await this.vet(agent, state.app, state.window, generation);
 
     this.recordSnapshot(state.snapshotId, {
       agentKey: agent.key,
@@ -255,24 +284,35 @@ export class ComputerService {
         'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps',
       );
     }
-    const now = this.now();
-    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
     const generation = this.generation;
-
     if (!params.snapshotId) fail('invalid_argument', 'snapshotId is required; call getAppState first');
-    const snap = this.snapshots.get(params.snapshotId);
-    if (!snap || snap.expiresAt < now) fail('snapshot_unknown', `snapshot ${params.snapshotId} is unknown or expired`);
-    if (snap.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+    const snapshotId = params.snapshotId;
+    const checkSnapshot = (now: number): SnapshotRecord => {
+      if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+      const record = this.snapshots.get(snapshotId);
+      if (!record || record.expiresAt < now) fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired`);
+      if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+      return record;
+    };
+    const snap = checkSnapshot(this.now());
+    // Keys and modifiers are checked before consent or the lock: a refused
+    // chord raises no prompt and takes nothing.
+    const keys = this.resolveKeys(params);
     // Consent may have been revoked (abort clears grants) since the snapshot.
     await this.vet(agent, snap.app, snap.window, generation);
-    // Consent can take minutes; the clock and the stop key may both have moved.
+    // Consent can take minutes; the clock and the stop key may both have
+    // moved, so the snapshot and the cooldown are checked again on a fresh
+    // clock before the lock and the rate slot are taken.
     this.assertCurrent(generation);
+    const now = this.now();
+    checkSnapshot(now);
 
     this.takeInputLock(agent, now);
     this.checkRate(agent.key, now);
 
     const point = this.resolvePoint(params, snap);
-    const snapshotId = params.snapshotId;
+    // The helper re-checks this window right before each input batch.
+    const target = { pid: snap.window.pid, windowId: snap.window.id };
     this.deps.onControl?.({ agent, action: params.action, window: snap.window });
 
     switch (params.action) {
@@ -280,6 +320,7 @@ export class ComputerService {
         this.requireTarget(params, point);
         return helper.request('click', {
           snapshotId,
+          target,
           ...(params.index !== undefined && { index: params.index }),
           ...(point && { point }),
           button: params.button ?? 'left',
@@ -289,24 +330,28 @@ export class ComputerService {
       case 'setValue':
         if (params.index === undefined) fail('invalid_argument', 'setValue needs an element index');
         if (typeof params.value !== 'string') fail('invalid_argument', 'setValue needs a string value');
-        return helper.request('setValue', { snapshotId, index: params.index, value: params.value });
+        return helper.request('setValue', { snapshotId, target, index: params.index, value: params.value });
       case 'type':
         if (typeof params.text !== 'string' || params.text.length === 0) fail('invalid_argument', 'type needs text');
         return helper.request('type', {
           snapshotId,
+          target,
           ...(params.index !== undefined && { index: params.index }),
           text: params.text,
         });
-      case 'pressKey':
-        if (!params.key) fail('invalid_argument', 'pressKey needs a key');
-        return helper.request('pressKey', { snapshotId, key: params.key, repeat: clampInt(params.repeat ?? 1, 1, 50) });
-      case 'hotkey':
-        if (!Array.isArray(params.keys) || params.keys.length === 0) fail('invalid_argument', 'hotkey needs keys');
-        return helper.request('hotkey', { snapshotId, keys: params.keys.map(String) });
+      case 'pressKey': {
+        const { key } = keys ?? fail('internal', 'pressKey reached the helper without a resolved key');
+        return helper.request('pressKey', { snapshotId, target, key, repeat: clampInt(params.repeat ?? 1, 1, 50) });
+      }
+      case 'hotkey': {
+        const { modifiers, key } = keys ?? fail('internal', 'hotkey reached the helper without a resolved chord');
+        return helper.request('hotkey', { snapshotId, target, modifiers, key });
+      }
       case 'scroll':
         this.requireTarget(params, point);
         return helper.request('scroll', {
           snapshotId,
+          target,
           ...(params.index !== undefined && { index: params.index }),
           ...(point && { point }),
           direction: params.direction ?? 'down',
@@ -340,6 +385,8 @@ export class ComputerService {
   }
 
   dispose(): void {
+    this.disposed = true;
+    shutDown = true;
     this.generation += 1;
     this.withdrawConsentPrompts();
     this.helper?.dispose();
@@ -356,6 +403,43 @@ export class ComputerService {
     this.consentInflight.clear();
   }
 
+  /** Canonical key (and chord) for pressKey / hotkey; null for other actions. */
+  private resolveKeys(params: ControlParams): { modifiers: Modifier[]; key: Key } | null {
+    if (params.modifiers !== undefined && params.action !== 'click') {
+      // Dropping them silently would send a different input than asked for.
+      fail('invalid_argument', `${params.action} takes no modifiers; use hotkey for a chord (e.g. ["ctrl","s"]) or click with modifiers`);
+    }
+    if (params.action === 'click') {
+      const modifiers = validModifiers(params.modifiers);
+      const why = osPointerModifierRefusal(this.deps.platform ?? process.platform, modifiers);
+      if (why) fail('shortcut_blocked', `${[...modifiers, 'click'].join('+')} is refused because ${why}`);
+      return null;
+    }
+    let resolved: { modifiers: Modifier[]; key: Key };
+    if (params.action === 'pressKey') {
+      const key = typeof params.key === 'string' ? normalizeKey(params.key) : null;
+      if (!key) fail('invalid_argument', `pressKey needs one key from: ${KEY_VOCABULARY_TEXT}. Use hotkey for chords`);
+      resolved = { modifiers: [], key };
+    } else if (params.action === 'hotkey') {
+      if (!Array.isArray(params.keys) || params.keys.length === 0) fail('invalid_argument', 'hotkey needs keys');
+      const chord = parseHotkey(params.keys);
+      if ('error' in chord) fail('invalid_argument', `${chord.error}. Keys: ${KEY_VOCABULARY_TEXT}`);
+      resolved = chord;
+    } else {
+      return null;
+    }
+    this.refuseOsChord(resolved.modifiers, resolved.key);
+    return resolved;
+  }
+
+  private refuseOsChord(modifiers: Modifier[], key: Key): void {
+    const why = osChordRefusal(this.deps.platform ?? process.platform, modifiers, key);
+    if (why) {
+      const chord = [...modifiers, key].join('+');
+      fail('shortcut_blocked', `${chord} is refused because ${why}`);
+    }
+  }
+
   private assertCurrent(generation: number): void {
     if (generation !== this.generation) fail('aborted', 'computer use was stopped by the user');
   }
@@ -366,7 +450,7 @@ export class ComputerService {
     if (window.elevated) {
       fail('target_elevated', `${app.name} runs as administrator; Windows blocks input from wmux into it`);
     }
-    const key = `${agent.key}\u0000${app.id}`;
+    const key = grantKey(agent, app.id);
     const granted = this.grants.get(key);
     if (granted === true) return;
     if (granted === false) fail('app_blocked', `the user declined computer use of ${app.name} for this agent`);
@@ -453,6 +537,17 @@ export class ComputerService {
       if (this.snapshots.size <= SNAPSHOT_RECORD_LIMIT) break;
     }
   }
+}
+
+/** A window the helper reports must belong to the app it reports with it. */
+function assertConsistent(app: AppInfo, window: WindowInfo): void {
+  if (app.pid !== window.pid || app.id !== window.appId) {
+    fail('internal', `the computer-use helper reported a window that does not belong to ${app.name}`);
+  }
+}
+
+function grantKey(agent: ComputerAgent, appId: string): string {
+  return `${agent.key}\u0000${appId}`;
 }
 
 function clampInt(value: number, min: number, max: number): number {

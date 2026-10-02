@@ -17,6 +17,7 @@ export const COMPUTER_ERROR_CODES = [
   'permission_missing',
   'target_elevated',
   'input_busy',
+  'shortcut_blocked',
   'stop_key_unavailable',
   'aborted',
   'timeout',
@@ -39,7 +40,7 @@ export function isComputerErrorCode(value: unknown): value is ComputerErrorCode 
 export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly string[]> = {
   app_not_found: ['Call listApps and use an app name or id exactly as listed.'],
   app_blocked: [
-    'This app is blocked for computer use (password managers, terminals, wmux itself). Do not retry.',
+    'This app is blocked for computer use (password managers, terminals, wmux itself, system settings and script or process tools). Do not retry.',
     'Ask the user to do this step themselves.',
   ],
   window_not_found: ['Call listWindows for the app and pass a window id from the result.'],
@@ -61,6 +62,10 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
     'The target runs as administrator, and Windows blocks input from a normal process. Ask the user to do this step.',
   ],
   input_busy: ['Another agent holds desktop input. Wait for it to finish, then retry.'],
+  shortcut_blocked: [
+    'This shortcut acts on the whole system (switching apps, Start or Spotlight, locking the screen), not the app you were given. Do not retry it.',
+    'Reach the goal inside the app (click an element, use its menus), or ask the user to do this step.',
+  ],
   stop_key_unavailable: [
     'Input is refused while the emergency stop key is unavailable. Tell the user: another app is using the shortcut shown in Settings › Computer use; closing it lets wmux take the key on the next call.',
     'Observation (listApps, getAppState) still works. Do not loop on retries.',
