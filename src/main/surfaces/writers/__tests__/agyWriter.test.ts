@@ -1010,7 +1010,7 @@ describe('agyWriter', () => {
       expect(fs.readFileSync(outsideMcp, 'utf8')).toBe(originalOutsideContent);
     });
 
-    it('refuses symlink pointing outside homeDir', () => {
+    it('refuses symlink pointing outside homeDir', async () => {
       const home = tempDir('wmux-agy-sym-home-');
       const outside = tempDir('wmux-agy-sym-outside-');
       const outsideTarget = path.join(outside, 'secret.json');
@@ -1044,7 +1044,7 @@ describe('agyWriter', () => {
         wmuxRequired: false,
       };
 
-      expect(
+      await expect(
         writer.apply({
           deps,
           inventory: {
