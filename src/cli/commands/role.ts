@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { dataSuffix, getWmuxHomeDir } from '../../shared/constants';
+import { dataSuffix } from '../../shared/constants';
 import { ROLE_TOOL_SURFACES, resolveRoleName, roleMcpArgv } from '../../shared/roleSurfaces';
 import { CORE_TOOL_SURFACE } from '../../shared/coreSurface';
 import { codexConfigPath, codexHasWmuxServer } from '../../shared/mcpRegistration';
@@ -63,9 +63,11 @@ export interface ResolvedRole {
   mcpUnavailable?: string;
 }
 
-/** The stdio bundle the CLI configs register (McpRegistrar stabilizes it there). */
-export function defaultMcpEntry(): string {
-  return path.join(getWmuxHomeDir(), 'mcp', 'index.js');
+/** The stdio bundle the CLI configs register. McpRegistrar stabilizes the
+ *  packaged bundle into `<home>/.wmux/mcp/` with NO data suffix (one copy per
+ *  user), so a suffixed instance must not look under its own data dir. */
+export function defaultMcpEntry(home: string = os.homedir()): string {
+  return path.join(home, '.wmux', 'mcp', 'index.js');
 }
 
 export function resolveRole(
@@ -121,6 +123,9 @@ function mcpFor(
 export interface RoleDeps {
   sessionPath: string;
   readFile: (p: string) => string;
+  /** The MCP bundle entry `mcp.argv` points at. */
+  mcpEntry: string;
+  exists: (p: string) => boolean;
   log: (line: string) => void;
   error: (line: string) => void;
   exit: (code: number) => void;
@@ -132,6 +137,8 @@ export async function handleRole(args: string[], jsonMode: boolean, overrides: P
   const deps: RoleDeps = {
     sessionPath: defaultSessionPath(),
     readFile: (p) => fs.readFileSync(p, 'utf8'),
+    mcpEntry: defaultMcpEntry(),
+    exists: (p) => fs.existsSync(p),
     log: (l) => console.log(l),
     error: (l) => console.error(l),
     exit: (c) => process.exit(c),
@@ -168,7 +175,13 @@ export async function handleRole(args: string[], jsonMode: boolean, overrides: P
     deps.exit(2);
     return;
   }
-  const resolved = resolveRole(role, binding);
+  const resolved = resolveRole(role, binding, deps.mcpEntry);
+  // Never print an argv that points at a bundle that is not there (a dev
+  // checkout, or a packaged app that has not booted once to stabilize it).
+  if (resolved.mcp && resolved.mcp.argv.length > 0 && !deps.exists(deps.mcpEntry)) {
+    delete resolved.mcp;
+    resolved.mcpUnavailable = `wmux MCP bundle not found at ${deps.mcpEntry}`;
+  }
   if (jsonMode) {
     deps.log(JSON.stringify({ bound: true, ...resolved }));
   } else {

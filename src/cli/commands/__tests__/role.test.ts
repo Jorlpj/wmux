@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { defaultSessionPath, handleRole, resolveRole } from '../role';
+import { defaultMcpEntry, defaultSessionPath, handleRole, resolveRole } from '../role';
 import { dataSuffix } from '../../../shared/constants';
 import type { RoleBinding } from '../../../shared/orchestratorRole';
 
@@ -158,6 +158,29 @@ describe('wmux role resolve', () => {
     expect(resolveRole('Builder', { agent: 'opencode', tools: 'role' }, entry).mcp).toBeUndefined();
     expect(resolveRole('Custom', { agent: 'claude', tools: 'role' }, entry).mcp).toBeUndefined();
     expect(resolveRole('Custom', { agent: 'claude', tools: 'core' }, entry).mcp?.level).toBe('core');
+  });
+
+  it('points mcp.argv at the unsuffixed stable bundle and drops it when that bundle is missing', async () => {
+    expect(defaultMcpEntry(path.join('C:', 'h'))).toBe(path.join('C:', 'h', '.wmux', 'mcp', 'index.js'));
+    const session = JSON.stringify({ orchestratorRoleBindings: { Planner: { agent: 'claude', tools: 'core' } } });
+    const entry = path.join('C:', 'h', '.wmux', 'mcp', 'index.js');
+    const resolveWith = async (exists: boolean) => {
+      const out: string[] = [];
+      await handleRole(['resolve', 'Planner'], true, {
+        sessionPath: '/fake/session.json',
+        readFile: () => session,
+        mcpEntry: entry,
+        exists: () => exists,
+        log: (l) => out.push(l),
+        error: () => undefined,
+        exit: () => undefined,
+      });
+      return JSON.parse(out[0]);
+    };
+    expect((await resolveWith(true)).mcp.argv[1]).toContain(JSON.stringify(entry).slice(1, -1));
+    const missing = await resolveWith(false);
+    expect(missing.mcp).toBeUndefined();
+    expect(missing.mcpUnavailable).toBe(`wmux MCP bundle not found at ${entry}`);
   });
 
   it('prints no codex override when codex has no wmux server registered (codex would refuse to start)', () => {

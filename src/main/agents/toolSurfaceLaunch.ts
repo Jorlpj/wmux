@@ -17,6 +17,7 @@
 // otherwise launches unchanged, with the full tool list.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { codexConfigPath, codexHasWmuxServer } from '../../shared/mcpRegistration';
@@ -35,8 +36,52 @@ export function isWmuxToolsHint(value: unknown): value is WmuxToolsHint {
   return (WMUX_TOOLS as readonly unknown[]).includes(v.tools) && (v.role === undefined || typeof v.role === 'string');
 }
 
+export interface McpEntryLocation {
+  /** The user's home (electron app.getPath('home')). */
+  home: string;
+  isPackaged: boolean;
+  resourcesPath?: string;
+  appPath?: string;
+  exists?: (p: string) => boolean;
+}
+
+/**
+ * Where the full wmux MCP bundle actually lives, resolved the way McpRegistrar
+ * resolves the script it registers:
+ *   - packaged: the stable copy McpRegistrar keeps in `<home>/.wmux/mcp/`
+ *     (no data suffix: one copy per user, see stabilizePackaged), else the
+ *     versioned `resources/mcp-bundle/index.js` (or the old resources layout);
+ *   - dev: `dist/mcp/mcp/entry.js` under the app path or one of its parents.
+ * null when none exists.
+ */
+export function locateWmuxMcpEntry(loc: McpEntryLocation): string | null {
+  const exists = loc.exists ?? fs.existsSync;
+  const candidates: string[] = [];
+  if (loc.isPackaged) {
+    candidates.push(path.join(loc.home, '.wmux', 'mcp', 'index.js'));
+    if (loc.resourcesPath) {
+      candidates.push(path.join(loc.resourcesPath, 'mcp-bundle', 'index.js'));
+      candidates.push(path.join(loc.resourcesPath, 'mcp', 'mcp', 'index.js'));
+    }
+  } else if (loc.appPath) {
+    let current = loc.appPath;
+    for (let i = 0; i < 6; i++) {
+      candidates.push(path.join(current, 'dist', 'mcp', 'mcp', 'entry.js'));
+      const parent = path.resolve(current, '..');
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  return candidates.find((c) => exists(c)) ?? null;
+}
+
 export interface ToolSurfaceDeps {
+  /** Folder the claude `--mcp-config` files are written to (default: the
+   *  instance's data dir `mcp/`, created on demand). */
   mcpDir?: string;
+  /** The MCP bundle entry to launch. Default: the packaged stable copy in
+   *  `~/.wmux/mcp/index.js` when it exists. Main passes locateWmuxMcpEntry(). */
+  entry?: string | null;
   exists?: (p: string) => boolean;
   writeFile?: (p: string, data: string) => void;
   /** Whether the codex config this launch will read registers a wmux server. */
@@ -48,14 +93,19 @@ export interface ToolSurfaceDeps {
 export function applyWmuxToolsToCommand(command: string, hint: WmuxToolsHint, deps: ToolSurfaceDeps = {}): string {
   const mcpDir = deps.mcpDir ?? path.join(getWmuxHomeDir(), 'mcp');
   const exists = deps.exists ?? fs.existsSync;
-  const writeFile = deps.writeFile ?? ((p, d) => fs.writeFileSync(p, d, 'utf8'));
+  const writeFile = deps.writeFile ?? ((p, d) => {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, d, 'utf8');
+  });
   const tokens = tokenize(command);
   if (tokens.length === 0) return command;
   const stem = launcherStem(tokens[0].value);
   if (stem !== 'claude' && stem !== 'codex') return command;
   if (/--mcp-config\b|mcp_servers\.wmux/.test(command)) return command;
-  const entry = path.join(mcpDir, 'index.js');
-  if (!exists(entry)) return command;
+  const entry = deps.entry !== undefined
+    ? deps.entry
+    : locateWmuxMcpEntry({ home: os.homedir(), isPackaged: true, exists });
+  if (!entry || !exists(entry)) return command;
   const known = resolveRoleName(hint.role);
   const role = known.kind === 'role' ? known.role : undefined;
   if (hint.tools === 'role' && !role) return command;
