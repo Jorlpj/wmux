@@ -2362,7 +2362,7 @@ export const ko = {
   'agyAccounts.useNow': "지금 사용",
   'agyAccounts.removeTitle': "wmux에서 이 agy 계정 제거",
   'agyAccounts.labelPlaceholder': "이름(선택)",
-  'agyAccounts.waitingForSignIn': "새 탭에서 agy 로그인을 기다리는 중…",
+  'agyAccounts.waitingForSignIn': "새 탭에서 agy 로그인을 기다리는 중… 다른 계정으로 로그인하세요. 이전 계정이 다시 로그인되지 않도록 다른 agy 세션은 먼저 닫으세요.",
   'agyAccounts.addCurrent': "{email} 추가",
   'agyAccounts.signInAnother': "다른 계정으로 로그인",
   'agyAccounts.loginTabTitle': "agy 로그인",

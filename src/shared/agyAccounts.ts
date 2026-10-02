@@ -38,6 +38,10 @@ export interface AgyAccount {
   needsReauth?: boolean;
   /** Epoch ms until which the account is treated as out of quota. */
   cooldownUntil?: number;
+  /** When the cooldown was set. A sensor snapshot captured after this that
+   *  still shows quota lifts it (the pane-output signal can misfire on text
+   *  that merely mentions a quota error). */
+  cooldownSetAtMs?: number;
 }
 
 export type AgyAccountState = 'active' | 'ready' | 'exhausted' | 'needs-reauth';
@@ -127,7 +131,11 @@ export function agyAccountRow(
   now: number,
 ): AgyAccountRow {
   const verdict = evaluateAgyQuota(snapshot, now);
-  const cooling = typeof account.cooldownUntil === 'number' && account.cooldownUntil > now;
+  const fresherSnapshotHasQuota = typeof account.cooldownSetAtMs === 'number'
+    && typeof snapshot?.quotaCapturedAtMs === 'number'
+    && snapshot.quotaCapturedAtMs > account.cooldownSetAtMs
+    && verdict.usable && verdict.remaining !== null;
+  const cooling = typeof account.cooldownUntil === 'number' && account.cooldownUntil > now && !fresherSnapshotHasQuota;
   const availableAtMs = cooling
     ? Math.max(account.cooldownUntil as number, verdict.availableAtMs ?? 0)
     : verdict.availableAtMs;
