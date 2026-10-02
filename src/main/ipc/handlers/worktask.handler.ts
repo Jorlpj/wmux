@@ -20,6 +20,7 @@ import * as crypto from 'node:crypto';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
+import type { PTYManager } from '../../pty/PTYManager';
 import type { RpcMethod } from '../../../shared/rpc';
 import { TaskWorktreeManager, metaDirForWorktree } from '../../worktask/TaskWorktreeManager';
 import { TaskCloseService } from '../../worktask/TaskCloseService';
@@ -60,6 +61,10 @@ export function registerWorktaskHandlers(
   getDaemonClient: () => DaemonClient | null,
   /** Called SYNCHRONOUSLY with the instances, before this function returns. */
   onServices?: (services: WorktaskServices) => void,
+  /** Optional — when given, task:close kills any PTY still running inside the
+   *  worktree (and its process tree) before `git worktree remove`, so a live
+   *  agent/shell can't hold file handles that make the removal partial. */
+  ptyManager?: PTYManager,
 ): () => void {
   const daemonPort = {
     rpc: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
@@ -102,6 +107,10 @@ export function registerWorktaskHandlers(
         // close-only로 정합화(닫히지 않고 영영 붙잡히는 것 방지).
         return closeService.closeTask({ taskId, verifiedWorkspaceId });
       }
+      // Kill any PTY (shell/agent) still running inside this worktree before
+      // removeWorktree runs — otherwise it can hold file handles that make
+      // git's directory removal silently partial (orphaned node_modules etc).
+      await ptyManager?.disposeByCwd(task.worktreePath);
       return closeService.closeTask({
         taskId,
         verifiedWorkspaceId,

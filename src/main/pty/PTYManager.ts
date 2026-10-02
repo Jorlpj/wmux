@@ -6,6 +6,7 @@ import * as pty from 'node-pty';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { expandTilde } from '../../shared/expandTilde';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
@@ -401,6 +402,47 @@ export class PTYManager {
   remove(id: string): void {
     this.instances.delete(id);
     forgetPtyShell(id);
+  }
+
+  /**
+   * Kill every PTY whose cwd is the given worktree path (or nested under it)
+   * and wait for their process trees to exit. Used before `git worktree
+   * remove` so a shell/agent still running inside the worktree does not hold
+   * file handles (node_modules, .git) that make the directory removal fail
+   * partially on Windows — `git worktree remove` deregisters the worktree
+   * either way, so a partial failure there silently leaves orphaned files on
+   * disk instead of surfacing an error.
+   */
+  async disposeByCwd(worktreePath: string, graceMs = 3000): Promise<void> {
+    const normalized = path.resolve(worktreePath).toLowerCase();
+    const targets = [...this.instances.values()].filter((inst) => {
+      if (!inst.cwd) return false;
+      const cwd = path.resolve(inst.cwd).toLowerCase();
+      return cwd === normalized || cwd.startsWith(normalized + path.sep);
+    });
+    if (targets.length === 0) return;
+
+    const waits = targets.map((inst) => {
+      const pid = inst.process.pid;
+      // Kill the tree BEFORE disposing the PTY: once the shell is gone its
+      // children are reparented and taskkill /T can no longer reach them.
+      if (!pid) { this.dispose(inst.id); return Promise.resolve(); }
+      if (process.platform === 'win32') {
+        return new Promise<void>((resolve) => {
+          const done = () => { this.dispose(inst.id); resolve(); };
+          const child = spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true });
+          child.on('error', done);
+          child.on('exit', done);
+        });
+      }
+      try { process.kill(-pid, 'SIGKILL'); } catch { /* already dead or no group */ }
+      this.dispose(inst.id);
+      return Promise.resolve();
+    });
+    await Promise.race([
+      Promise.all(waits),
+      new Promise<void>((resolve) => setTimeout(resolve, graceMs)),
+    ]);
   }
 
   get(id: string): PTYInstance | undefined {
