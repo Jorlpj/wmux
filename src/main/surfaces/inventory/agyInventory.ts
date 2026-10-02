@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { TESTED_CLI_VERSIONS } from '../../../shared/tokenUsage/capabilities';
+import { cliVersionSupport, newerCliVersionWarning } from '../../../shared/tokenUsage/capabilities';
 import type { HookCostHint, ProviderInventory, SurfaceItem, SurfaceSource } from '../../../shared/tokenUsage/surfaceTypes';
 import {
   parseSkillFrontmatter,
@@ -31,7 +31,9 @@ export async function readAgyInventory(deps: InventoryDeps): Promise<ProviderInv
   }
 
   const cliVersion = await queryCliVersion('agy', deps.run);
-  const versionSupported = cliVersion === TESTED_CLI_VERSIONS.agy.min;
+  const support = cliVersionSupport('agy', cliVersion);
+  const versionSupported = support !== 'unsupported';
+  if (support === 'newer' && cliVersion) warnings.push(newerCliVersionWarning('agy', cliVersion));
   const writable = versionSupported;
 
   // 1. MCP servers
