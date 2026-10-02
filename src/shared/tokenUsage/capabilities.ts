@@ -20,7 +20,7 @@ export interface SurfaceCapability {
  *  write was verified on (agy and codex re-verified 2026-10-02 on agy 1.2.15 and codex-cli
  *  0.156.1 — the config files they read did not change). */
 export const TESTED_CLI_VERSIONS = {
-  agy: { min: '1.2.13', max: '1.2.15' },
+  agy: { min: '1.2.14', max: '1.2.15' },
   codex: { min: '0.156.0', max: '0.159.2' },
   claude: { min: '0.0.0', max: '999.0.0' },
 } as const satisfies Record<SurfaceProviderId, { min: string; max: string }>;
