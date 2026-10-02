@@ -29,7 +29,7 @@ import type { CustomThemeColors, NotificationCategory, Workspace, XtermThemeColo
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import type { ChromePreset } from '../../../shared/chromePresets';
-import { ROLE_PRESET_SPECS, applyRolePreset, hasRolePreset, rolePresetApplied } from '../../../shared/rolePresets';
+import { ROLE_PRESET_SPECS, applyRolePreset, hasRolePreset, rolePresetApplied, rolePresetSkipsPermissions } from '../../../shared/rolePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, applyRoleBinding, launcherSupportsModelFlag, type RoleBinding } from '../../../shared/orchestratorRole';
 import {
@@ -734,6 +734,8 @@ export interface RoleBindingsViewProps {
   catalog?: Record<string, ModelCatalogResult>;
   /** Re-run an agent's model discovery (the refresh button). */
   onRefreshModels?: (agent: string) => void;
+  /** Ask before a preset that turns on skip permissions (default window.confirm). */
+  confirm?: (message: string) => boolean;
 }
 
 /** Models to offer for an agent: the discovered list, or claude's static one. */
@@ -763,7 +765,7 @@ export function effortChoicesFor(b: RoleBinding, models: readonly CatalogModel[]
 
 /** Presentational half — the container below owns the store. Split so the view
  *  is renderable (and assertable) without a live store, matching NotificationsView. */
-export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshModels }: RoleBindingsViewProps) {
+export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshModels, confirm }: RoleBindingsViewProps) {
   const update = (role: string, patch: Partial<RoleBinding>) => {
     onChange(role, { ...(bindings[role] ?? {}), ...patch });
   };
@@ -875,21 +877,40 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                 )}
               </div>
             )}
-            {hasRolePreset(role) && (
-              <div className="mt-1.5 pl-[84px]" data-role-binding-preset={role}>
-                <UiButton
-                  variant="secondary"
-                  size="sm"
-                  disabled={rolePresetApplied(role, bindings)}
-                  title={t('settings.rolePresetTooltip', { tier: ROLE_PRESET_SPECS[role].tier })}
-                  onClick={() => onChange(role, applyRolePreset(role, bindings[role]))}
-                >
-                  {rolePresetApplied(role, bindings)
-                    ? t('settings.rolePresetApplied', { role })
-                    : t('settings.rolePresetApply', { role })}
-                </UiButton>
-              </div>
-            )}
+            {hasRolePreset(role) && (() => {
+              // Bypass is part of the preset: the label names it and a click
+              // asks first, so one click cannot silently turn every launch of
+              // this role (role-routed fan-out included) to skip permissions.
+              const skips = rolePresetSkipsPermissions(role, bindings[role]);
+              const applied = rolePresetApplied(role, bindings);
+              const tier = ROLE_PRESET_SPECS[role].tier;
+              return (
+                <div className="mt-1.5 pl-[84px]" data-role-binding-preset={role}>
+                  <UiButton
+                    variant="secondary"
+                    size="sm"
+                    disabled={applied}
+                    title={skips
+                      ? t('settings.rolePresetTooltip', { tier, role })
+                      : t('settings.rolePresetTooltipNoSkip', { tier })}
+                    data-role-preset-bypass={skips ? 'true' : undefined}
+                    onClick={() => {
+                      if (skips) {
+                        const ask = confirm ?? ((m: string) => window.confirm(m));
+                        if (!ask(t('settings.rolePresetConfirmBypass', { role }))) return;
+                      }
+                      onChange(role, applyRolePreset(role, bindings[role]));
+                    }}
+                  >
+                    {applied
+                      ? t('settings.rolePresetApplied', { role })
+                      : skips
+                        ? t('settings.rolePresetApplyBypass', { role })
+                        : t('settings.rolePresetApply', { role })}
+                  </UiButton>
+                </div>
+              );
+            })()}
             {preview && (
               <p
                 className="ui-code m-0 mt-1 pl-[84px] text-[11px] text-[var(--text-sub)]"

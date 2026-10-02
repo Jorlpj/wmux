@@ -1223,8 +1223,14 @@ export const en = {
   'settings.roleBindingRefreshModels': 'Refresh models',
   'settings.rolePresetApply': 'Apply {role} preset',
   'settings.rolePresetApplied': '{role} preset applied',
+  'settings.rolePresetApplyBypass':
+    'Apply {role} preset (skips permission prompts)',
+  'settings.rolePresetTooltipNoSkip':
+    'Sets this role to {tier} effort, keeping the agent, model and extra args you chose. This agent has no verified skip-permissions flag, so its permission prompts stay on.',
+  'settings.rolePresetConfirmBypass':
+    'Apply the {role} preset? It turns on skip permissions: every {role} launch, including fan-out tasks routed to {role}, will edit files and run commands without asking you first.',
   'settings.rolePresetTooltip':
-    'Sets this role to {tier} effort with skip permissions on, keeping the agent and extra args you chose (agy when none). Tool, skill and MCP settings are not per role for agy — they stay shared by every role.',
+    'Sets this role to {tier} effort AND turns on skip permissions: every {role} launch, including fan-out tasks routed to {role}, runs without permission prompts. Keeps the agent, model and extra args you chose; only an empty agent (agy) or model is filled in. For agy the effort is the model suffix, so a Flash model moves to its {tier} variant and any other model is left as is. Tool, skill and MCP settings are not per role for agy; they stay shared by every role.',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
   'pane.enforcedLaunch': 'Role-enforced launch: {binding}',
