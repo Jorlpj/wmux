@@ -70,6 +70,7 @@ import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { IntegrationSetupSectionContainer, MCP_STATUS_CHANGED_EVENT } from './IntegrationSetupSection';
 import { McpStatusSection } from './McpStatusSection';
 import { AccountsSection } from './AccountsSection';
+import { AgyAccountsSection } from './AgyAccountsSection';
 import { FanoutPresetsSection } from './FanoutPresetsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
@@ -5426,7 +5427,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'shortcuts'          && <TabShortcuts />}
                     {activeTab === 'notifications'      && <TabNotifications />}
                     {activeTab === 'claude-integration' && <TabClaudeCode />}
-                    {activeTab === 'accounts'           && <AccountsSection />}
+                    {activeTab === 'accounts'           && <><AccountsSection /><AgyAccountsSection /></>}
                     {activeTab === 'orchestrator'       && <TabOrchestrator />}
                     {activeTab === 'roles'              && <TabRoles />}
           {activeTab === 'tokens'             && <TokenUsageTab onOpenTab={setActiveTab} />}
