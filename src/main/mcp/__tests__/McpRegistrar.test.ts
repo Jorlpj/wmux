@@ -225,19 +225,6 @@ describe('McpRegistrar.register (broker topology selection)', () => {
     await new McpRegistrar().register('tok');
     expect(fs.readFileSync(agyJson, 'utf8')).toBe(before);
     expect(target(new McpRegistrar().getStatus(), 'agy').wmux.registered).toBe(false);
-
-
-
-
-
-
-
-
-
-
-
-
-
   });
 });
 
