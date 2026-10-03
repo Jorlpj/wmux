@@ -131,7 +131,7 @@ export async function saveProfile(
     if (msg.includes('already exists')) {
       throw new Error('A profile with this name already exists.');
     }
-    if (msg.includes('Maximum') || msg.includes('50')) {
+    if (msg.startsWith('Maximum number of profiles')) {
       throw new Error('Maximum number of profiles (50) reached.');
     }
     throw new Error('Storage version is not supported.');
