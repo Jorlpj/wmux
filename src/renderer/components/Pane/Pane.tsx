@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState, useMemo, useRef } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
@@ -10,6 +10,8 @@ import { useIpc } from '../../hooks/useIpc';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
+import { ChatV2Overlay, useChatSurfaceView } from '../ChatV2/ChatSurface';
+import { forgetChatV2Pane, usePaneChatV2Binding } from '../ChatV2/useChatV2';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
@@ -581,6 +583,11 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const resumePtyReady = useStore((s) =>
     activeSurfacePtyId ? !!s.ptyReadyByPtyId[activeSurfacePtyId] : false,
   );
+  // A chat-v2 conversation that still owns this pane (not handed off) must not
+  // be offered for resume in the anchor shell: that would put a second writer
+  // on the same conversation. Asked only for panes that offer a resume.
+  const chatV2Binding = usePaneChatV2Binding(activeSurfacePtyId || undefined, !!resumeBinding || !!resumeHint);
+  const chatV2OwnsPane = !!chatV2Binding && chatV2Binding.status !== 'handed-off';
   // The persistent resume chip's "is this pane's agent busy?" gate — and the
   // store-wide `agentClockMs` decay-clock subscription it needs — lives in the
   // <ResumeInfoChipGate> leaf below, NOT here: Pane mounts that leaf only when a
@@ -731,7 +738,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           recovery pill flow above (the pill takes precedence right after a
           reboot). Reveals the conversation UUID and types the exact resume
           command into this pane on 복구. */}
-      {resumeBinding && !resumeHint && activeSurfacePtyId && (
+      {resumeBinding && !resumeHint && activeSurfacePtyId && !chatV2OwnsPane && (
         <ResumeInfoChipGate
           ptyId={activeSurfacePtyId}
           binding={resumeBinding}
@@ -795,7 +802,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           resumePtyReady: it then takes its height before the recovered pane's
           first fit instead of shrinking the terminal (a resize, a SIGWINCH)
           once the pane is live. Only the button waits for readiness. */}
-      {resumeHint && !supervision && activeSurfacePtyId && (() => {
+      {resumeHint && !supervision && activeSurfacePtyId && !chatV2OwnsPane && (() => {
         const ptyId = activeSurfacePtyId;
         const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
         const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
@@ -1040,6 +1047,56 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   );
 }
 
+/**
+ * A terminal surface and, in Chat view, the chat it shows. Chat v2 lays its
+ * view over the anchor terminal and makes the terminal inert, so keys typed
+ * into the chat never reach the shell; the terminal-projection chat stays
+ * inside Terminal. Choosing a view never creates a PTY.
+ */
+function TerminalSurface({ surface, paneId, chatViewEnabled, isActive, visible, isWorkspaceVisible, onPtyCreated, workspaceId }: {
+  surface: PaneLeaf['surfaces'][number];
+  paneId: string;
+  chatViewEnabled: boolean;
+  isActive: boolean;
+  visible?: boolean;
+  isWorkspaceVisible: boolean;
+  onPtyCreated: (ptyId: string) => void;
+  workspaceId: string;
+}) {
+  const view = useChatSurfaceView(surface.ptyId || undefined, chatViewEnabled, surface.viewMode);
+  const chatV2 = view === 'chatv2';
+  const shown = visible ?? isActive;
+  // The covered terminal still renders its own search bar (above the chat) when
+  // the global find chord fires in this pane; chat v2 has its own find.
+  const coveredSearch = useStore((s) => chatV2 && isActive && s.searchBarVisible
+    && s.workspaces.find((w) => w.id === workspaceId)?.activePaneId === paneId);
+  useLayoutEffect(() => {
+    if (coveredSearch) useStore.getState().setSearchBarVisible(false);
+  }, [coveredSearch]);
+  // The surface closed (or its PTY was replaced): forget its chat drafts and binding.
+  const ptyId = surface.ptyId;
+  useEffect(() => () => { if (ptyId) forgetChatV2Pane(ptyId); }, [ptyId]);
+  return (
+    <>
+      <div style={{ display: 'contents' }} inert={chatV2 || undefined}>
+        <TerminalComponent
+          chatView={view === 'projection'}
+          ptyId={surface.ptyId || undefined}
+          cwd={surface.cwd || undefined}
+          isActive={isActive}
+          visible={visible}
+          isWorkspaceVisible={isWorkspaceVisible}
+          onPtyCreated={onPtyCreated}
+          scrollbackFile={surface.scrollbackFile}
+          workspaceId={workspaceId}
+          surfaceId={surface.id}
+        />
+      </div>
+      {chatV2 && shown && isWorkspaceVisible && surface.ptyId && <ChatV2Overlay ptyId={surface.ptyId} surfaceId={surface.id} />}
+    </>
+  );
+}
+
 /** Renders surfaces with a resizable split when both terminals and browsers coexist */
 function SplitSurfaceView({
   pane,
@@ -1152,17 +1209,15 @@ function SplitSurfaceView({
               onTitleChange={updateRemoteSurfaceTitle}
             />
           ) : (
-            <TerminalComponent
+            <TerminalSurface
               key={surface.id}
-              chatView={chatViewEnabled && surface.viewMode === 'chat'}
-              ptyId={surface.ptyId || undefined}
-              cwd={surface.cwd || undefined}
+              surface={surface}
+              paneId={pane.id}
+              chatViewEnabled={chatViewEnabled}
               isActive={surface.id === activeSurfaceId}
               isWorkspaceVisible={isWorkspaceVisible}
               onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
-              scrollbackFile={surface.scrollbackFile}
               workspaceId={workspaceId}
-              surfaceId={surface.id}
             />
           ),
         )}
@@ -1186,18 +1241,16 @@ function SplitSurfaceView({
         <Panel defaultSize={50} minSize={20}>
           <div className="h-full w-full relative overflow-hidden">
             {terminals.map((surface) => (
-              <TerminalComponent
+              <TerminalSurface
                 key={surface.id}
-                chatView={chatViewEnabled && surface.viewMode === 'chat'}
-                ptyId={surface.ptyId || undefined}
-                cwd={surface.cwd || undefined}
+                surface={surface}
+                paneId={pane.id}
+                chatViewEnabled={chatViewEnabled}
                 isActive={surface.id === activeSurfaceId}
                 visible={surface.id === shownTerminalId}
                 isWorkspaceVisible={isWorkspaceVisible}
                 onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
-                scrollbackFile={surface.scrollbackFile}
                 workspaceId={workspaceId}
-                surfaceId={surface.id}
               />
             ))}
           </div>
