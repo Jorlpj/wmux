@@ -6,7 +6,7 @@ import { teardownWorkspaceDeckState, surfaceStrandedWork } from '../deckWorkspac
 import { setWorkspaceMode, loadDeckAutonomy, getDeckAutonomyPath } from '../deckAutonomyStore';
 import * as deckLoopStateStore from '../deckLoopStateStore';
 import { startLoop, loadWorkspaceLoopState, getDeckLoopStatePath } from '../deckLoopStateStore';
-import { saveDeckSchedules, loadDeckSchedules, getDeckSchedulesPath } from '../deckScheduleStore';
+import { saveDeckSchedules, loadDeckSchedules, getDeckSchedulesPath, mutateDeckSchedules } from '../deckScheduleStore';
 import {
   beginOrContinueDeckWork,
   recordDeckWorkA2aTask,
@@ -376,4 +376,32 @@ describe('deckWorkspaceTeardown — archive before clearing (workspace removal)'
     // 200+ fsync'd atomic writes: ~0.3 s locally, but a loaded Windows CI
     // runner has gone past vitest's 5 s default.
   }, 30_000);
+});
+
+describe('deckWorkspaceTeardown — concurrent writers', () => {
+  it('a teardown racing setters for another workspace drops neither side', async () => {
+    await setWorkspaceMode('ws-a', 'assist', dir);
+    await setWorkspaceMode('ws-b', 'danger', dir);
+    await saveCommanderSession('ws-a', 'sess-a', dir);
+    const sched = (id: string, workspaceId: string) => ({
+      id, workspaceId, prompt: 'p', nextRunAt: Date.now() + 10_000, enabled: true, createdAt: Date.now(),
+    });
+    await saveDeckSchedules([sched('s-a', 'ws-a')], dir);
+
+    // Unserialized, each writer read the same snapshot and the later write won:
+    // the teardown would resurrect ws-b's old danger mode, or drop s-b / sess-b.
+    await Promise.all([
+      teardownWorkspaceDeckState('ws-a', { dir, log: () => undefined }),
+      setWorkspaceMode('ws-b', 'off', dir),
+      mutateDeckSchedules((list) => [...list, sched('s-b', 'ws-b')], dir),
+      saveCommanderSession('ws-b', 'sess-b', dir),
+    ]);
+
+    const autonomy = loadDeckAutonomy(dir);
+    expect(autonomy['ws-a']).toBeUndefined();
+    expect(autonomy['ws-b']?.mode).toBe('off');
+    expect(loadDeckSchedules(dir).map((s) => s.id)).toEqual(['s-b']);
+    expect(loadCommanderSession('ws-a', dir)).toBeNull();
+    expect(loadCommanderSession('ws-b', dir)?.sessionId).toBe('sess-b');
+  });
 });

@@ -83,6 +83,7 @@ vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
 vi.mock('../../../deck/deckScheduleStore', () => ({
   loadDeckSchedules: vi.fn(() => []),
   saveDeckSchedules: vi.fn(async () => undefined),
+  mutateDeckSchedules: vi.fn(async () => undefined),
   createSchedule: vi.fn(() => null),
   dueSchedules: vi.fn(() => []),
   advanceAfterRun: vi.fn((s: unknown) => s),

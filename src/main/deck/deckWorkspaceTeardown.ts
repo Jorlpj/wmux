@@ -29,7 +29,7 @@ import {
 } from './deckWorkStore';
 import { deleteWorkspaceAutonomy } from './deckAutonomyStore';
 import { loadWorkspaceLoopState, clearLoop } from './deckLoopStateStore';
-import { loadDeckSchedules, saveDeckSchedules } from './deckScheduleStore';
+import { mutateDeckSchedules } from './deckScheduleStore';
 import {
   loadWorkspaceDecision,
   clearDecision,
@@ -166,13 +166,16 @@ export async function teardownWorkspaceDeckState(
       // Ignore loop read error; schedule store will still filter by workspaceId
     }
 
-    const schedules = loadDeckSchedules(dir);
-    const toRemove = schedules.filter(
-      (s) => (loopScheduleId && s.id === loopScheduleId) || s.workspaceId === id,
-    );
-    if (toRemove.length > 0) {
+    let toRemove: { id: string }[] = [];
+    await mutateDeckSchedules((schedules) => {
+      toRemove = schedules.filter(
+        (s) => (loopScheduleId && s.id === loopScheduleId) || s.workspaceId === id,
+      );
+      if (toRemove.length === 0) return null;
       const removeSet = new Set(toRemove.map((s) => s.id));
-      await saveDeckSchedules(schedules.filter((s) => !removeSet.has(s.id)), dir);
+      return schedules.filter((s) => !removeSet.has(s.id));
+    }, dir);
+    if (toRemove.length > 0) {
       report.scheduleDeleted = true;
       report.scheduleIds = toRemove.map((s) => s.id);
       log(`[schedule] deleted ${toRemove.length} schedule(s) for ${id}`);

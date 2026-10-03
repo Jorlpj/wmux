@@ -130,6 +130,10 @@ vi.mock('../../../deck/deckScheduleStore', () => ({
   saveDeckSchedules: vi.fn(async (next: FakeSchedule[]) => {
     schedules = [...next];
   }),
+  mutateDeckSchedules: vi.fn(async (fn: (current: FakeSchedule[]) => FakeSchedule[] | null) => {
+    const next = fn([...schedules]);
+    if (next) schedules = [...next];
+  }),
   createSchedule: vi.fn((args: { workspaceId: string; prompt: string; nextRunAt: number; intervalMinutes?: number }) => {
     if (!args.prompt.trim() || !args.workspaceId) return null;
     const s: FakeSchedule = {

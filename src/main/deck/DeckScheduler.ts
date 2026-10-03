@@ -17,7 +17,7 @@
 
 import {
   loadDeckSchedules,
-  saveDeckSchedules,
+  mutateDeckSchedules,
   dueSchedules,
   advanceAfterRun,
   type DeckSchedule,
@@ -103,11 +103,12 @@ export class DeckScheduler {
         }
         // Read-modify-write against the CURRENT store: the schedule may have
         // been edited or deleted while the turn ran.
-        const fresh = loadDeckSchedules(this.deps.dir);
-        const idx = fresh.findIndex((x) => x.id === s.id);
-        if (idx === -1) continue; // deleted mid-turn — nothing to advance
-        fresh[idx] = advanceAfterRun(fresh[idx], result, (this.deps.now ?? Date.now)());
-        await saveDeckSchedules(fresh, this.deps.dir);
+        await mutateDeckSchedules((fresh) => {
+          const idx = fresh.findIndex((x) => x.id === s.id);
+          if (idx === -1) return null; // deleted mid-turn — nothing to advance
+          fresh[idx] = advanceAfterRun(fresh[idx], result, (this.deps.now ?? Date.now)());
+          return fresh;
+        }, this.deps.dir);
         // busy is PER-WORKSPACE now (M1.5): a busy orchestrator in one
         // workspace must not starve another workspace's due schedules, so
         // keep iterating — the busy one stays due and retries next tick.
