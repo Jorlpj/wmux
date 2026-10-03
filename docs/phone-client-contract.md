@@ -917,7 +917,9 @@ question, an approve — with or without `choiceKey` — is refused with 501
 on Claude Code 2.1.283: a digit only toggles one checkbox of a multi-select, and
 on the first of several questions it answers that one and moves to the next
 tab, so the tool is still waiting). The record stays pending; deny (Esc) still
-cancels the whole question.
+cancels the whole question. A `decision-v2` client can answer such a prompt —
+and type an "Other" answer to any of them — through the record's `questions`
+form (see "Claude AskUserQuestion" under Decision forms).
 
 Claude Code's own **permission dialog** ("Do you want to proceed?") is recorded
 as a `terminal_prompt` — see the next section for when it can be answered from
@@ -1259,7 +1261,8 @@ there before writing.
 | 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or its question left the screen (including a different dialog in its place). Stop showing it |
 | 422 | `{error: 'invalid-choice-key'}` | The `choiceKey` does not belong to this request's choices, or the option is not visible on screen. The request is still pending — retry with a valid key or omit `choiceKey` |
 | 501 | `{error: 'unsupported-agent', reason: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
-| 501 | `{error: 'answer-in-terminal', reason: 'needs-v2'}` | A multi-select or multi-question `AskUserQuestion`: one key cannot answer it, so nothing was typed. Still pending — answer it at the desktop, or deny |
+| 501 | `{error: 'answer-in-terminal', reason: 'needs-v2'}` | A multi-select or multi-question `AskUserQuestion`: one key cannot answer it, so nothing was typed. Still pending — answer it with a `decision-v2` `/answer` when the record carries a `form` (see "Claude AskUserQuestion" under Decision forms), at the desktop, or deny |
+| 409 | `{error: 'already-answered'}` | A `decision-v2` answer to this `AskUserQuestion` has started typing its keys. Nothing typed; re-read the list |
 | 501 | `{error: 'answer-in-terminal', reason: 'unsupported-shape' \| 'screen-unreadable'}` | The request carries no question text or no choices, so its dialog cannot be identified on screen (`unsupported-shape`), or the daemon cannot read the pane together with its state (`screen-unreadable`). Nothing typed; still pending — answer it at the desktop |
 | 404 | `{error: 'not-found'}` | No such request |
 
@@ -1329,7 +1332,7 @@ v1 paths.
 
 | Key | Meaning |
 | --- | --- |
-| `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here |
+| `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` and `questions` (Claude's `AskUserQuestion`; see below) while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here, and only for a record that carries a `form` |
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel`: the server runs with `--allow-transcript`, the caller has the input grant, and the chat bridge is wired |
 | `chatCancelOutcome` | `true` when `chatCancel` is true and the cancel receipt store loaded; omitted otherwise (never `false`). Advertises `cancel` on the cancel answer, the cancel receipt route and SSE `chat.cancel` (see Chat cancel outcome) |
 | `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue, and `DELETE …/chat/queue/<clientMessageId>` is open to it: the same condition as `chatSend`, plus a queue that loaded |
@@ -1465,13 +1468,13 @@ and more than 2,000 UTF-16 units. The daemon never stores the text itself.
 | --- | --- | --- |
 | 200 | `{state, effect: 'complete', durable}` | Done |
 | 202 | `{state: 'pending', replayed: true}` | The same `clientAnswerId` is still running — poll the receipt |
-| 400 | `{error: 'invalid-body' \| 'invalid-text' \| 'invalid-choice' \| 'invalid-prompt-fingerprint'}` | Nothing happened |
+| 400 | `{error: 'invalid-body' \| 'invalid-text' \| 'invalid-choice' \| 'invalid-prompt-fingerprint', reason?}` | Nothing happened. `invalid-text` carries `reason`: `too-wide` (over 2,000 UTF-16 units, or wider than the field the pane can show), `matches-placeholder` (reads as the free-text row's placeholder) or `unsafe-text` (a control character, whitespace only, or a start that reads as a checkbox) |
 | 401 | `{error: 'authorization-expired'}` | |
 | 403 | read-only | No input grant |
 | 404 | `{error: 'not-found'}` | No such request (or a brain pane) |
 | 409 | `{error: 'already-resolved' \| 'already-answered' \| 'prompt-changed', effect: 'none' \| 'partial', step?}` | Someone else answered, or the screen moved (`partial`: some keys of a stepwise answer were typed; the record stays pending and answers `already-answered` from then on) |
 | 409 | `{error: 'answer-id-reused', effect: 'none'}` | This `clientAnswerId` was used for another body |
-| 409 | `{error: 'answer-uncertain', effect: 'uncertain'}` | It was running when the daemon stopped, or the agent's server did not confirm it in time; it may or may not have landed and is never re-run |
+| 409 | `{error: 'answer-uncertain', effect: 'uncertain'}` | It was running when the daemon stopped, the agent's server did not confirm it in time, or (a Claude question) the screen did not confirm it; it may or may not have landed and is never re-run. Its receipt reads `state: 'uncertain'` |
 | 410 | `{error: 'expired' \| 'prompt-gone', effect: 'none'}` | The request is gone (an agent that no longer holds it included) |
 | 425 | `{error: 'answer-too-soon', effect: 'none'}` | Within 1.5 s of the request appearing |
 | 429 | `{error: 'answer-receipts-full', effect: 'none'}` | 512 live receipts for this caller |
@@ -1537,6 +1540,102 @@ typed to undo it; the record stays pending, answers `already-answered` (to
 `/decline` too) and settles when the dialog is answered at the terminal. A key typed at the terminal before the answer (or a
 changed dialog) is 409 `prompt-changed` with `effect: 'none'`, and the record
 is replaced by a fresh one — re-read the list.
+
+#### Claude AskUserQuestion (`form.kind: 'questions'`)
+
+A Claude Code `AskUserQuestion` stays an `awaiting_input` record, and a client
+without `decision-v2` reads exactly the bytes it read before (`choices` for one
+single-select question, a 501 `needs-v2` approve otherwise). While the
+daemon's `phoneDecisions.stepwise` switch is on, a `decision-v2` caller also
+gets the whole prompt as a form:
+
+```json
+{ "form": { "v": 1, "kind": "questions",
+    "questions": [
+      { "id": "q0", "header": "Size", "text": "Which size?", "multiSelect": false,
+        "allowOther": true, "options": [{ "key": "1", "label": "Small", "description": "Small size" },
+                                        { "key": "2", "label": "Medium", "description": "Medium size" }] },
+      { "id": "q1", "header": "Toppings", "text": "Which toppings?", "multiSelect": true,
+        "allowOther": true, "options": [{ "key": "1", "label": "Cheese" }, { "key": "2", "label": "Olives" }] } ],
+    "actions": [{ "id": "submit", "label": "Submit" }, { "id": "deny", "label": "Cancel" }],
+    "otherMaxCells": 68 },
+  "formFingerprint": "<32 hex>" }
+```
+
+Option keys are the digits Claude draws. An option carries `description` when
+Claude draws one under its label (omitted otherwise). `allowOther` is always
+true: Claude adds its "Type something" row to every question. `otherMaxCells`
+is the widest `other` the pane can take now (`cols - 12` cells, a wide
+character counting two); the pane can be resized, so the answer checks the
+width again (`invalid-text` / `too-wide`). A prompt the daemon could not
+match on screen exactly as written gets no form (more than 4 questions or 8
+options on one, a question without a header, two questions whose texts are
+the same once spaces are removed, a text, label or description with control
+characters, runs of spaces or over the form's length limits): it stays the
+card above.
+
+The daemon reads the picker as Claude draws it: each option by its whole
+label then its whole description (a long label wraps onto the next row), the
+"Type something" row last, and under the picker's bottom rule only Claude's
+`Chat about this` row and its key hint. A picker drawn any other way (a label
+cut short, another menu or an input prompt under it) is not the question the
+form describes: the answer is 409 `prompt-changed` with nothing typed.
+
+- `{answers: [...]}` (no `action`, or `submit`) — one entry per question, as for
+  OpenCode questions: the chosen `keys`, plus `other` for typed text; a
+  single-select question takes exactly one of them. The daemon types the
+  answer into the picker as Claude Code 2.1.283 was measured to take it, and
+  as checked live on 2.1.288: a single-select option's digit; a
+  multi-select's option digits (each toggles its box), then `↓` onto the
+  in-question Submit row (labelled `Next` when another question follows) and
+  Enter; typed text as
+  the "Type something" row's digit, `↓` onto it where needed, one bracketed
+  paste and Enter / `↓`. Several questions end on Claude's review screen,
+  where the daemon checks that every question lists exactly the answer given
+  before it presses `1` (Submit answers). Every key waits until the screen
+  shows what the key before it should have drawn.
+- `other` must fit one row of the pane: at most `cols - 12` columns (a wide
+  character counts two), else 400 `{error: 'invalid-text', reason:
+  'too-wide'}` with nothing typed. An `other` that reads "Type something" once
+  spaces are removed (it could not be told apart from the empty row) is
+  `reason: 'matches-placeholder'`; one that starts like a checkbox (`[ ] `,
+  `[✔] `) is `reason: 'unsafe-text'`.
+- `{action: 'deny'}` — Cancel: one Esc, as a v1 deny. 200 `{state:
+  'resolved'}`.
+- The picker must be untouched when the answer starts: the first question, no
+  tab answered, the cursor on option 1, nothing ticked, no typed text. Anything
+  else is 409 `prompt-changed` with `effect: 'none'` and nothing typed; a
+  question no longer on screen is 410 `prompt-gone`.
+- 200 `{state: 'resolved', effect: 'complete'}` only once the screen confirms
+  the answer: this prompt's picker is gone and a new "User answered Claude's
+  questions" block lists every question with exactly the answer given. When every key
+  was typed but the screen does not confirm it within 5 s, the answer is 409
+  `{error: 'answer-uncertain', effect: 'uncertain'}`: it may or may not have
+  landed as given. Its receipt reads `state: 'uncertain'`. The record stays
+  pending with `step.status: 'partial'` and no `decision`, answers
+  `already-answered` from then on, and the pane stays blocked on the
+  question. Claude's own report that the question was answered, listing
+  exactly these answers, resolves it as this answer; anything else that ends
+  it (a report of other answers or of none, the question dismissed at the
+  terminal, the turn over, the pane gone, a daemon restart) expires it. The
+  new block counts only below the rows that were above the picker when the
+  last key was typed, so an older block for the same question is never taken
+  for it. A record that Claude's next dialog replaced, or that
+  was settled, while the daemon was still confirming the answer keeps that
+  state, and the 200 carries it.
+- Once the first key is typed the record carries `step` and no `form`, and a
+  v1 approve or deny on it is 409 `already-answered`. A key typed at the
+  terminal meanwhile, a screen that does not show what the last key should
+  have drawn (a review that lists another answer included: it says nothing
+  was submitted, so it stops the answer `partial` at once rather than
+  `answer-uncertain`), a lost grant or the turn ending stops the answer, as
+  for the plan dialog's feedback: the
+  response carries `effect: 'partial'` and `step` (409 `prompt-changed`, or
+  the status of what stopped it), nothing is typed to undo it, and the rest is
+  answered at the terminal. While keys are still being typed, a newer
+  question or permission gate on the pane does not replace the record: it is
+  replaced only if the answer stops. An answer that would take more than 40
+  keys is 501 `unsupported-shape` before any key.
 
 #### OpenCode permissions and questions
 
