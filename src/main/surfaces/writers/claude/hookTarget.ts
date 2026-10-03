@@ -194,7 +194,9 @@ export function applyHookChangesToRoot(
       for (let gIdx = eventList.length - 1; gIdx >= 0; gIdx--) {
         const item = eventList[gIdx] as Record<string, unknown>;
         if (item && Array.isArray(item.hooks)) {
-          if (item.hooks.length === 0) {
+          // Only a group this edit emptied; a group the user left empty stays as it was.
+          const emptiedHere = eventMatches.some((m) => m.groupIdx === gIdx && m.handlerIdx !== null);
+          if (item.hooks.length === 0 && emptiedHere) {
             eventList.splice(gIdx, 1);
           }
         } else if (item && typeof item === 'object') {

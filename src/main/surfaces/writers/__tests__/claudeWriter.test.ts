@@ -1682,6 +1682,16 @@ describe('claudeWriter hook identity', () => {
     expect(restored.hooks.Stop[0].hooks).toEqual([a]);
   });
 
+  it('leaves a matcher group that was already empty alone', async () => {
+    const deps = makeDeps(home);
+    const hook = { type: 'command', command: 'node a.js' };
+    fs.writeFileSync(settingsPath, JSON.stringify({ hooks: { Stop: [{ matcher: 'x', hooks: [] }, { hooks: [hook] }] } }), 'utf8');
+    const [item] = await listHooks(deps);
+    expect((await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: item.id, enabled: false }] }, { deps })).ok).toBe(true);
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    expect(after.hooks.Stop).toEqual([{ matcher: 'x', hooks: [] }]);
+  });
+
   it('refuses when two identical handlers match, and leaves the file untouched', async () => {
     const deps = makeDeps(home);
     const dup = { type: 'command', command: 'node my-stop.js' };
