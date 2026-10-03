@@ -326,10 +326,12 @@ export class AgyAccountService {
       return this.prepareLaunch();
     }
     if (result !== 'ok') {
-      // The live sign-in could not be saved (or the write failed): never replace it. agy starts on
-      // whatever it is signed in with, exactly as it would without wmux.
+      // The live sign-in could not be saved (or the write failed): never replace it. An active account
+      // wmux knows is out is held as usual; any other sign-in starts as it would without wmux.
       console.warn(`[agy-accounts] not switching agy for this launch (${result})`);
-      return { ok: true, account: null, switched: false };
+      const active = snap.accounts.find((a) => a.active);
+      if (active?.state === 'exhausted') return { ok: false, reason: 'all-exhausted', availableAtMs: active.availableAtMs };
+      return { ok: true, account: active ?? null, switched: false };
     }
     console.log(`[agy-accounts] switched agy to account ${decision.account.id} for this launch`);
     this.emit();
