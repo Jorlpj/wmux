@@ -209,6 +209,12 @@ export interface HookIngestDeps {
    */
   gateConfig?: () => { gatedTools: string[] };
   /**
+   * Every resolved signal with its payload, for consumers that read a field
+   * the event shapes drop (the usage-limit registry reads a StopFailure's
+   * `error` and `last_assistant_message`). Optional; only the daemon supplies it.
+   */
+  onResolvedSignal?: (sessionId: string, signal: AgentSignal) => void;
+  /**
    * Transcript projection — tell the TranscriptProjector that this pane's
    * transcript may have grown. Fired for EVERY resolved signal, including the
    * non-emit kinds: `agent.activity` is the mid-turn liveness nudge,
@@ -853,6 +859,11 @@ export class HookIngest {
       this.deps.onAuthorityTouched?.(sessionId);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
+    }
+    try {
+      this.deps.onResolvedSignal?.(sessionId, signal);
+    } catch (err) {
+      this.deps.log?.('warn', `[hooks] resolved-signal callback failed for ${sessionId}: ${String(err)}`);
     }
 
     // User answered a pending approval locally — no turn boundary, just expire the request.
