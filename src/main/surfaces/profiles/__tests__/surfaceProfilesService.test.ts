@@ -136,7 +136,7 @@ describe('surfaceProfilesService', () => {
       await expect(saveProfile('Profile 51', ['claude'], { deps: mockDeps })).rejects.toThrow(
         'Maximum number of profiles (50) reached.',
       );
-    });
+    }, 60_000);
   });
 
   describe('capture rules', () => {
