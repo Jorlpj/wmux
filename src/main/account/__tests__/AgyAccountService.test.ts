@@ -124,6 +124,18 @@ describe('AgyAccountService', () => {
     expect(s.snapshot().accounts.every((a) => a.state !== 'needs-reauth')).toBe(true);
   });
 
+  it('holds instead of using a registered active account that is out when the swap is refused', async () => {
+    const s = make();
+    await withAccounts(s, ['b@x.com', 'a@x.com']); // a is live now
+    snapshots.set('a@x.com', quota(0));
+    snapshots.set('b@x.com', quota(0.6));
+    const realWrite = backend.write.bind(backend);
+    backend.write = (target, user, blob) => (target === copyTarget('a@x.com') ? false : realWrite(target, user, blob));
+
+    expect(await s.prepareLaunch()).toMatchObject({ ok: false, reason: 'all-exhausted' });
+    expect(agyBlobEmail(backend.read(AGY_ACTIVE_TARGET))).toBe('a@x.com');
+  });
+
   it('lets a launch through unchanged with no accounts', async () => {
     expect(await make().prepareLaunch()).toEqual({ ok: true, account: null, switched: false });
   });
