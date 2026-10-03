@@ -72,20 +72,27 @@ export function McpStatusSection({ api }: { api?: ElectronMcpApi } = {}) {
   const handleReregister = useCallback(async () => {
     if (!mcpApi) return;
     setPending('reregister');
-    const result = await ipcInvoke(() => mcpApi.reregister());
-    if (result.ok) setStatus(result.data);
-    setPending(null);
-    announceMcpChange();
+    try {
+      const result = await ipcInvoke(() => mcpApi.reregister());
+      if (result.ok) setStatus(result.data);
+      announceMcpChange();
+    } finally {
+      // A rejected call must not leave every MCP button disabled.
+      setPending(null);
+    }
   }, [ipcInvoke, mcpApi]);
 
   const handleUnregister = useCallback(async () => {
     if (!mcpApi) return;
     setPending('unregister');
-    const result = await ipcInvoke(() => mcpApi.unregister());
-    if (result.ok) setStatus(result.data);
-    setPending(null);
-    announceMcpChange();
-    setConfirmingUnregister(false);
+    try {
+      const result = await ipcInvoke(() => mcpApi.unregister());
+      if (result.ok) setStatus(result.data);
+      announceMcpChange();
+    } finally {
+      setPending(null);
+      setConfirmingUnregister(false);
+    }
   }, [ipcInvoke, mcpApi]);
 
   const handleRegisterTarget = useCallback(
