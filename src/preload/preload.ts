@@ -76,8 +76,14 @@ export interface McpTargetStatusPayload {
   verified: boolean;
   wmux: { registered: boolean; path: string | null };
 }
-interface McpStatusPayload {
+export interface McpStatusPayload {
   targets: McpTargetStatusPayload[];
+}
+export interface McpRegisterTargetResult {
+  id: string;
+  success: boolean;
+  error?: string;
+  status: McpStatusPayload;
 }
 
 const chat: ChatBridgeApi = {
@@ -1328,6 +1334,8 @@ const electronAPI = {
     check: () => ipcRenderer.invoke(IPC.MCP_CHECK) as Promise<McpStatusPayload>,
     reregister: () => ipcRenderer.invoke(IPC.MCP_REREGISTER) as Promise<McpStatusPayload>,
     unregister: () => ipcRenderer.invoke(IPC.MCP_UNREGISTER) as Promise<McpStatusPayload>,
+    registerTarget: (targetId: string) =>
+      ipcRenderer.invoke(IPC.MCP_REGISTER_TARGET, targetId) as Promise<McpRegisterTargetResult>,
   },
   tokenUsage: {
     readQuota: (request?: QuotaReadRequest) =>

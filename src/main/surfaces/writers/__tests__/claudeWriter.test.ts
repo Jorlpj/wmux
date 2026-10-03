@@ -9,6 +9,9 @@ import { ConfigChangedError, SurfacesStore } from '../../safeWrite';
 import type { WriterDeps } from '../types';
 import type { SurfaceItem } from '../../../../shared/tokenUsage/surfaceTypes';
 
+// Real files on disk, several applies per test: slow Windows runners need more than vitest's 5 s.
+vi.setConfig({ testTimeout: 30_000 });
+
 /**
  * Make `file` impossible to replace, on every platform. A read-only file
  * blocks the atomic rename on Windows only; on Linux/macOS rename(2) needs
