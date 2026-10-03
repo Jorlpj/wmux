@@ -885,6 +885,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     return buildWorkspaceListEntries(store.workspaces);
   }
 
+  if (method === 'quickLaunch.context') {
+    // The global quick-launch composer (main/quickLaunch): which workspaces it
+    // may start an agent in, and the theme to paint itself in.
+    return {
+      workspaces: store.workspaces.map((w) => ({ id: w.id, name: w.name, cwd: w.metadata?.cwd ?? '' })),
+      activeWorkspaceId: store.activeWorkspaceId,
+      theme: store.theme,
+      locale: store.locale,
+      ...(store.theme === 'custom' ? { customThemeColors: store.customThemeColors } : {}),
+    };
+  }
+
   if (method === 'workspace.phoneSidebar') {
     // Phone Fleet only (reached through main's PhoneWorkspaces, never the
     // public RPC router): the sidebar's own labels, projected and bounded.
@@ -1239,8 +1251,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // here: an await between addWorkspace and pty.create would let the
     // empty-leaf funnel spawn a plain shell into this pane first.
     const fanoutTaskOf = typeof params.fanoutTaskOf === 'string' ? params.fanoutTaskOf : '';
+    // Quick launch in the person's own checkout: nested in the sidebar under
+    // the workspace it was started from, but NOT stamped as a fan-out task —
+    // it must not count toward the fan-out cap or the depth rule.
+    const nestUnder = !fanoutTaskOf && typeof params.nestUnder === 'string' ? params.nestUnder : '';
     // #1481 — lets the sidebar nest this workspace under its owner right away.
-    if (fanoutTaskOf) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf, fanoutOrigin);
+    if (fanoutTaskOf || nestUnder) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf || nestUnder, fanoutOrigin);
 
     // Unnested so the FINAL command is readable: withDefaultShell first (there
     // has to be a command to rewrite), then the role binding, then the marker
