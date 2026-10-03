@@ -439,6 +439,7 @@ export const zh = {
   'agyAccounts.signInAnother': "登录其他账号",
   'agyAccounts.loginTabTitle': "agy 登录",
   'agyAccounts.loginTabFailed': "无法打开 agy 登录标签页。请打开一个工作区后重试。",
+  'agyAccounts.restoreFailed': "agy 已退出登录：无法重新登录 {email}。请重新登录。",
   'accounts.loginStatusFailed': '无法检查“{name}”当前的登录状态，因此无法可靠地检测新的登录。请重试。',
   'settings.shortcuts': '键盘快捷键',
   'settings.shortcutDisableHint': '开：wmux 处理该按键。关：按键将传递给终端。',

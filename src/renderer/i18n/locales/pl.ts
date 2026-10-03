@@ -1115,6 +1115,7 @@ export const pl = {
   'agyAccounts.signInAnother': "Zaloguj inne konto",
   'agyAccounts.loginTabTitle': "logowanie agy",
   'agyAccounts.loginTabFailed': "Nie udało się otworzyć karty logowania agy. Otwórz obszar roboczy i spróbuj ponownie.",
+  'agyAccounts.restoreFailed': "agy jest wylogowany: nie udało się ponownie zalogować na {email}. Zaloguj się ponownie.",
   'accounts.loginStatusFailed': 'Nie udało się sprawdzić bieżącego logowania „{name}”, więc nowego logowania nie da się bezpiecznie wykryć. Spróbuj ponownie.',
   'settings.shortcuts': 'Skróty klawiszowe',
   'settings.shortcutDisableHint': 'Wł.: wmux obsługuje ten klawisz. Wył.: klawisz trafia do terminala.',

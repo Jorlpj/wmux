@@ -2430,6 +2430,7 @@ export const ko = {
   'agyAccounts.signInAnother': "다른 계정으로 로그인",
   'agyAccounts.loginTabTitle': "agy 로그인",
   'agyAccounts.loginTabFailed': "agy 로그인 탭을 열 수 없습니다. 워크스페이스를 연 뒤 다시 시도하세요.",
+  'agyAccounts.restoreFailed': "agy가 로그아웃되었습니다. {email} 계정으로 다시 로그인하지 못했습니다. 다시 로그인하세요.",
   'accounts.loginStatusFailed': '“{name}”의 현재 로그인을 확인하지 못해 새 로그인을 안전하게 감지할 수 없습니다. 다시 시도하세요.',
   'remotePage.title': "리모트",
   'remotePage.share': "공유 및 페어링…",
