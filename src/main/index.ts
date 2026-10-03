@@ -76,6 +76,7 @@ import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
 import { UsagePoller } from './claude/UsagePoller';
 import { setUsageClientVersion } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
+import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
 import { IPC, getWmuxHomeDir } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
@@ -1167,7 +1168,12 @@ const onClaudeTurnEnd = (workspaceId: string): void => {
   // the hook's ptyId instead of the workspace binding.
   const accountId = getAccountStore().getBinding(workspaceId, 'claude');
   if (accountId) void accountUsageService.maybeProbe(accountId);
+  // Panes that quota rotation moved to other accounts: refresh those too.
+  for (const rotated of getAccountRotationService().launchedAccounts(workspaceId, 'claude')) {
+    if (rotated !== accountId) void accountUsageService.maybeProbe(rotated);
+  }
 };
+getAccountRotationService().setClaudeUsage(accountUsageService);
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd, getWorkspaceMirror, localCompletionAlarm);
 
 // ─── Phase 2 — Anthropic 5h/7d usage meter ──────────────────────────────────
