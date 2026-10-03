@@ -5,15 +5,13 @@ import { SurfacesStore } from '../../safeWrite';
 import type { JsonEdit } from '../../safeWrite';
 import type { ResolvedChange, WriterDeps } from '../types';
 import { applyHookChangesToRoot } from './hookTarget';
+import { foldPathCase } from '../../safeWrite/pathCase';
 import { isPathAllowed, resolveCanonicalPath } from './pathSecurity';
 
 function pathsEqual(p1: string, p2: string): boolean {
   const norm1 = path.normalize(p1);
   const norm2 = path.normalize(p2);
-  if (process.platform === 'win32') {
-    return norm1.toLowerCase() === norm2.toLowerCase();
-  }
-  return norm1 === norm2;
+  return foldPathCase(norm1) === foldPathCase(norm2);
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {

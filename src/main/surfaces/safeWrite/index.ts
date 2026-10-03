@@ -34,6 +34,8 @@ export {
   type ApplyConfigEditResult,
 } from './applyConfigEdit';
 
+export { foldPathCase } from './pathCase';
+
 export {
   rollbackWrittenFiles,
   type WrittenFile,

@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SurfaceItem } from '../../../../shared/tokenUsage/surfaceTypes';
+import { foldPathCase } from '../../safeWrite/pathCase';
 import type { WriterDeps } from '../types';
 
 function safeRealpath(targetPath: string): string {
@@ -25,8 +26,8 @@ function safeRealpath(targetPath: string): string {
 }
 
 export function isWithin(root: string, target: string): boolean {
-  const normRoot = process.platform === 'win32' ? root.toLowerCase() : root;
-  const normTarget = process.platform === 'win32' ? target.toLowerCase() : target;
+  const normRoot = foldPathCase(root);
+  const normTarget = foldPathCase(target);
   const rel = path.relative(normRoot, normTarget);
   return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
