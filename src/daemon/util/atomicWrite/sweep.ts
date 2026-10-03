@@ -50,7 +50,15 @@ function validateTempJSON(filePath: string, primaryName: string): boolean {
     if (primaryName === 'deck-schedules.json' || primaryName === 'deck-work.archive.json') {
       return Array.isArray(parsed);
     }
-    return !Array.isArray(parsed);
+    if (Array.isArray(parsed)) return false;
+    // Mirror the Deck work store's own contract (deckWorkStore.loadFile): a file
+    // without an `active` record loads as empty. Treating `{}` as valid here
+    // would let such a backup outrank a temp that holds real work.
+    if (primaryName === 'deck-work.json') {
+      const active = (parsed as Record<string, unknown>).active;
+      return !!active && typeof active === 'object' && !Array.isArray(active);
+    }
+    return true;
   } catch {
     return false;
   }

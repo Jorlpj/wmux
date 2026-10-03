@@ -45,6 +45,8 @@ import {
   loadActiveDeckWork,
 } from '../../deck/deckWorkStore';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
+import { reconcileOrphanDeckState } from '../../deck/deckOrphanReconcile';
+import { getWmuxDir } from '../../../daemon/config';
 import { DEFAULT_MAX_SNAPSHOT_AGE_MS, isOutstandingWorkerPane } from '../../deck/stopGate';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
@@ -71,10 +73,36 @@ type GetWindow = () => BrowserWindow | null;
 export interface DeckRpcDeps {
   /** Injected in tests; defaults to the main-hosted task ledger. */
   getLedger?: () => TaskLedger;
+  /** Injected in tests; defaults to the wmux data dir. */
+  deckDir?: () => string;
 }
 
 export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: DeckRpcDeps = {}): void {
   const ledgerOf = deps.getLedger ?? getTaskLedger;
+
+  // `wmux deck state --prune --yes`. The prune runs HERE, not in the CLI
+  // process: every Deck store does read → modify → atomic write, guarded by an
+  // in-process write chain, and the app writes deck-work.json on every human
+  // turn. A CLI-side rewrite could replace a newer app write with an older copy
+  // and leave the app's caches stale. Same live-id source and guards as the
+  // startup reconcile: a fresh workspace mirror from a restored session.
+  router.register('deck.state.prune', async () => {
+    const mirror = getWorkspaceMirror();
+    const entries = mirror.getEntries();
+    const peek = mirror.peek();
+    if (!entries || entries.length === 0 || !peek || peek.ageMs > DEFAULT_MAX_SNAPSHOT_AGE_MS) {
+      throw new Error('deck.state.prune: the live workspace list is not loaded yet; try again in a moment');
+    }
+    if (!mirror.isSessionRestored()) {
+      throw new Error('deck.state.prune: the saved session was not restored, so absent workspaces may still come back; nothing was pruned');
+    }
+    const report = await reconcileOrphanDeckState(entries.map((e) => e.id), {
+      dir: deps.deckDir ? deps.deckDir() : getWmuxDir(),
+      now: Date.now(),
+      dryRun: false,
+    });
+    return { archived: report.archived, tornDown: report.tornDown ?? [], skipped: report.skippedIds ?? [] };
+  });
 
   router.register('deck.resolvePaneRoute', async (params) => {
     const token = params['token'];

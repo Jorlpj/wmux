@@ -53,13 +53,13 @@ describe('validateFanoutAgentChoice', () => {
   });
 
   it('builds a runnable agy worker line: flags after the launcher, -i right before the prompt', () => {
-    const base = `claude "$(Get-Content -Raw -LiteralPath 'C:\t\prompt.md')"`;
+    const base = `claude "$(Get-Content -Raw -LiteralPath 'C:\\t\\prompt.md')"`;
     const swapped = applyRoleAgent(base, { agent: 'agy' }, { extraAgents: new Set(['agy']) });
     expect(swapped.changed).toBe(true);
     const withModel = applyRoleBinding(swapped.command, { agent: 'agy', model: 'gemini-3.8-flash-low' }, {
       extraAgents: new Set(['agy']),
     }).command;
-    const final = applyFanoutAgentFlags(withModel, { agent: 'agy', unattended: true }, 'C:\t', 'win32');
+    const final = applyFanoutAgentFlags(withModel, { agent: 'agy', unattended: true }, 'C:\\t', 'win32');
     expect(final).toMatch(/^agy --dangerously-skip-permissions --model gemini-3\.8-flash-low -i "\$\(Get-Content/);
   });
 

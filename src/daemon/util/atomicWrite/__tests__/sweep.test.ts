@@ -73,6 +73,12 @@ describe('sweepOrphanAtomicTemps', () => {
       const { tempFile } = setUp(60_000, '{ broken');
       expect(sweepOrphanAtomicTemps(tmpDir, { log: () => undefined }).promoted).toEqual([tempFile]);
     });
+
+    it('promotes the temp when the newer backup has no `active` record (the store would load it as empty)', () => {
+      const { tempFile, primaryPath } = setUp(60_000, '{}');
+      expect(sweepOrphanAtomicTemps(tmpDir, { log: () => undefined }).promoted).toEqual([tempFile]);
+      expect(JSON.parse(fs.readFileSync(primaryPath, 'utf8')).active.ws).toBe('temp');
+    });
   });
 
   it('leaves invalid JSON temp untouched when primary is missing', () => {

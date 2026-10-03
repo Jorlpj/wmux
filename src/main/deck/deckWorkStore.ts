@@ -561,7 +561,11 @@ export const MAX_ARCHIVED_DECK_WORKS = 200;
 export function archiveDeckWork(work: ActiveDeckWork, dir?: string): void {
   const archivePath = getDeckWorkArchivePath(dir);
   let list: ActiveDeckWork[];
-  const existing = atomicReadJSONSync<unknown>(archivePath);
+  // The array validator makes the reader fall back to a valid backup when the
+  // primary parses but is not a list, instead of resetting the history below.
+  const existing = atomicReadJSONSync<unknown[]>(archivePath, {
+    validate: (data): data is unknown[] => Array.isArray(data),
+  });
   if (Array.isArray(existing)) {
     list = existing as ActiveDeckWork[];
   } else if (existing === null && !fs.existsSync(archivePath)) {

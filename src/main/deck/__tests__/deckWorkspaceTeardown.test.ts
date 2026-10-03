@@ -335,6 +335,18 @@ describe('deckWorkspaceTeardown — archive before clearing (workspace removal)'
     expect(fs.readFileSync(path.join(quarantine, kept[0]), 'utf8')).toBe('CORRUPT{ old history');
   });
 
+  it('recovers the archive from its backup when the primary is valid JSON but not a list', async () => {
+    const old = { id: 'w-old', workspaceId: 'ws-old' } as ActiveDeckWork;
+    fs.writeFileSync(`${getDeckWorkArchivePath(dir)}.bak`, JSON.stringify([old]));
+    fs.writeFileSync(getDeckWorkArchivePath(dir), JSON.stringify({ not: 'a list' }));
+    beginOrContinueDeckWork('ws-c', 'request c', dir);
+
+    const report = await teardownWorkspaceDeckState('ws-c', { dir, log: () => undefined });
+
+    expect(report.workArchived).toBe(true);
+    expect(loadArchivedDeckWorks(dir).map((w) => w.workspaceId)).toEqual(['ws-old', 'ws-c']);
+  });
+
   it('keeps the work record when the archive cannot be written', async () => {
     fs.writeFileSync(getDeckWorkArchivePath(dir), 'CORRUPT{');
     // A FILE where the quarantine folder should go makes moving the corrupt

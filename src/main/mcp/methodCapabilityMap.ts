@@ -307,6 +307,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Brain self-resolve of a stale decision (WP3). Same commander-token auth +
   // server-side auto/staleness/substance gate, so no capability gate either.
   'deck.resolveDecision': { capability: null },
+  // Orphan Deck state prune (`wmux deck state --prune --yes`). Runs inside the
+  // app so its writes share the stores' in-process locks and caches; it
+  // deletes state, so it carries the same internal gate as workspace.close.
+  'deck.state.prune': { capability: 'wmux.internal' },
 
   // --- Browser (Playwright). Plugin-declarable methods get the browser
   //     risk-class prompt and are gated against KNOWN_CAPABILITIES entries.

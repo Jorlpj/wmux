@@ -52,6 +52,8 @@ export const WMUX_CLI_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'workspace.focus',
   'workspace.new',
   'workspace.close',
+  // orphan Deck state prune (`wmux deck state --prune --yes`), run in the app
+  'deck.state.prune',
   // surface + pane (`wmux surface ...` / `wmux pane ...`)
   'surface.list',
   'surface.new',
