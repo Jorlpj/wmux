@@ -9,8 +9,17 @@ import { randomUUID } from 'node:crypto';
 // its pure origin rules so they can be checked without a process tree.
 import {
   classifyNotifierOrigin, isSharedServerArgv, claimsPaneIdentity, tokenizeCommandLine, parseProcEntry, parsePsEntry,
-  parseHandedArgv,
+  parseHandedArgv, wslAgentProcessFromEnv,
 } from '../bin/wmux-codex-notify.mjs';
+
+describe('wslAgentProcessFromEnv (#1727)', () => {
+  it('passes a report up to 8192 characters and drops a longer or empty one', () => {
+    expect(wslAgentProcessFromEnv({ WMUX_WSL_AGENT_PROC: 'x'.repeat(8192) })).toHaveLength(8192);
+    expect(wslAgentProcessFromEnv({ WMUX_WSL_AGENT_PROC: 'x'.repeat(8193) })).toBeUndefined();
+    expect(wslAgentProcessFromEnv({ WMUX_WSL_AGENT_PROC: '' })).toBeUndefined();
+    expect(wslAgentProcessFromEnv({})).toBeUndefined();
+  });
+});
 
 // #1523: Codex 0.157+ spawns `notify` from a shared, detached app-server that
 // keeps the environment of whichever pane started it. The bridge must refuse
@@ -255,7 +264,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
   /** `parentArgv[0]` is the parent script, relative to the fixture directory. */
   function run(
     parentArgv: string[],
-    opts: { shim?: boolean; identity?: boolean; handed?: string[] } = {},
+    opts: { shim?: boolean; identity?: boolean; handed?: string[]; agentProc?: string } = {},
   ): Promise<number | null> {
     const payload = JSON.stringify({ type: 'agent-turn-complete', 'thread-id': THREAD_ID, 'turn-id': 'turn-1', cwd: dir });
     const child = opts.shim
@@ -276,6 +285,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     }
     // The launcher's form: /proc/<pid>/cmdline with each NUL turned into U+001F.
     if (opts.handed) env.WMUX_CODEX_NOTIFIER_ARGV = opts.handed.map((arg) => `${arg}\x1f`).join('');
+    if (opts.agentProc !== undefined) env.WMUX_WSL_AGENT_PROC = opts.agentProc;
     const proc = spawn(process.execPath, parentArgv, { cwd: dir, env, stdio: 'ignore' });
     return new Promise((resolve) => proc.on('exit', (code) => resolve(code)));
   }
@@ -353,5 +363,27 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     })).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
     expect(logLines().map((l) => l.outcome)).toEqual(['refused-shared-server', 'ok']);
+  }, 20_000);
+
+  // #1727 — the WSL Codex hook's report of which Linux process this Codex is.
+  const AGENT_PROC = '1:0f6a7c1e-2b3d-4e5f-8a9b-0c1d2e3f4a5b\x1e4321:991739:/usr/bin/codex\x1f--no-daemon';
+
+  it("carries the WSL hook's agent-process report on its own pane's notification", async () => {
+    writeToken();
+    expect(await run(['parent.cjs', 'resume', THREAD_ID], { agentProc: AGENT_PROC })).toBe(0);
+    expect(received).toEqual([delivered({ ...PANE, wslAgentProcess: AGENT_PROC })]);
+  }, 20_000);
+
+  it('never sends a report a shared server carries', async () => {
+    writeToken();
+    expect(await run(SERVER_ARGV, { agentProc: AGENT_PROC })).toBe(0);
+    expect(received).toEqual([]);
+  }, 20_000);
+
+  it('drops an oversized report and still sends the notification', async () => {
+    writeToken();
+    expect(await run(['parent.cjs', 'resume', THREAD_ID], { agentProc: 'x'.repeat(9000) })).toBe(0);
+    expect(received).toEqual([delivered(PANE)]);
+    expect('wslAgentProcess' in (received[0].params ?? {})).toBe(false);
   }, 20_000);
 });
