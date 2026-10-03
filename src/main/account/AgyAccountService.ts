@@ -91,6 +91,8 @@ export interface AgyLoginState {
   startedAt: number | null;
   /** Email of the account the last sign-in landed on. */
   lastResult: string | null;
+  /** Set when a cancelled or timed-out sign-in could not put this account back: agy is signed out. */
+  restoreFailed?: string;
 }
 
 export class AgyAccountService {
@@ -301,7 +303,10 @@ export class AgyAccountService {
     this.loginTimer = null;
     const previous = this.login.previousEmail;
     this.login = { pending: false, previousEmail: null, startedAt: null, lastResult: null };
-    if (previous && !this.deps.vault?.activeEmail()) this.deps.vault?.activate(previous);
+    if (previous && !this.deps.vault?.activeEmail() && this.deps.vault?.activate(previous) !== 'ok') {
+      console.warn('[agy-accounts] could not restore the previous agy sign-in after a cancelled sign-in');
+      this.login.restoreFailed = previous;
+    }
     this.emit();
   }
 

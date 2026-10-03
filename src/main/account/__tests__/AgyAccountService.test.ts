@@ -250,6 +250,20 @@ describe('AgyAccountService — self-healing signals', () => {
   });
   afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
 
+  it('cancelling a sign-in says so when the previous account cannot be restored', async () => {
+    const s = make();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
+    await s.addCurrent();
+    await s.beginLogin();
+    backend.remove(copyTarget('a@x.com')); // the saved copy is gone
+    await s.cancelLogin();
+    expect(s.loginState()).toMatchObject({ pending: false, restoreFailed: 'a@x.com' });
+
+    // A later sign-in clears the notice.
+    await s.beginLogin();
+    expect(s.loginState().restoreFailed).toBeUndefined();
+  });
+
   it('sign-in accepts the same account signed in again (new refresh token)', async () => {
     const s = make();
     backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', 'r1'));

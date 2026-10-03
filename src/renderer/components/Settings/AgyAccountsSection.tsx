@@ -172,6 +172,13 @@ export function AgyAccountsSection(): React.ReactElement | null {
           )}
         </div>
       ))}
+      {snap.login.restoreFailed && !snap.login.pending && (
+        <div className="ui-row" role="alert">
+          <span className="flex-1 text-[13px] text-[var(--text-sub)]">
+            {t('agyAccounts.restoreFailed', { email: snap.login.restoreFailed })}
+          </span>
+        </div>
+      )}
       {snap.login.pending ? (
         <div className="ui-row">
           <span className="flex-1 text-[13px] text-[var(--text-sub)]">{t('agyAccounts.waitingForSignIn')}</span>
