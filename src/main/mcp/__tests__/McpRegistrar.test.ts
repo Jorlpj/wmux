@@ -246,6 +246,24 @@ describe('McpRegistrar.register (broker topology selection)', () => {
     expect(target(registrar.getStatus(), 'agy').wmux.registered).toBe(true);
   });
 
+  it('a Codex-only Register installs the Codex notify bridge but not the OpenCode plugin', async () => {
+    // Private lifecycle steps are spied on the prototype; `any` is needed to reach them.
+    const proto = McpRegistrar.prototype as any;
+    const openCode = vi.spyOn(proto, 'installOpenCodePlugin').mockImplementation(() => undefined);
+    const codexNotify = vi.spyOn(proto, 'installAndRegisterCodexNotify').mockImplementation(() => undefined);
+    try {
+      await new McpRegistrar().register('tok', { explicit: true, targets: ['codex'] });
+      expect(codexNotify).toHaveBeenCalledTimes(1);
+      expect(openCode).not.toHaveBeenCalled();
+
+      await new McpRegistrar().register('tok');
+      expect(openCode).toHaveBeenCalledTimes(1);
+    } finally {
+      openCode.mockRestore();
+      codexNotify.mockRestore();
+    }
+  });
+
   it('registerTarget explicitly registers agy and returns success result', async () => {
     const agyJson = path.join(tmpHome, '.gemini', 'config', 'mcp_config.json');
     fs.mkdirSync(path.dirname(agyJson), { recursive: true });

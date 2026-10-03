@@ -323,13 +323,16 @@ export class McpRegistrar {
 
       // Official lifecycle integrations are isolated so one agent's config or
       // filesystem failure never aborts MCP registration or another bridge.
-      const shouldRunLifecycle = !opts?.targets || opts.targets.includes('codex');
-      if (shouldRunLifecycle) {
+      // A per-target Register touches only its target: the Codex notify bridge goes with Codex,
+      // and the OpenCode plugin only with the full (boot) registration.
+      if (!opts?.targets || opts.targets.includes('codex')) {
         try {
           this.installAndRegisterCodexNotify();
         } catch (err) {
           console.error('[McpRegistrar] Codex notify registration failed:', err);
         }
+      }
+      if (!opts?.targets) {
         try {
           this.installOpenCodePlugin();
         } catch (err) {
