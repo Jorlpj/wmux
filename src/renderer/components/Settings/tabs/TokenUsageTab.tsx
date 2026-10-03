@@ -30,6 +30,9 @@ export interface TokenUsageViewProps {
 
 export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, deckBrainEffort, t }: TokenUsageViewProps) {
   const [showCustom, setShowCustom] = useState(false);
+  // Bumped when a saved surface profile is applied: remounts the Custom panel so it reloads the
+  // inventory instead of staging changes against the state from before the apply.
+  const [surfaceEpoch, setSurfaceEpoch] = useState(0);
   const [surfaceBadgeText, setSurfaceBadgeText] = useState(() => t('settings.tokenUsage.surfaceDefault'));
   const surfaceReqIdRef = useRef(0);
   const customRef = useRef<HTMLDivElement>(null);
@@ -98,12 +101,15 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
         showCustom={showCustom}
         onToggleCustom={() => setShowCustom((v) => !v)}
         surfaceBadgeText={surfaceBadgeText}
-        onProfileApplied={refreshSurfaceState}
+        onProfileApplied={() => {
+          void refreshSurfaceState();
+          setSurfaceEpoch((n) => n + 1);
+        }}
       />
 
       {showCustom && (
         <div ref={customRef}>
-          <CustomPanel t={t} providers={providers} onApplied={refreshSurfaceState} />
+          <CustomPanel key={surfaceEpoch} t={t} providers={providers} onApplied={refreshSurfaceState} />
         </div>
       )}
 
