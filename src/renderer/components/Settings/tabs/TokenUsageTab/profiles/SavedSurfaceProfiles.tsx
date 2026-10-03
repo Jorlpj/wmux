@@ -218,7 +218,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
   const safeProfiles = Array.isArray(profiles) ? profiles : [];
 
   return (
-    <div className="mt-4 pt-4 border-t border-[var(--color-border)]" data-testid="saved-surface-profiles">
+    <div className="mt-4 pt-4 border-t border-[var(--border-soft)]" data-testid="saved-surface-profiles">
       <div className="flex items-center justify-between mb-3">
         <div>
           <h4 className="text-[13px] font-medium text-[var(--text-main)] m-0">
@@ -264,7 +264,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
       </div>
 
       {saveError && (
-        <p className="text-[11px] text-[var(--color-danger)] mb-3" data-testid="saved-profile-save-error">
+        <p className="text-[11px] text-[var(--accent-red)] mb-3" data-testid="saved-profile-save-error">
           {saveError}
         </p>
       )}
@@ -274,7 +274,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
           {t('settings.tokenUsage.loadingProfiles')}
         </p>
       ) : error ? (
-        <p className="text-[11px] text-[var(--color-danger)]" data-testid="saved-profiles-error">
+        <p className="text-[11px] text-[var(--accent-red)]" data-testid="saved-profiles-error">
           {error}
         </p>
       ) : safeProfiles.length === 0 ? (
@@ -292,7 +292,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
             return (
               <div
                 key={profile.id}
-                className="flex items-center justify-between p-2.5 rounded-lg border border-[var(--color-border)] bg-[var(--bg-surface)] text-[13px]"
+                className="flex items-center justify-between p-2.5 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-surface)] text-[13px]"
                 data-testid={`saved-profile-row-${profile.id}`}
               >
                 <div className="flex flex-col gap-1 min-w-0 pr-2">
@@ -374,12 +374,12 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
                 {t('settings.tokenUsage.calcPreview')}
               </p>
             ) : previewError ? (
-              <p className="text-[13px] text-[var(--color-danger)]" data-testid="saved-profile-preview-error">
+              <p className="text-[13px] text-[var(--accent-red)]" data-testid="saved-profile-preview-error">
                 {previewError}
               </p>
             ) : previewData ? (
               <div className="flex flex-col gap-4 text-[13px]" data-testid="saved-profile-preview-content">
-                <div className="flex gap-4 p-2.5 rounded-lg border border-[var(--color-border)] bg-[var(--bg-surface)]">
+                <div className="flex gap-4 p-2.5 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-surface)]">
                   <div>
                     <span className="text-[11px] text-[var(--text-sub)] block">
                       {t('settings.tokenUsage.missingItems')}
@@ -393,7 +393,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
                       </span>
                     )}
                   </div>
-                  <div className="border-l border-[var(--color-border)] pl-4">
+                  <div className="border-l border-[var(--border-soft)] pl-4">
                     <span className="text-[11px] text-[var(--text-sub)] block">
                       {t('settings.tokenUsage.newItemsSinceCapture')}
                     </span>
@@ -406,7 +406,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
                 {Object.entries(previewData.providers).map(([providerId, provPreview]) => (
                   <div
                     key={providerId}
-                    className="p-3 rounded-lg border border-[var(--color-border)] flex flex-col gap-2"
+                    className="p-3 rounded-lg border border-[var(--border-soft)] flex flex-col gap-2"
                     data-testid={`preview-provider-${providerId}`}
                   >
                     <div className="flex items-center justify-between">
@@ -430,7 +430,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
                         {provPreview.edits.map((edit, idx) => (
                           <div
                             key={idx}
-                            className="ui-code text-[11px] p-1.5 rounded bg-[var(--bg-surface)] text-[var(--text-sub)] border border-[var(--color-border)]"
+                            className="ui-code text-[11px] p-1.5 rounded bg-[var(--bg-surface)] text-[var(--text-sub)] border border-[var(--border-soft)]"
                           >
                             <span className="text-[var(--text-main)] block">{edit.path}</span>
                             <span>{edit.summary}</span>
@@ -444,7 +444,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
                     )}
 
                     {provPreview && provPreview.rejected.length > 0 && (
-                      <div className="flex flex-col gap-1 mt-1 text-[var(--color-danger)] text-[11px]">
+                      <div className="flex flex-col gap-1 mt-1 text-[var(--accent-red)] text-[11px]">
                         <span className="font-medium">{t('settings.tokenUsage.rejectedChangesLabel')}</span>
                         {provPreview.rejected.map((r, idx) => (
                           <span key={idx}>
@@ -497,9 +497,9 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
                   )
                 ) : (
                   <div>
-                    <p className="text-[var(--color-danger)] m-0">{t('settings.tokenUsage.failedApplySome')}</p>
+                    <p className="text-[var(--accent-red)] m-0">{t('settings.tokenUsage.failedApplySome')}</p>
                     {Object.entries(applyResult.providers).map(([pId, pRes]) => (
-                      <p key={pId} className="text-[11px] text-[var(--color-danger)] m-0 mt-1">
+                      <p key={pId} className="text-[11px] text-[var(--accent-red)] m-0 mt-1">
                         {PROVIDER_NAMES[pId as SurfaceProviderId] || pId}: {pRes?.error || t('settings.tokenUsage.failed')}
                       </p>
                     ))}
@@ -514,7 +514,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
                 <p className="text-[11px] text-[var(--text-sub)] mt-1 mb-0">
                   {t('settings.tokenUsage.confirmApplySubtext')}
                 </p>
-                {applyError && <p className="text-[11px] text-[var(--color-danger)] mt-2 mb-0">{applyError}</p>}
+                {applyError && <p className="text-[11px] text-[var(--accent-red)] mt-2 mb-0">{applyError}</p>}
               </div>
             )}
           </DialogBody>
@@ -558,7 +558,7 @@ export function SavedSurfaceProfiles({ onApplied, t: tProp }: SavedSurfaceProfil
                 {t('settings.tokenUsage.confirmDeletePrompt', { name: deleteTarget.name })}
               </p>
               <p className="text-[11px] text-[var(--text-sub)] mt-1 mb-0">{t('settings.tokenUsage.cannotBeUndone')}</p>
-              {deleteError && <p className="text-[11px] text-[var(--color-danger)] mt-2 mb-0">{deleteError}</p>}
+              {deleteError && <p className="text-[11px] text-[var(--accent-red)] mt-2 mb-0">{deleteError}</p>}
             </div>
           </DialogBody>
           <DialogFooter>

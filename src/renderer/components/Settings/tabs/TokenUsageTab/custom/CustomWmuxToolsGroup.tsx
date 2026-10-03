@@ -85,8 +85,8 @@ export function CustomWmuxToolsGroup({
       className="flex flex-col gap-2 my-4"
       data-testid="token-custom-wmux-group"
     >
-      <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2 text-[13px] border-b border-[var(--border-hairline)] bg-[var(--bg-surface)] flex-wrap gap-2">
+      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--bg-surface)] overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 text-[13px] border-b border-[var(--border-soft)] bg-[var(--bg-surface)] flex-wrap gap-2">
           <button
             type="button"
             onClick={() => setCollapsed(!collapsed)}
@@ -168,7 +168,7 @@ export function CustomWmuxToolsGroup({
         </div>
 
         <div
-          className="px-3 py-2 text-[12px] text-[var(--text-sub)] border-b border-[var(--border-hairline)] bg-[var(--bg-mantle)]"
+          className="px-3 py-2 text-[12px] text-[var(--text-sub)] border-b border-[var(--border-soft)] bg-[var(--bg-mantle)]"
           data-testid="token-custom-wmux-note"
         >
           {t('settings.tokenUsage.wmuxToolsScopeNote')}
@@ -176,7 +176,7 @@ export function CustomWmuxToolsGroup({
 
         {!collapsed && (
           <div
-            className="pl-6 pr-3 pb-2 pt-0 flex flex-col gap-1 divide-y divide-[var(--border-hairline)]"
+            className="pl-6 pr-3 pb-2 pt-0 flex flex-col gap-1 divide-y divide-[var(--border-soft)]"
             data-testid="wmux-tools-list"
           >
             {tools.length === 0 ? (
@@ -194,7 +194,7 @@ export function CustomWmuxToolsGroup({
                 return (
                   <div
                     key={tool.id}
-                    className="flex items-center justify-between text-[11px] py-1 border-t border-[var(--border-hairline)]"
+                    className="flex items-center justify-between text-[11px] py-1 border-t border-[var(--border-soft)]"
                     data-testid={`mcp-tool-${tool.name}`}
                     data-staged={isToolStaged ? 'true' : undefined}
                   >

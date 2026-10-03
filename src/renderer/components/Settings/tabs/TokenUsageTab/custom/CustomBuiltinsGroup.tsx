@@ -24,7 +24,7 @@ export function CustomBuiltinsGroup({
       <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
         {t('settings.tokenUsage.builtinsHeader', { count: items.length })}
       </span>
-      <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
+      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-soft)]">
         {items.map((item) => {
           const isStaged = stagedChanges?.has(item.id) ?? false;
           const isEnabled = isStaged

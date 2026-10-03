@@ -24,7 +24,7 @@ export function CustomSkillsGroup({
       <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
         {t('settings.tokenUsage.skillsHeader', { count: skills.length })}
       </span>
-      <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
+      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-soft)]">
         {skills.map((skill) => {
           const isStaged = stagedChanges?.has(skill.id) ?? false;
           const isEnabled = isStaged

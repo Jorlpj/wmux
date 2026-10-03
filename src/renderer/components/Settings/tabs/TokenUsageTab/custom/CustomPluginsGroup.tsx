@@ -24,7 +24,7 @@ export function CustomPluginsGroup({
       <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
         {t('settings.tokenUsage.pluginsHeader', { count: plugins.length })}
       </span>
-      <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
+      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-soft)]">
         {plugins.map((plugin) => {
           const isStaged = stagedChanges?.has(plugin.id) ?? false;
           const isEnabled = isStaged

@@ -71,7 +71,7 @@ export function ProviderQuotaCard({
 
   return (
     <div
-      className="p-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] flex flex-col gap-2.5"
+      className="p-3.5 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-surface)] flex flex-col gap-2.5"
       data-testid={`quota-card-${provider}`}
     >
       <div className="flex items-center justify-between gap-3">
@@ -108,7 +108,7 @@ export function ProviderQuotaCard({
           {t('settings.tokenUsage.loadingQuota')}
         </div>
       ) : quota && quota.status === 'ok' ? (
-        <div className="flex flex-col divide-y divide-[var(--border-subtle)]">
+        <div className="flex flex-col divide-y divide-[var(--border-soft)]">
           {quota.windows.length === 0 ? (
             <div className="text-[11px] text-[var(--text-sub)] py-1">{t('settings.tokenUsage.noQuotaWindows')}</div>
           ) : (
@@ -145,7 +145,7 @@ export function ProviderQuotaCard({
 
       {!(loading && !reading) && avgTokensText && (
         <div
-          className="text-[11px] text-[var(--text-sub)] pt-1 border-t border-[var(--border-subtle)]"
+          className="text-[11px] text-[var(--text-sub)] pt-1 border-t border-[var(--border-soft)]"
           data-testid={`quota-avg-tokens-${provider}`}
         >
           {avgTokensText}

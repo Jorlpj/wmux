@@ -11,7 +11,7 @@ export function CustomWarnings({ warnings }: CustomWarningsProps) {
 
   return (
     <div
-      className="rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-3 my-3 text-[12px] text-[var(--text-sub)] flex flex-col gap-1.5"
+      className="rounded-[10px] border border-[var(--border-soft)] bg-[var(--bg-surface)] p-3 my-3 text-[12px] text-[var(--text-sub)] flex flex-col gap-1.5"
       data-testid="token-custom-warnings"
     >
       <div className="flex items-center gap-2 font-medium text-[var(--text-main)]">

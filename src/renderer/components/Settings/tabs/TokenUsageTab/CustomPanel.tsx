@@ -677,7 +677,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
 
       {showReconcileNotice && (
         <div
-          className="rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-3 my-2 flex flex-col gap-2"
+          className="rounded-[10px] border border-[var(--border-soft)] bg-[var(--bg-surface)] p-3 my-2 flex flex-col gap-2"
           data-testid="token-custom-reconcile-notice"
         >
           <div className="flex items-start justify-between gap-3">
@@ -700,7 +700,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                 </span>
               )}
               {couldNotReapplyCount > 0 && (
-                <span className="text-[11px] text-[var(--danger)]" data-testid="token-custom-reconcile-unapplied">
+                <span className="text-[11px] text-[var(--accent-red)]" data-testid="token-custom-reconcile-unapplied">
                   {t('settings.tokenUsage.reconcileCouldNotReapply', { count: couldNotReapplyCount })}
                 </span>
               )}
@@ -741,7 +741,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
       )}
 
       {error && (
-        <div className="text-[12px] text-[var(--danger)] py-3">
+        <div className="text-[12px] text-[var(--accent-red)] py-3">
           {t('settings.tokenUsage.failedToLoadInventory', { error })}
         </div>
       )}
@@ -802,7 +802,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
 
       {stagedChanges.size > 0 && (
         <div
-          className="sticky bottom-0 z-10 flex items-center justify-between p-3 mt-4 rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] shadow-md"
+          className="sticky bottom-0 z-10 flex items-center justify-between p-3 mt-4 rounded-[10px] border border-[var(--border-soft)] bg-[var(--bg-surface)] shadow-md"
           data-testid="token-custom-action-bar"
         >
           <div className="flex items-center gap-2">
@@ -899,7 +899,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
             )}
 
             {previewError && (
-              <div className="text-[12px] text-[var(--danger)] py-2">
+              <div className="text-[12px] text-[var(--accent-red)] py-2">
                 {t('settings.tokenUsage.failedPreview', { error: previewError })}
               </div>
             )}
@@ -917,7 +917,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                     <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
                       {t('settings.tokenUsage.fileEditsHeader', { count: previewData.edits.length })}
                     </span>
-                    <div className="rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-base)] divide-y divide-[var(--border-hairline)] overflow-hidden">
+                    <div className="rounded-[10px] border border-[var(--border-soft)] bg-[var(--bg-base)] divide-y divide-[var(--border-soft)] overflow-hidden">
                       {previewData.edits.map((edit, idx) => (
                         <div key={idx} className="p-2.5 flex flex-col gap-1 text-[12px]" data-testid={`preview-edit-${idx}`}>
                           <span className="ui-code text-[11px] text-[var(--text-main)] font-medium">
@@ -934,13 +934,13 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
 
                 {previewData.rejected.length > 0 && (
                   <div className="flex flex-col gap-2" data-testid="token-custom-preview-rejected">
-                    <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--danger)]">
+                    <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--accent-red)]">
                       {t('settings.tokenUsage.rejectedChangesHeader', { count: previewData.rejected.length })}
                     </span>
-                    <div className="rounded-[10px] border border-[var(--danger)] bg-[var(--bg-base)] divide-y divide-[var(--border-hairline)] overflow-hidden">
+                    <div className="rounded-[10px] border border-[var(--accent-red)] bg-[var(--bg-base)] divide-y divide-[var(--border-soft)] overflow-hidden">
                       {previewData.rejected.map((rej, idx) => (
                         <div key={idx} className="p-2.5 flex flex-col gap-0.5 text-[12px]">
-                          <span className="font-medium text-[var(--danger)]">
+                          <span className="font-medium text-[var(--accent-red)]">
                             {rej.itemId}
                           </span>
                           <span className="text-[var(--text-sub)]">
@@ -963,7 +963,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
 
                 {confirmingWmux && (
                   <div
-                    className="rounded-[10px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] p-3 text-[12px] flex flex-col gap-1.5"
+                    className="rounded-[10px] border border-[var(--border-soft)] bg-[var(--bg-surface)] p-3 text-[12px] flex flex-col gap-1.5"
                     data-testid="token-custom-wmux-confirm"
                   >
                     <span className="font-semibold text-[var(--accent)]">
@@ -981,7 +981,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
               <div className="flex flex-col gap-3 py-2" data-testid="token-custom-apply-result">
                 {applyResult.ok ? (
                   <>
-                    <div className="text-[13px] font-medium text-[var(--success)]">
+                    <div className="text-[13px] font-medium text-[var(--accent-green)]">
                       {t('settings.tokenUsage.applySuccess')}
                     </div>
                     {applyResult.backups.length > 0 && (
@@ -1002,7 +1002,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                   </>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    <div className="text-[13px] font-medium text-[var(--danger)]">
+                    <div className="text-[13px] font-medium text-[var(--accent-red)]">
                       {t('settings.tokenUsage.applyFailed', { error: applyResult.error ?? '' })}
                     </div>
                     <div className="text-[12px] text-[var(--text-sub)]">

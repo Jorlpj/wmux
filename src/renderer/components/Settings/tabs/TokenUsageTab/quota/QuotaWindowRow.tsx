@@ -33,7 +33,7 @@ export function QuotaWindowRow({ window, delta, nowMs }: QuotaWindowRowProps) {
       </div>
 
       <div
-        className="w-full h-1.5 rounded-full bg-[var(--bg-surface)] overflow-hidden border border-[var(--border-subtle)]"
+        className="w-full h-1.5 rounded-full bg-[var(--bg-surface)] overflow-hidden border border-[var(--border-soft)]"
         role="progressbar"
         aria-valuenow={usedPct ?? 0}
         aria-valuemin={0}

@@ -67,7 +67,7 @@ export function CustomMcpGroup({
       <span className="text-[10px] font-semibold tracking-wider uppercase text-[var(--text-sub)]">
         {t('settings.tokenUsage.mcpServersHeader', { count: displayServers.length })}
       </span>
-      <div className="rounded-[12px] border border-[var(--border-hairline)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-hairline)]">
+      <div className="rounded-[12px] border border-[var(--border-soft)] bg-[var(--bg-surface)] overflow-hidden divide-y divide-[var(--border-soft)]">
         {displayServers.map(({ server, dimmed }) => {
           const serverTools = tools.filter((t) => t.parent === server.name);
           const allServerTools = allTools ? allTools.filter((t) => t.parent === server.name) : serverTools;
@@ -137,7 +137,7 @@ export function CustomMcpGroup({
                     return (
                       <div
                         key={tool.id}
-                        className="flex items-center justify-between text-[11px] py-1 border-t border-[var(--border-hairline)]"
+                        className="flex items-center justify-between text-[11px] py-1 border-t border-[var(--border-soft)]"
                         data-testid={`mcp-tool-${tool.name}`}
                         data-staged={isToolStaged ? 'true' : undefined}
                       >
