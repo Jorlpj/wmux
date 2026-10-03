@@ -405,6 +405,9 @@ export interface PrStatus {
   state: 'open' | 'draft' | 'merged' | 'closed';
   checks: 'pending' | 'passing' | 'failing' | null;
   url: string;
+  /** Set (true) only when GitHub reports the PR as conflicting with its base;
+   *  absent otherwise (additive, read in the same `gh pr view` call). */
+  conflicting?: true;
 }
 
 /** Sidebar git sync badge — dirty count + ahead/behind vs upstream

@@ -150,7 +150,7 @@ export type FleetTab = 'fleet' | 'approvals' | 'remote';
  * panes and tools dock) is home; every other page covers it while the
  * terminals stay mounted underneath. Session-only, never persisted.
  */
-export type AppRoute = 'workspaces' | 'fleet' | 'schedules' | 'remote' | 'settings';
+export type AppRoute = 'workspaces' | 'fleet' | 'schedules' | 'remote' | 'git' | 'settings';
 
 export interface UISlice {
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
