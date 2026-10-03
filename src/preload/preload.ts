@@ -11,6 +11,7 @@ import { isFileDrag } from '../shared/dragDrop';
 import { parseWindowsBuildNumber } from '../shared/platform';
 import type { NotificationCategory } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
+import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
@@ -365,6 +366,11 @@ const electronAPI = {
   computerUse: {
     get: () => ipcRenderer.invoke(IPC.COMPUTER_USE_GET) as Promise<ComputerUseSettingsPayload>,
     set: (enabled: boolean) => ipcRenderer.invoke(IPC.COMPUTER_USE_SET, enabled) as Promise<ComputerUseSettingsPayload>,
+  },
+  quickLaunch: {
+    settingsGet: () => ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_GET) as Promise<QuickLaunchSettingsPayload>,
+    settingsSet: (patch: { enabled?: boolean; accelerator?: string }) =>
+      ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_SET, patch) as Promise<QuickLaunchSettingsPayload>,
   },
   notification: {
     // ptyId may be null for app-level notifications (e.g. external MCP
