@@ -70,6 +70,7 @@ import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
 import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
 import { noteAgentTurnEnd, sweepTurnEndReminders } from './a2aTurnEndReminder';
+import { noteFanoutCallerLifecycle, sweepFanoutCallerNudges } from './fanoutCallerNudge';
 import {
   createPasteGateState,
   isMentionPasteBusy,
@@ -674,6 +675,8 @@ export function useChannelsEventSubscription(): void {
                 // ending, possibly under a still-running agent.
                 if (ev.source !== 'osc133') noteAgentTurnEnd(ev.ptyId);
               }
+              // Fan-out caller nudges queued behind this pane's turn.
+              noteFanoutCallerLifecycle(ev);
             } else if (event.type === 'channel.catalog') {
               // A1: a channel's catalog/membership changed (create/archive/join/
               // leave/kick/invite — by us or another client). Flag a one-shot
@@ -718,6 +721,8 @@ export function useChannelsEventSubscription(): void {
           runFlushAll({});
           // A2A turn-end reminders: recorded stops whose pane is idle now.
           void sweepTurnEndReminders();
+          // Fan-out caller nudges queued behind a busy or usage-limited pane.
+          void sweepFanoutCallerNudges();
           // A1: re-hydrate the catalog once per batch when any channel.catalog
           // event arrived. The six non-post mutations now emit this signal; the
           // receiver re-fetches list+members (daemon = source of truth), so a

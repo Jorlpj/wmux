@@ -11,3 +11,5 @@ export {
   STALE_REPLAY_INPUT_MODE_RESETS,
   staleReplayResetLevel,
 } from './staleReplayModeReset';
+export { gateUserInput } from './userInputGate';
+export { capSixelImageSize } from './sixelCap';

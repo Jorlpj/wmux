@@ -284,3 +284,16 @@ describe('deckAutonomyStore', () => {
     });
   });
 });
+
+describe('concurrent writers', () => {
+  it('a set and a delete for different workspaces both survive', async () => {
+    await setWorkspaceMode('ws-a', 'danger', dir);
+    await setWorkspaceMode('ws-b', 'assist', dir);
+    // Unserialized, both read the same snapshot and the later write won: the
+    // delete would resurrect ws-a's danger mode, or the set would revive ws-b.
+    await Promise.all([setWorkspaceMode('ws-a', 'off', dir), deleteWorkspaceAutonomy('ws-b', dir)]);
+    const all = loadDeckAutonomy(dir);
+    expect(all['ws-a']?.mode).toBe('off');
+    expect(all['ws-b']).toBeUndefined();
+  });
+});

@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { buildSync } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
@@ -56,6 +57,10 @@ function inject(html, marker, content) {
 }
 
 const xtermJs = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'lib', 'xterm.js'));
+// Inline images (#1641): the addon's UMD build publishes `ImageAddon` on the
+// global. Inlined right after xterm so app.js can load it into every terminal.
+// Both of its decoders are WebAssembly; inlineImages.js probes before loading.
+const addonImageJs = read(join(repoRoot, 'node_modules', '@xterm', 'addon-image', 'lib', 'addon-image.js'));
 const xtermCss = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'));
 const appCss = read(join(frontendDir, 'styles.css'));
 const appJs = read(join(frontendDir, 'app.js'));
@@ -99,17 +104,35 @@ const terminalSharedJs = buildSync({
   minify: true,
   logLevel: 'error',
 }).outputFiles[0].text;
+// app.js feature-detects these and quietly degrades without them (no stale
+// replay reset, no input gate, sixel off), so a dropped re-export would ship
+// unnoticed. Refuse the build instead.
+{
+  const sandbox = {};
+  runInNewContext(terminalSharedJs, sandbox);
+  for (const name of ['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize']) {
+    if (typeof sandbox.wmuxTerminalShared?.[name] !== 'function') {
+      console.error(`build-daemon-web: the shared terminal bundle does not export ${name}()`);
+      process.exit(1);
+    }
+  }
+}
+// Inline-image gate (#1641): the wasm probe and the addon options. Separate so
+// "no wasm, no addon" is unit tested against the exact bytes the phone runs.
+const inlineImagesJs = read(join(frontendDir, 'inlineImages.js'));
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
 html = inject(html, '/*__APP_CSS__*/', appCss);
 html = inject(html, '/*__XTERM_JS__*/', xtermJs);
+html = inject(html, '/*__ADDON_IMAGE_JS__*/', addonImageJs);
 html = inject(html, '/*__ATTENTION_FORMAT_JS__*/', attentionFormatJs);
 html = inject(html, '/*__PAIR_QUERY_JS__*/', pairQueryJs);
 html = inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs);
 html = inject(html, '/*__KEYBOARD_PROTOCOL_JS__*/', keyboardProtocolJs);
 html = inject(html, '/*__KEYS_JS__*/', copyPasteKeysJs);
 html = inject(html, '/*__TERMINAL_SHARED_JS__*/', terminalSharedJs);
+html = inject(html, '/*__INLINE_IMAGES_JS__*/', inlineImagesJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });
@@ -218,7 +241,7 @@ if (!existsSync(compiledCsp)) {
 }
 const { buildWebCsp, extractInlineBlocks, cspHash } = createRequire(import.meta.url)(compiledCsp);
 
-function gatePage(file, expectedScripts) {
+function gatePage(file, expectedScripts, cspOptions) {
   const written = readFileSync(join(outDir, file), 'utf8');
   const blocks = extractInlineBlocks(written);
   const fail = (msg) => {
@@ -226,17 +249,19 @@ function gatePage(file, expectedScripts) {
     process.exit(1);
   };
 
-  // The page inlines eight scripts (xterm, attentionFormat, pairQuery, touchScroll,
-  // keyboardProtocol, copyPasteKeys, terminalShared, app) and one style block (xterm css + our
-  // css). A count that moved means index.html grew or lost a block and nobody
-  // re-read this gate; refuse rather than guess which. Raised 3 → 4 when
-  // pairQuery.js was added for QR pairing, 4 → 5 when touchScroll.js was added
-  // for #890, 5 → 6 when copyPasteKeys.js was added for browser copy/paste,
-  // 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate,
-  // 7 → 8 when the shared terminal bundle (src/shared/terminal) was added: the
-  // policy itself is derived from the served bytes, so an extra block is hashed
-  // like the others — the count is here to make the change deliberate, not to cap
-  // it.
+  // The page inlines ten scripts (xterm, addon-image, attentionFormat,
+  // pairQuery, touchScroll, keyboardProtocol, copyPasteKeys, terminalShared,
+  // inlineImages, app) and one style block (xterm css + our css).
+  // A count that moved means index.html grew or lost a block and nobody re-read
+  // this gate; refuse rather than guess which. Raised 3 → 4 when pairQuery.js
+  // was added for QR pairing, 4 → 5 when touchScroll.js was added for #890,
+  // 5 → 6 when copyPasteKeys.js was added for browser copy/paste, 6 → 7 when
+  // keyboardProtocol.js was added for the kitty-negotiation gate, 7 → 8 when
+  // the shared terminal bundle (src/shared/terminal) was added, 8 → 10 when
+  // @xterm/addon-image and its inlineImages.js gate were added for inline
+  // images (#1641): the policy itself is derived from the served bytes, so an
+  // extra block is hashed like the others — the count is here to make the
+  // change deliberate, not to cap it.
   //
   // app.html (/app) inlines two: the es2017 boot script and the es2022 bundle.
   if (blocks.scripts.length !== expectedScripts) {
@@ -261,7 +286,7 @@ function gatePage(file, expectedScripts) {
 
   const scriptHashes = blocks.scripts.map(cspHash);
   const styleHashes = blocks.styles.map(cspHash);
-  const policy = buildWebCsp(written);
+  const policy = buildWebCsp(written, cspOptions);
 
   // The gate proper: every hash this build computed must actually appear in the
   // header the server will send for this exact file. `style-src` is deliberately
@@ -281,7 +306,8 @@ function gatePage(file, expectedScripts) {
   return { policy, scriptHashes, styleHashes };
 }
 
-const terminalGate = gatePage('terminal.html', 8);
+// Same options WebTerminalServer.loadAssets passes for each page.
+const terminalGate = gatePage('terminal.html', 10, { wasm: true });
 const appGate = gatePage('app.html', 2);
 
 writeFileSync(

@@ -23,9 +23,11 @@ const SOURCES = [
   'IntegrationSetupSection.tsx',
   'FanoutPresetsSection.tsx',
   'McpStatusSection.tsx',
-  'tabs/TokenUsageTab/ProfileSection.tsx',
+  'tabs/TokenUsageTab/QuotaSection.tsx',
+  'tabs/TokenUsageTab/CustomPanel.tsx',
   'tabs/TokenUsageTab.tsx',
   'ComputerUseSection.tsx',
+  'QuickLaunchSection.tsx',
 ];
 
 function anchoredIds(): Set<string> {

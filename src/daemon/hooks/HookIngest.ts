@@ -62,7 +62,7 @@ import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
 import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
 import type { ApprovalHookSink, TerminalPromptNote } from '../approvals/types';
-import { extractAskUserQuestion } from '../approvals/askUserQuestion';
+import { claudeQuestionsForm, extractAskUserQuestion } from '../approvals/askUserQuestion';
 import { boundRecordText, isClaudeFamilyAgent, TERMINAL_PROMPT_TOOL_NAME_MAX } from '../approvals/terminalPrompt';
 import { checkNativeTranscriptPath } from '../transcript/providers';
 
@@ -255,9 +255,10 @@ export interface HookIngestDeps {
    * become corroborable. The session is resolved; the callback owes the caller
    * nothing back and its failure is non-fatal.
    *
-   * Optional: only the daemon supplies it.
+   * Optional: only the daemon supplies it. `signal` is the resolved signal
+   * (#1727: a WSL hook's report of its agent process rides on it).
    */
-  onAuthorityTouched?: (sessionId: string) => void;
+  onAuthorityTouched?: (sessionId: string, signal: AgentSignal) => void;
   /**
    * #1463 — the agent itself reported that the question its pane was blocked
    * on has been answered (`agent.input_answered`, AskUserQuestion's
@@ -703,7 +704,7 @@ export class HookIngest {
     // `exact` (#919): only exact-ptyId routing may decide identity alone.
     this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId, signal.kind);
     try {
-      this.deps.onAuthorityTouched?.(sessionId);
+      this.deps.onAuthorityTouched?.(sessionId, signal);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
     }
@@ -856,7 +857,7 @@ export class HookIngest {
     // a cwd-prefix-resolved signal may corroborate identity but never stand alone.
     this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId, signal.kind);
     try {
-      this.deps.onAuthorityTouched?.(sessionId);
+      this.deps.onAuthorityTouched?.(sessionId, signal);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
     }
@@ -879,7 +880,9 @@ export class HookIngest {
         if (this.answeredRequests.size > 1024) this.answeredRequests.delete(this.answeredRequests.values().next().value as string);
         void Promise.resolve(this.deps.approvals.expireHookAwaiting(sessionId, [permId])).catch(() => undefined);
       } else {
-        this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input');
+        // Claude's AskUserQuestion reports what was answered: an answer the
+        // phone typed but could not confirm is settled by it.
+        this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input', reportedAnswers(signal.payload));
       }
       // A native request answered at the terminal: the plugin is the judge of
       // which ones are gone (a screen-inferred expiry never touches them).
@@ -1194,6 +1197,9 @@ export class HookIngest {
     // yields absent fields, never a skipped request.
     const asked = extractAskUserQuestion(signal.payload);
     const permId = signal.agent === 'opencode' ? openCodeRequestId(signal) : undefined;
+    // The whole prompt as a `decision-v2` form: Claude's picker is what the
+    // registry's stepwise driver knows how to answer.
+    const form = isClaudeFamilyAgent(signal.agent) ? claudeQuestionsForm(signal.payload) : null;
     const legacy = (): void => approvals.noteHookAwaitingInput({
       sessionId,
       agent: signal.agent,
@@ -1203,6 +1209,7 @@ export class HookIngest {
       ...(asked.options ? { options: asked.options } : {}),
       ...(asked.choices ? { choices: asked.choices } : {}),
       ...(asked.questionShape ? { questionShape: asked.questionShape } : {}),
+      ...(form ? { form } : {}),
     });
     // OpenCode's plugin, when it lists decisions, makes the records itself:
     // the hook then only marks the pane blocked (the broadcast below).
@@ -1477,4 +1484,28 @@ export class HookIngest {
     clearInterval(this.floodTimer);
     this.alarm.dispose();
   }
+}
+
+/** Most questions an AskUserQuestion answer report is read for (Claude asks at most four). */
+const REPORTED_ANSWERS_MAX = 8;
+
+/**
+ * The answers a Claude AskUserQuestion PostToolUse reports
+ * (`tool_response.answers`: question text → answer), or undefined when the
+ * payload carries none in that shape.
+ */
+export function reportedAnswers(payload: unknown): Readonly<Record<string, string>> | undefined {
+  const response = payload !== null && typeof payload === 'object' ? (payload as Record<string, unknown>)['tool_response'] : undefined;
+  const answers = response !== null && typeof response === 'object' && !Array.isArray(response)
+    ? (response as Record<string, unknown>)['answers']
+    : undefined;
+  if (answers === null || typeof answers !== 'object' || Array.isArray(answers)) return undefined;
+  const entries = Object.entries(answers as Record<string, unknown>);
+  if (entries.length === 0 || entries.length > REPORTED_ANSWERS_MAX) return undefined;
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const [question, answer] of entries) {
+    if (typeof answer !== 'string') return undefined;
+    out[question] = answer;
+  }
+  return out;
 }

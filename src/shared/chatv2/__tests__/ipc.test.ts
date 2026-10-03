@@ -76,6 +76,10 @@ describe('parseChatV2Params', () => {
     expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'detail' }))
       .toEqual({ ...session, epoch, blockId: '3.1', field: 'detail' });
     expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'input' })).toBeNull();
+    expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'text', offset: 131072 }))
+      .toEqual({ ...session, epoch, blockId: '3.1', field: 'text', offset: 131072 });
+    expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'text', offset: -1 })).toBeNull();
+    expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'text', offset: 1.5 })).toBeNull();
   });
 
   it('needs a chat session id where the method names one', () => {
@@ -83,6 +87,12 @@ describe('parseChatV2Params', () => {
       expect(parseChatV2Params(method, session)).toEqual(session);
       expect(parseChatV2Params(method, { paneId: 'pty-1' })).toBeNull();
     }
+  });
+
+  it('takes an interrupt\'s optional epoch and turn guards, well formed only', () => {
+    expect(parseChatV2Params('interrupt', { ...session, epoch, turnId: '3.1' })).toEqual({ ...session, epoch, turnId: '3.1' });
+    expect(parseChatV2Params('interrupt', { ...session, epoch: 'nope' })).toBeNull();
+    expect(parseChatV2Params('interrupt', { ...session, turnId: 't1:3' })).toBeNull();
   });
 });
 

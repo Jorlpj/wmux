@@ -10,6 +10,7 @@ import {
   encodeChainedCommand,
   decodeChainedCommand,
   extractChainedB64,
+  refreshInstalledAgyQuotaSink,
 } from '../installAgyQuotaSensor';
 
 describe('installAgyQuotaSensor', () => {
@@ -288,6 +289,7 @@ describe('installAgyQuotaSensor', () => {
           type: 'command',
           command: 'my-custom-status --format=json',
           enabled: true,
+          padding: 2,
         },
       };
       fs.writeFileSync(settingsPath, JSON.stringify(initialConfig, null, 2), 'utf8');
@@ -312,11 +314,14 @@ describe('installAgyQuotaSensor', () => {
         type: string;
         command: string;
         enabled: boolean;
-        stack_with_default: boolean;
+        padding: number;
+        stack_with_default?: boolean;
       };
       expect(sl.type).toBe('command');
       expect(sl.enabled).toBe(true);
-      expect(sl.stack_with_default).toBe(true);
+      // The user's other fields are kept and nothing they did not set is added.
+      expect(sl.padding).toBe(2);
+      expect(sl.stack_with_default).toBeUndefined();
 
       const installedSink = path.join(tmpHome, '.wmux', 'bin', 'quota-sink.js');
       const expectedB64 = Buffer.from('my-custom-status --format=json', 'utf8').toString('base64url');
@@ -359,30 +364,26 @@ describe('installAgyQuotaSensor', () => {
       expect(extractChainedB64(sl.command)).toBe(foreignCommand);
     });
 
-    it('chains foreign statusLine even when enabled is false and creates backup', () => {
+    it('does not chain a statusLine the user turned off, and leaves settings.json untouched', () => {
       const settingsPath = settingsFilePath();
       fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-      const initialConfig = {
-        statusLine: {
-          type: 'command',
-          command: 'disabled-cmd --quiet',
-          enabled: false,
-        },
-      };
-      fs.writeFileSync(settingsPath, JSON.stringify(initialConfig, null, 2), 'utf8');
+      const original = JSON.stringify(
+        { statusLine: { type: 'command', command: 'disabled-cmd --quiet', enabled: false } },
+        null,
+        2,
+      );
+      fs.writeFileSync(settingsPath, original, 'utf8');
 
       const outcome = installAgyQuotaSensor(tmpHome, {
         sourceScriptPath: mockSinkSource,
       });
 
-      expect(outcome.ok).toBe(true);
-      expect(outcome.action).toBe('chained');
-      expect(outcome.backupPath).toBeDefined();
-
-      const settings = readSettings();
-      const sl = settings.statusLine as { type: string; command: string; enabled: boolean };
-      expect(sl.enabled).toBe(true);
-      expect(extractChainedB64(sl.command)).toBe('disabled-cmd --quiet');
+      expect(outcome.ok).toBe(false);
+      expect(outcome.action).toBe('noop');
+      expect(outcome.error).toMatch(/turned off/);
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe(original);
+      const backups = fs.readdirSync(path.dirname(settingsPath)).filter((f) => f.includes('.bak-wmux-'));
+      expect(backups).toEqual([]);
     });
   });
 
@@ -476,11 +477,10 @@ describe('installAgyQuotaSensor', () => {
       const settings = readSettings();
       const installedSink = path.join(tmpHome, '.wmux', 'bin', 'quota-sink.js');
       const expectedNewCmd = `node ${installedSink} agy --chain-b64 ${origB64}`;
+      // Only the command moves; fields the entry did not have are not added.
       expect(settings.statusLine).toEqual({
         type: 'command',
         command: expectedNewCmd,
-        enabled: true,
-        stack_with_default: true,
       });
       expect(extractChainedB64((settings.statusLine as { command: string }).command)).toBe(origCmd);
     });
@@ -744,6 +744,25 @@ describe('End-to-end chaining roundtrip with quote-free command line', () => {
       expect(res.stdout).toBe('ARG:hello world');
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('refreshInstalledAgyQuotaSink', () => {
+  it('updates only an installed, outdated sink', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-sink-refresh-'));
+    const src = path.join(home, 'src-sink.js');
+    fs.writeFileSync(src, 'v2');
+    try {
+      expect(refreshInstalledAgyQuotaSink(home, src)).toBe('absent');
+      const dest = path.join(home, '.wmux', 'bin', 'quota-sink.js');
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, 'v1');
+      expect(refreshInstalledAgyQuotaSink(home, src)).toBe('updated');
+      expect(fs.readFileSync(dest, 'utf8')).toBe('v2');
+      expect(refreshInstalledAgyQuotaSink(home, src)).toBe('current');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });

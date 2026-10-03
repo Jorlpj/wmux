@@ -948,6 +948,71 @@ describe('agyWriter', () => {
       expect(res.error).toBe('The configuration changed while editing; reload and try again.');
     });
 
+    it('rolls back an earlier file when a later file fails', async () => {
+      const home = tempDir('wmux-agy-rollback-');
+      const dirA = path.join(home, '.gemini', 'config');
+      const dirB = path.join(home, 'other');
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.mkdirSync(dirB, { recursive: true });
+      const fileA = path.join(dirA, 'mcp_config.json');
+      const fileB = path.join(dirB, 'mcp_config.json');
+      const originalA = JSON.stringify({ mcpServers: { a: { command: 'node' } } });
+      fs.writeFileSync(fileA, originalA);
+      fs.writeFileSync(fileB, JSON.stringify({ mcpServers: { b: { command: 'node' } } }));
+
+      const mcpItem = (name: string, originPath: string) => ({
+        id: `agy:mcp-server::${name}`,
+        provider: 'agy' as const,
+        kind: 'mcp-server' as const,
+        name,
+        parent: null,
+        source: 'user' as const,
+        enabled: true,
+        effect: 'removes' as const,
+        toggleable: true,
+        readOnlyReason: null,
+        hookEvent: null,
+        hookCost: null,
+        descriptionChars: null,
+        originPath,
+        wmuxRequired: false,
+      });
+      const a = mcpItem('a', fileA);
+      const b = mcpItem('b', fileB);
+
+      const real = safeWrite.applyConfigEdit;
+      let calls = 0;
+      const spy = vi.spyOn(safeWrite, 'applyConfigEdit').mockImplementation((opts) => {
+        calls += 1;
+        if (calls === 2) throw new Error('disk full');
+        return real(opts);
+      });
+      try {
+        const res = await createAgyWriter().apply({
+          deps: makeDeps(home),
+          inventory: {
+            provider: 'agy',
+            cliVersion: '1.2.14',
+            versionSupported: true,
+            writable: true,
+            items: [a, b],
+            warnings: [],
+            scannedAtMs: 0,
+          },
+          changes: [
+            { item: a, enabled: false },
+            { item: b, enabled: false },
+          ],
+        });
+        expect(res.ok).toBe(false);
+        expect(res.appliedItemIds).toEqual([]);
+        expect(res.error).toBe('Applying the change failed; no file was left half-written.');
+        expect(fs.readFileSync(fileA, 'utf8')).toBe(originalA);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('refuses to modify configuration when target path escapes homeDir and projectDir', async () => {
       const home = tempDir('wmux-agy-escape-home-');
       const outside = tempDir('wmux-agy-outside-');
@@ -1010,7 +1075,7 @@ describe('agyWriter', () => {
       expect(fs.readFileSync(outsideMcp, 'utf8')).toBe(originalOutsideContent);
     });
 
-    it('refuses symlink pointing outside homeDir', () => {
+    it('refuses symlink pointing outside homeDir', async () => {
       const home = tempDir('wmux-agy-sym-home-');
       const outside = tempDir('wmux-agy-sym-outside-');
       const outsideTarget = path.join(outside, 'secret.json');
@@ -1044,7 +1109,7 @@ describe('agyWriter', () => {
         wmuxRequired: false,
       };
 
-      expect(
+      await expect(
         writer.apply({
           deps,
           inventory: {

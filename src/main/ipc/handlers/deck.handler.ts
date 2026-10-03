@@ -53,6 +53,7 @@ import { loadCommanderSession, saveCommanderSession, clearCommanderSession } fro
 import { DeckScheduler } from '../../deck/DeckScheduler';
 import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
+import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import {
   routeWorkerEventToOwner,
   peekOrphanBacklog,
@@ -142,7 +143,7 @@ import {
 import { eventBus } from '../../events/EventBus';
 import {
   loadDeckSchedules,
-  saveDeckSchedules,
+  mutateDeckSchedules,
   createSchedule,
   DECK_SCHEDULE_LIMITS,
   type DeckSchedule,
@@ -1549,6 +1550,23 @@ export function registerDeckHandler(
       });
     }
   });
+  // A task workspace never has a brain, whatever its mode says — an owner
+  // that is itself a task (nested fan-out) parks worker events instead.
+  const ownerHasBrain = (owner: string): boolean =>
+    !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off');
+  // The pane that started a fan-out, told when its workers move and no brain
+  // listens (fanoutCallerNotify.ts). One pointer to the renderer, no ack.
+  const notifyCaller = (owner: string, taskWs: string, taskId: string, kind: string, seq: number): void => {
+    notifyFanoutCaller(owner, taskWs, taskId, kind, seq, {
+      send: (payload) => {
+        const win = getWindow();
+        if (!win || win.isDestroyed()) return false;
+        win.webContents.send(IPC.DECK_FANOUT_CALLER, payload);
+        return true;
+      },
+    });
+  };
+  const disposeCallerLedgerNotify = installFanoutCallerLedgerNotify(ownerHasBrain, notifyCaller);
   coalescer = new CommanderEventCoalescer({
     runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
     // Lane F: worker events parked while this workspace had no brain —
@@ -1741,12 +1759,12 @@ export function registerDeckHandler(
     // there once the task inherited the owner's mode (wave 2 finding 7).
     if (!isTaskWorkspace(ev.workspaceId)) coalescer?.push(lifecycleInput);
     routeWorkerEventToOwner(lifecycleInput, {
-      // A task workspace never has a brain, whatever its mode says — an owner
-      // that is itself a task (nested fan-out) parks the event instead.
-      hasBrain: (owner) =>
-        !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off'),
+      hasBrain: ownerHasBrain,
       push: (copy) => coalescer?.push(copy),
       reconcile: reconcileTaskLedger,
+      // A repeated report of one turn end (dedup) or a shell command end is
+      // parked but does not nudge the caller a second time.
+      ...(shouldNotifyCaller(ev) ? { notifyCaller } : {}),
     });
   });
 
@@ -1901,18 +1919,19 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
-      const schedules = loadDeckSchedules();
-      if (schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES) {
-        return { ok: false, code: 'limit' };
-      }
       const schedule = createSchedule({
         workspaceId,
         prompt: typeof req.prompt === 'string' ? req.prompt : '',
         nextRunAt: typeof req.nextRunAt === 'number' ? req.nextRunAt : NaN,
         ...(typeof req.intervalMinutes === 'number' ? { intervalMinutes: req.intervalMinutes } : {}),
       });
+      let atLimit = false;
+      await mutateDeckSchedules((schedules) => {
+        atLimit = schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES;
+        return atLimit || !schedule ? null : [...schedules, schedule];
+      });
+      if (atLimit) return { ok: false, code: 'limit' };
       if (!schedule) return { ok: false, code: 'invalid' };
-      await saveDeckSchedules([...schedules, schedule]);
       return { ok: true, schedule };
     }),
   );
@@ -1928,26 +1947,34 @@ export function registerDeckHandler(
         ? (raw as Record<string, unknown>)
         : {};
       const id = typeof req.id === 'string' ? req.id : '';
-      const schedules = loadDeckSchedules();
-      const idx = schedules.findIndex((s) => s.id === id);
-      if (idx === -1) return { ok: false, code: 'not_found' };
-      let next = schedules[idx];
-      // Re-scoping: a pre-M1.5 schedule (no workspaceId) may be assigned one —
-      // exactly once. Owned schedules never migrate between workspaces (delete
-      // and recreate instead: the prompt was written for that project).
-      const workspaceId = readWorkspaceId(req);
-      if (workspaceId && !next.workspaceId) next = { ...next, workspaceId };
-      // `enabled` is mutable (pause/resume). Re-enabling a fired one-shot
-      // re-arms it at its original time — immediately due. Enabling a schedule
-      // that still has no workspace is rejected: there is no orchestrator to
-      // run it on.
-      if (typeof req.enabled === 'boolean') {
-        if (req.enabled && !next.workspaceId) return { ok: false, code: 'no_workspace' };
-        next = { ...next, enabled: req.enabled };
-      }
-      schedules[idx] = next;
-      await saveDeckSchedules(schedules);
-      return { ok: true };
+      let code: string | undefined;
+      await mutateDeckSchedules((schedules) => {
+        const idx = schedules.findIndex((s) => s.id === id);
+        if (idx === -1) {
+          code = 'not_found';
+          return null;
+        }
+        let next = schedules[idx];
+        // Re-scoping: a pre-M1.5 schedule (no workspaceId) may be assigned one —
+        // exactly once. Owned schedules never migrate between workspaces (delete
+        // and recreate instead: the prompt was written for that project).
+        const workspaceId = readWorkspaceId(req);
+        if (workspaceId && !next.workspaceId) next = { ...next, workspaceId };
+        // `enabled` is mutable (pause/resume). Re-enabling a fired one-shot
+        // re-arms it at its original time — immediately due. Enabling a schedule
+        // that still has no workspace is rejected: there is no orchestrator to
+        // run it on.
+        if (typeof req.enabled === 'boolean') {
+          if (req.enabled && !next.workspaceId) {
+            code = 'no_workspace';
+            return null;
+          }
+          next = { ...next, enabled: req.enabled };
+        }
+        schedules[idx] = next;
+        return schedules;
+      });
+      return code ? { ok: false, code } : { ok: true };
     }),
   );
 
@@ -1962,8 +1989,7 @@ export function registerDeckHandler(
         ? (raw as Record<string, unknown>)
         : {};
       const id = typeof req.id === 'string' ? req.id : '';
-      const schedules = loadDeckSchedules();
-      await saveDeckSchedules(schedules.filter((s) => s.id !== id));
+      await mutateDeckSchedules((schedules) => schedules.filter((s) => s.id !== id));
       return { ok: true };
     }),
   );
@@ -2010,7 +2036,7 @@ export function registerDeckHandler(
   const tearDownAutomation = async (workspaceId: string): Promise<void> => {
     const loop = loadWorkspaceLoopState(workspaceId);
     if (loop?.scheduleId) {
-      await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== loop.scheduleId));
+      await mutateDeckSchedules((schedules) => schedules.filter((s) => s.id !== loop.scheduleId));
     }
     if (loop) await clearLoop(workspaceId);
     // A lingering pending/resolved decision must not survive a teardown into a
@@ -2023,11 +2049,12 @@ export function registerDeckHandler(
     enabled: boolean,
   ): Promise<void> => {
     if (!scheduleId) return;
-    const schedules = loadDeckSchedules();
-    const idx = schedules.findIndex((s) => s.id === scheduleId);
-    if (idx === -1) return;
-    schedules[idx] = { ...schedules[idx], enabled };
-    await saveDeckSchedules(schedules);
+    await mutateDeckSchedules((schedules) => {
+      const idx = schedules.findIndex((s) => s.id === scheduleId);
+      if (idx === -1) return null;
+      schedules[idx] = { ...schedules[idx], enabled };
+      return schedules;
+    });
   };
 
   /** Cadence bounds: floor 5 min (no tight loops), ceiling 7 days. */
@@ -2131,15 +2158,11 @@ export function registerDeckHandler(
       // a fresh loop does not start blocked on a prior loop's question.
       const prior = loadWorkspaceLoopState(workspaceId);
       if (prior?.scheduleId) {
-        await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== prior.scheduleId));
+        await mutateDeckSchedules((schedules) => schedules.filter((s) => s.id !== prior.scheduleId));
       }
       await clearDecision(workspaceId);
       let scheduleId: string | undefined;
       if (intervalMinutes) {
-        const schedules = loadDeckSchedules();
-        if (schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES) {
-          return { ok: false, code: 'schedule_limit' };
-        }
         const schedule = createSchedule({
           workspaceId,
           prompt:
@@ -2148,10 +2171,13 @@ export function registerDeckHandler(
           nextRunAt: Date.now() + intervalMinutes * 60_000,
           intervalMinutes,
         });
-        if (schedule) {
-          await saveDeckSchedules([...schedules, schedule]);
-          scheduleId = schedule.id;
-        }
+        let atLimit = false;
+        await mutateDeckSchedules((schedules) => {
+          atLimit = schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES;
+          return atLimit || !schedule ? null : [...schedules, schedule];
+        });
+        if (atLimit) return { ok: false, code: 'schedule_limit' };
+        if (schedule) scheduleId = schedule.id;
       }
       const loop = await startLoop(workspaceId, {
         objective,
@@ -2184,7 +2210,7 @@ export function registerDeckHandler(
       if (!workspaceId) return { ok: false };
       const loop = loadWorkspaceLoopState(workspaceId);
       if (loop?.scheduleId) {
-        await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== loop.scheduleId));
+        await mutateDeckSchedules((schedules) => schedules.filter((s) => s.id !== loop.scheduleId));
       }
       await clearLoop(workspaceId);
       await clearDecision(workspaceId);
@@ -2753,6 +2779,7 @@ export function registerDeckHandler(
     coalescer?.dispose();
     disposeLedgerEmitter();
     disposeLedgerPush();
+    disposeCallerLedgerNotify();
     ledgerPushCoalescer.dispose();
     globalTurnGate.dispose();
     scheduler.stop();

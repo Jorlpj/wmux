@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { parse as parseTomlText } from 'smol-toml';
@@ -145,4 +146,26 @@ export function parseSkillFrontmatter(content: string): { name?: string; descrip
     }
   }
   return { name, description };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** Identity of one hook handler: its event, its matcher group (without `hooks`) and the handler itself. */
+export function hookFingerprint(
+  event: string,
+  groupMeta: Record<string, unknown> | undefined,
+  handler: Record<string, unknown>,
+): string {
+  return createHash('sha256')
+    .update(canonicalJson({ event, groupMeta: groupMeta ?? null, handler }))
+    .digest('hex')
+    .slice(0, 16);
 }

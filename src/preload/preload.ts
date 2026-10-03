@@ -1,5 +1,6 @@
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
 import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
+import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2ResyncPush } from '../shared/chatv2/ipc';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 import type {
@@ -34,6 +35,7 @@ import { isFileDrag } from '../shared/dragDrop';
 import { parseWindowsBuildNumber } from '../shared/platform';
 import type { NotificationCategory } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
+import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
@@ -82,7 +84,6 @@ export interface McpRegisterTargetResult {
   success: boolean;
   error?: string;
   status: McpStatusPayload;
-  sensor?: { ok: boolean };
 }
 
 const chat: ChatBridgeApi = {
@@ -118,8 +119,25 @@ const chat: ChatBridgeApi = {
   },
 };
 
+// Chat v2: one generic call per contract method (main validates and forwards).
+const chatv2: ChatV2BridgeApi = {
+  call: (method, params) => ipcRenderer.invoke(CHATV2_IPC[method], params),
+  stageAttachment: (path) => ipcRenderer.invoke(CHATV2_IPC.stageAttachment, path),
+  onEvents: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, push: ChatV2EventsPush) => listener(push);
+    ipcRenderer.on(CHATV2_IPC.events, handler);
+    return () => { ipcRenderer.removeListener(CHATV2_IPC.events, handler); };
+  },
+  onResync: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, push: ChatV2ResyncPush) => listener(push);
+    ipcRenderer.on(CHATV2_IPC.resync, handler);
+    return () => { ipcRenderer.removeListener(CHATV2_IPC.resync, handler); };
+  },
+};
+
 const electronAPI = {
   chat,
+  chatv2,
   // OS-aware shortcut mapping support — renderer cannot read process.platform
   // directly under sandbox + contextIsolation, so expose it here.
   // 'win32' | 'darwin' | 'linux' | 'aix' | 'freebsd' | 'openbsd' | 'sunos' | 'cygwin' | 'netbsd'
@@ -396,6 +414,11 @@ const electronAPI = {
     get: () => ipcRenderer.invoke(IPC.COMPUTER_USE_GET) as Promise<ComputerUseSettingsPayload>,
     set: (enabled: boolean) => ipcRenderer.invoke(IPC.COMPUTER_USE_SET, enabled) as Promise<ComputerUseSettingsPayload>,
   },
+  quickLaunch: {
+    settingsGet: () => ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_GET) as Promise<QuickLaunchSettingsPayload>,
+    settingsSet: (patch: { enabled?: boolean; accelerator?: string }) =>
+      ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_SET, patch) as Promise<QuickLaunchSettingsPayload>,
+  },
   notification: {
     // ptyId may be null for app-level notifications (e.g. external MCP
     // `notify` RPC, where no PTY originates the message). When null, the
@@ -551,6 +574,9 @@ const electronAPI = {
     getRequireApproval: () => ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_GET) as Promise<boolean>,
     setRequireApproval: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_SET, value) as Promise<boolean>,
+    getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
+    setTrustAgyFolders: (value: boolean) =>
+      ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,
     getWorkerPermissionMode: () =>
       ipcRenderer.invoke(IPC.FANOUT_WORKER_MODE_GET) as Promise<
         import('../shared/workerLaunch').FanoutWorkerPermissionMode
@@ -628,6 +654,43 @@ const electronAPI = {
       ) => callback(entry);
       ipcRenderer.on(IPC.ACCOUNT_USAGE_UPDATE, listener);
       return () => { ipcRenderer.removeListener(IPC.ACCOUNT_USAGE_UPDATE, listener); };
+    },
+  },
+  // Quota-driven account choice for Claude/Codex launches: per-vendor switch
+  // and each registered account's last quota reading (no secrets).
+  accountRotation: {
+    get: () =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ROTATION_GET) as Promise<{
+        settings: import('../main/account/AccountRotationService').RotationSettings;
+        rows: import('../main/account/AccountRotationService').RotationAccountRow[];
+      }>,
+    set: (vendor: 'claude' | 'codex', on: boolean) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ROTATION_SET, { vendor, on }) as Promise<{ ok: boolean }>,
+  },
+  // agy (Antigravity CLI) accounts: one machine-wide sign-in, swapped by main.
+  // Snapshots carry emails, labels and quota fractions only — never a credential.
+  agyAccounts: {
+    list: () =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_LIST) as Promise<
+        import('../shared/agyAccounts').AgyAccountsSnapshot & {
+          login: import('../main/account/AgyAccountService').AgyLoginState;
+        }
+      >,
+    addCurrent: (label?: string) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_ADD_CURRENT, { label }) as Promise<import('../shared/agyAccounts').AgyAccount>,
+    beginLogin: () =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_LOGIN_BEGIN) as Promise<import('../main/account/AgyAccountService').AgyLoginState>,
+    cancelLogin: () => ipcRenderer.invoke(IPC.AGY_ACCOUNT_LOGIN_CANCEL) as Promise<{ ok: boolean }>,
+    activate: (id: string) => ipcRenderer.invoke(IPC.AGY_ACCOUNT_ACTIVATE, { id }) as Promise<{ ok: boolean }>,
+    rename: (id: string, label: string) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_RENAME, { id, label }) as Promise<{ ok: boolean }>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.AGY_ACCOUNT_REMOVE, { id }) as Promise<{ ok: boolean }>,
+    setAutoRotate: (on: boolean) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_SET_AUTO_ROTATE, { on }) as Promise<{ ok: boolean }>,
+    onChanged: (callback: () => void) => {
+      const listener = (): void => callback();
+      ipcRenderer.on(IPC.AGY_ACCOUNT_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.AGY_ACCOUNT_CHANGED, listener); };
     },
   },
   // Scheduled runs. Invokes pass through to the daemon's automation.* RPCs and
@@ -984,6 +1047,29 @@ const electronAPI = {
       ipcRenderer.on(IPC.DECK_BRAIN_PTY, listener);
       return () => { ipcRenderer.removeListener(IPC.DECK_BRAIN_PTY, listener); };
     },
+    // A fan-out worker of a brain-less owner ended its turn: a pointer for
+    // the requester pane's one-line nudge (renderer/hooks/fanoutCallerNudge).
+    onFanoutCaller: (
+      callback: (ev: import('../main/deck/fanoutCallerNotify').FanoutCallerEvent) => void,
+    ) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        ev: import('../main/deck/fanoutCallerNotify').FanoutCallerEvent,
+      ) => callback(ev);
+      ipcRenderer.on(IPC.DECK_FANOUT_CALLER, listener);
+      return () => { ipcRenderer.removeListener(IPC.DECK_FANOUT_CALLER, listener); };
+    },
+    fanoutCallerSession: (ptyId: string) =>
+      ipcRenderer.invoke(IPC.DECK_FANOUT_CALLER_SESSION, ptyId) as Promise<{ incarnationId: string } | null>,
+    fanoutCallerSubmit: (payload: {
+      ptyId: string;
+      ownerWorkspaceId: string;
+      incarnationId: string;
+      text: string;
+    }) =>
+      ipcRenderer.invoke(IPC.DECK_FANOUT_CALLER_SUBMIT, payload) as Promise<
+        import('../main/deck/fanoutCallerSubmit').FanoutCallerSubmitReply
+      >,
   },
   // WorkspaceMirror push — fire-and-forget full snapshot of the workspace tree +
   // per-pane agent status. Keeps the main-process mirror warm so routing / hook
@@ -1141,10 +1227,18 @@ const electronAPI = {
       >,
     // F2 — 재발사: prompt.md 실존 검사 후 원래 initialCommand를 정상 경로와 동일
     // sanitize로 재전송(맨 셸이 프롬프트를 실행하는 오배선 방지).
+    countPanes: (worktreePaths: string[]) =>
+      ipcRenderer.invoke(IPC.WORKTASK_COUNT_PANES, worktreePaths) as Promise<number>,
     refire: (params: { ptyId: string; worktreePath: string; initialCommand: string }) =>
       ipcRenderer.invoke(IPC.WORKTASK_REFIRE, params) as Promise<
         { ok: true } | { ok: false; error: string }
       >,
+    removePhone: (worktreePath: string, force: boolean) =>
+      ipcRenderer.invoke(IPC.WORKTASK_REMOVE_PHONE, { worktreePath, force }) as Promise<
+        import('../shared/workTask').RemovePhoneWorktreeResultWire
+      >,
+    deletePhoneBranch: (repo: string, branch: string) =>
+      ipcRenderer.invoke(IPC.WORKTASK_DELETE_PHONE_BRANCH, { repo, branch }) as Promise<{ ok: boolean; error?: string }>,
   },
   dialog: {
     pickFile: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FILE) as Promise<string[]>,
@@ -1269,6 +1363,8 @@ const electronAPI = {
   tokenUsage: {
     readQuota: (request?: QuotaReadRequest) =>
       ipcRenderer.invoke(IPC.TOKEN_QUOTA_READ, request) as Promise<QuotaReadResult>,
+    readAccountQuotas: (request?: import('../shared/tokenUsage/accountQuotaTypes').AccountQuotasRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_ACCOUNTS, request) as Promise<import('../shared/tokenUsage/accountQuotaTypes').AccountQuotasResult>,
     agySensorStatus: () => ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_STATUS) as Promise<AgySensorStatus>,
     installAgySensor: () =>
       ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_INSTALL) as Promise<AgySensorInstallResult>,

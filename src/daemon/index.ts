@@ -25,6 +25,7 @@ import { killProcessTree } from './automation/treeKill';
 import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
+import { PhoneWorktreeService } from './web/phoneWorktree';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
 import { coercePhoneDecisions } from './approvals/decisionConfig';
 import { createOpenCodeDecisions } from './approvals/openCodeDecisions';
@@ -57,7 +58,8 @@ import {
   coerceWebTlsConfig,
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
-import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
+import { decideWebStartPolicy, resolveWebInlineImages, resolveWebStartGrants } from './web/webStartPolicy';
+import { loadWebPrefs, saveWebPrefs } from './web/webPrefsStore';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
@@ -91,6 +93,9 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type AgentStatus, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
+import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
+import { GateFlagFile } from './gateFlagFile';
+import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
 import { Watchdog } from './Watchdog';
@@ -119,7 +124,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
@@ -163,6 +168,7 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
+import { deliverCallerNudge } from './callerNudgeDelivery';
 import { UsageLimitRegistry } from './usageLimit/UsageLimitRegistry';
 import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
 import { USAGE_LIMIT_CONTINUE_PROMPT, type PaneUsageLimitPatch } from '../shared/usageLimit';
@@ -196,18 +202,34 @@ let inputReceipts: InputReceiptStore | null = null;
 function getInputReceipts(): InputReceiptStore {
   return inputReceipts ??= new InputReceiptStore(getWmuxDir());
 }
+let phoneWorktrees: PhoneWorktreeService | null = null;
+// Phone worktree creation (contract item 5). Its receipt store loads here, once;
+// an unreadable store leaves the service unavailable (fail closed).
+function getPhoneWorktrees(sessionManager: DaemonSessionManager): PhoneWorktreeService {
+  return phoneWorktrees ??= new PhoneWorktreeService({
+    wmuxDir: getWmuxDir(),
+    liveCwds: () => sessionManager.listSessions().flatMap((s) => [s.cwd, s.spawnCwd].filter((c): c is string => typeof c === 'string' && c.length > 0)),
+    audit: (deviceId, reason) => getDeviceStore().recordGitWorktree(deviceId, reason),
+    log: (level, msg) => log(level, msg),
+  });
+}
 let answerReceipts: AnswerReceiptStore | null = null;
 function getAnswerReceipts(): AnswerReceiptStore {
   return answerReceipts ??= new AnswerReceiptStore(getWmuxDir());
 }
 /**
- * The `decision-v2` forms this daemon answers: the plan dialog while the
- * `stepwise` channel is on, agent-native permissions and questions (OpenCode)
- * while the `native` channel is.
+ * The `decision-v2` forms this daemon answers: the plan dialog and Claude's
+ * AskUserQuestion (`questions`) while the `stepwise` channel is on,
+ * agent-native permissions and questions (OpenCode) while the `native`
+ * channel is.
  */
 function phoneDecisionForms(): DecisionFormKind[] {
   const channels = coercePhoneDecisions(loadConfig().phoneDecisions);
-  return [...(channels.stepwise ? ['plan' as const] : []), ...(channels.native ? ['permission' as const, 'questions' as const] : [])];
+  return [
+    ...(channels.stepwise ? ['plan' as const] : []),
+    ...(channels.native ? ['permission' as const] : []),
+    ...(channels.native || channels.stepwise ? ['questions' as const] : []),
+  ];
 }
 function getRunHistory(): RunHistoryStore {
   return runHistory ??= new RunHistoryStore(getWmuxDir());
@@ -425,6 +447,24 @@ let gateBroker: GateBroker | null = null;
 // restart (the operator can re-arm by restarting). The RPC handler checks this
 // before gating; HookIngest.emitToolStarted still fires for liveness.
 let gateRuntimeOff = false;
+/** #1730 — the gate-armed hint a WSL hook tests before spawning the bridge. */
+let gateFlag: GateFlagFile | null = null;
+/** #783 — a gate raised right now could actually be answered. One predicate
+ *  for both the gate decision and the WSL flag (#1730), so they cannot drift. */
+function gateAnswerable(): boolean {
+  return !gateRuntimeOff && webTerminalServer?.canResolveGates === true;
+}
+/** #1730 — the web server's start/stop changes gateAnswerable(); mirror it at
+ *  once instead of on the next poll, however the handler returns. */
+function syncGateAfter<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } finally {
+      gateFlag?.sync();
+    }
+  };
+}
 
 /**
  * A plain-text parse of a session's ring on the shared concurrency-1 snapshot
@@ -713,6 +753,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         devices: getDeviceStore(),
         runHistory: getRunHistory,
         inputReceipts: getInputReceipts,
+        phoneWorktrees: () => getPhoneWorktrees(sessionManager),
         answerReceipts: getAnswerReceipts,
         decisionForms: phoneDecisionForms,
         ...webDecisionDeps(sessionManager),
@@ -748,6 +789,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // request rather than capturing a null at construction.
         projector: () => transcriptProjector,
         chat: () => chatBridge,
+        chatV2: () => chatV2Host,
         // #783 — expose the gated-tools list and the runtime escape hatch at
         // BOTH construction sites (restore + operator start).
         gateConfig: () => coerceGate(loadConfig().gate),
@@ -763,6 +805,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         liveActivityRegistered: () => liveActivityPusher?.onApprovalsChanged(),
         setGateEnabled: (enabled) => {
           gateRuntimeOff = !enabled;
+          gateFlag?.sync();
           log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
           // Turning it off must also free whatever is blocked right now —
           // otherwise the agent the operator is trying to unstick keeps
@@ -778,6 +821,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       allowUpload: state.allowUpload,
       allowTranscript: state.allowTranscript,
       allowDangerousLaunch: state.allowDangerousLaunch === true,
+      inlineImages: loadWebPrefs(wmuxDir).inlineImages,
       ...(state.tls ? { tls: state.tls } : {}),
       allowedHosts: state.allowedHosts,
       // Replayed, not re-established: the serve registration lives with the
@@ -1004,6 +1048,16 @@ const daemonLogWriter = createDaemonLogWriter({
   bufferMaxBytes: 64 * 1024,
 });
 process.once('exit', () => daemonLogWriter.flush());
+/** recoveryCwd, plus a warning when a WSL pane's stored cwd could not be
+ *  entered and recovery starts it in home instead (#1729). */
+function recoveryCwdLogged(session: { id?: string; cmd: string; cwd: string }): string {
+  const cwd = recoveryCwd(session);
+  if (isWslShell(session.cmd) && cwd !== session.cwd) {
+    log('warn', `[recovery] ${session.id ?? 'session'}: stored WSL cwd ${JSON.stringify(session.cwd)} cannot be entered; starting in ${cwd}`);
+  }
+  return cwd;
+}
+
 function log(level: string, msg: string, ...args: unknown[]): void {
   const ts = new Date().toISOString();
   console.log(`[${ts}] [daemon/${level}] ${msg}`, ...args);
@@ -1715,7 +1769,7 @@ async function recoverSessions(
         );
 
         // Verify cwd still exists; fall back to homedir
-        const cwd = recoveryCwd(session);
+        const cwd = recoveryCwdLogged(session);
 
         // ConPTY on Windows occasionally rejects the first spawn after a
         // daemon restart with ERROR_INVALID_PARAMETER (87) — a known
@@ -1828,7 +1882,7 @@ async function recoverSessions(
       if (fs.existsSync(snapshotPath)) {
         try {
           const scrollbackData = fs.readFileSync(snapshotPath);
-          const cwd = recoveryCwd(session);
+          const cwd = recoveryCwdLogged(session);
 
           const recovered = await recoverCodexPane(sessionManager, codexPaneRelays, {
             id: session.id,
@@ -1881,7 +1935,7 @@ async function recoverSessions(
       // This handles cases where the daemon was killed before
       // the 30s snapshot interval fired (e.g. immediate reboot).
       try {
-        const cwd = recoveryCwd(session);
+        const cwd = recoveryCwdLogged(session);
         const recovered = await recoverCodexPane(sessionManager, codexPaneRelays, {
           id: session.id,
           cmd: session.cmd,
@@ -1992,7 +2046,7 @@ async function recoverSessions(
     // the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND its origin
     // transcript still exists (D5 — a purged id is a dead-end). Either miss drops
     // the pill to the cwd-relative `--continue`.
-    if (m.resumeBinding && normalizeResumeCwd(m.resumeBinding.cwd) === normalizeResumeCwd(m.cwd) && bindingTranscriptLives(m.resumeBinding)) {
+    if (isUsableResumeBinding(m.resumeBinding) && normalizeResumeCwd(m.resumeBinding.cwd) === normalizeResumeCwd(m.cwd) && bindingTranscriptLives(m.resumeBinding)) {
       recoveredResumeBindings.set(recoveredId, m.resumeBinding);
     }
   }
@@ -2057,7 +2111,7 @@ async function restartSupervisedSession(
     cmd: meta.cmd,
     wslTarget: meta.wslTarget,
     args: meta.args,
-    cwd: recoveryCwd(meta),
+    cwd: recoveryCwdLogged(meta),
     // Replay the ORIGINAL spawn directory; `cwd` above is the live, OSC
     // 7-tracked one. See createSession's `spawnCwd`.
     spawnCwd: meta.spawnCwd,
@@ -2863,7 +2917,7 @@ function registerRpcHandlers(
       // the distribution, which is the only side that knows where home is.
       const cwd = startFresh
         ? (isWslShell(session.cmd) ? '~' : os.homedir())
-        : recoveryCwd(session);
+        : recoveryCwdLogged(session);
 
       const PROMOTE_RETRIES = 4;
       let promoted: ReturnType<typeof sessionManager.createSession> | undefined;
@@ -2933,7 +2987,7 @@ function registerRpcHandlers(
           promotedSession.meta.codexRelayResume = session.codexRelayResume;
           const offer = resumeOfferForRecovered(promotedSession.meta);
           if (offer) recoveredAgentShellIds.set(sessionId, offer as AgentSlug);
-          if (session.resumeBinding && normalizeResumeCwd(session.resumeBinding.cwd) === normalizeResumeCwd(promotedSession.meta.cwd)
+          if (isUsableResumeBinding(session.resumeBinding) && normalizeResumeCwd(session.resumeBinding.cwd) === normalizeResumeCwd(promotedSession.meta.cwd)
             && (isWslShell(session.cmd) || bindingTranscriptLives(session.resumeBinding))) {
             recoveredResumeBindings.set(sessionId, session.resumeBinding);
           }
@@ -3020,6 +3074,7 @@ function registerRpcHandlers(
       devices: getDeviceStore(),
       runHistory: getRunHistory,
       inputReceipts: getInputReceipts,
+      phoneWorktrees: () => getPhoneWorktrees(sessionManager),
       answerReceipts: getAnswerReceipts,
       decisionForms: phoneDecisionForms,
       ...webDecisionDeps(sessionManager),
@@ -3050,6 +3105,7 @@ function registerRpcHandlers(
       // See the restore path: lazy projector for the phone turn view (#782).
       projector: () => transcriptProjector,
       chat: () => chatBridge,
+      chatV2: () => chatV2Host,
       // #783 — see the restore path.
       gateConfig: () => coerceGate(loadConfig().gate),
       // See the restore path — the read side of the runtime escape hatch.
@@ -3060,6 +3116,7 @@ function registerRpcHandlers(
       liveActivityRegistered: () => liveActivityPusher?.onApprovalsChanged(),
       setGateEnabled: (enabled) => {
         gateRuntimeOff = !enabled;
+        gateFlag?.sync();
         log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
         if (!enabled) gateBroker?.cancelAll('gate-disabled');
       },
@@ -3074,7 +3131,7 @@ function registerRpcHandlers(
   // Bumped by every operator stop. An in-place grant change
   // (`onlyIfRunning`) that a stop overtook must not bring the server back.
   let webStopGeneration = 0;
-  pipeServer.onRpc('daemon.web.start', async (params) => {
+  pipeServer.onRpc('daemon.web.start', syncGateAfter(async (params) => {
     await afterRestore();
     const p = params as {
       port?: number;
@@ -3083,6 +3140,7 @@ function registerRpcHandlers(
       allowUpload?: boolean;
       allowTranscript?: boolean;
       allowDangerousLaunch?: boolean;
+      inlineImages?: boolean;
       inheritUnsetGrants?: boolean;
       onlyIfRunning?: boolean;
       allowedHosts?: unknown;
@@ -3119,6 +3177,16 @@ function registerRpcHandlers(
       webServer.currentStartState,
       loadedPrevious.state,
     );
+    const inlineImages = resolveWebInlineImages(
+      p.inlineImages,
+      webServer.currentStartState,
+      loadWebPrefs(wmuxDir),
+    );
+    // An explicit choice is an operator preference: it outlives this server,
+    // including an operator stop (see webPrefsStore).
+    if (typeof p.inlineImages === 'boolean' && !saveWebPrefs(wmuxDir, { inlineImages })) {
+      log('warn', '[web] could not persist the inline images preference; it applies until the next restart');
+    }
     const { tls, token, rotateCredentials } = decideWebStartPolicy({
       requestedTls,
       live: webServer.currentStartState,
@@ -3135,6 +3203,7 @@ function registerRpcHandlers(
       allowUpload,
       allowTranscript,
       allowDangerousLaunch,
+      inlineImages,
       allowedHosts,
       tailscale,
       ...(tls ? { tls } : {}),
@@ -3175,8 +3244,8 @@ function registerRpcHandlers(
       );
     }
     return info;
-  });
-  pipeServer.onRpc('daemon.web.stop', async () => {
+  }));
+  pipeServer.onRpc('daemon.web.stop', syncGateAfter(async () => {
     // Operator-initiated stop = "do not bring this back", and it revokes every
     // web credential with it. Distinct from stop() inside shutdown(), which is
     // a teardown of a server the operator still wants and therefore preserves
@@ -3198,7 +3267,7 @@ function registerRpcHandlers(
       );
     }
     return result;
-  });
+  }));
   pipeServer.onRpc('daemon.web.status', async () => {
     // Without this a status() called during boot would report `running:false`
     // for a server that is about to come back, and the GUI popover would latch
@@ -3319,7 +3388,9 @@ function registerRpcHandlers(
   // apply (dead session / empty binding) — the callers report it differently.
   const applyResumeBinding = (id: string, resumeBinding: ResumeBinding | undefined): boolean => {
     const managed = sessionManager.getSession(id);
-    if (!managed || !resumeBinding || !resumeBinding.sessionId) return false;
+    // A binding without its folder can never be resumed (`--resume` is
+    // cwd-scoped) and must not be stored: refuse it like an empty one.
+    if (!managed || !isUsableResumeBinding(resumeBinding)) return false;
     // The daemon's own hook ingest validates the claimed transcript path before
     // it gets here, but this function is ALSO the body of the
     // `daemon.setResumeBinding` RPC, and main's hooks.signal fallback calls that
@@ -3344,6 +3415,7 @@ function registerRpcHandlers(
     // staleness guards below on purpose: even a capture we discard as stale
     // still proves the process is alive.
     agentProcessTracker.arm(p.id, managed.meta.pid);
+    sessionManager.confirmAgent(p.id);
     const prev = managed.meta.resumeBinding;
     // codex P2: ignore a STALE capture — an older hook RPC (a delayed Stop /
     // SessionStart from a prior turn) reaching the daemon after a newer one must
@@ -3596,7 +3668,7 @@ function registerRpcHandlers(
         if (!pane) return false;
         const pid = agentProcessTracker.pidFor(id);
         if (pid !== undefined && await ProcessMonitor.isRunning(pid)) return false;
-        return (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env)).ok;
+        return (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env, true)).ok;
       },
       writeToPane: (id, data) => {
         const pane = sessionManager.getSession(id);
@@ -3606,6 +3678,7 @@ function registerRpcHandlers(
         return true;
       },
       sendTo: (clientId, event) => pipeServer.sendTo(clientId, event),
+      dropClient: (clientId) => pipeServer.disconnect(clientId),
       processIdentity: async (pid) => {
         const [startTime, commandLine] = await Promise.all([
           getProcessStartTime(pid),
@@ -3778,9 +3851,8 @@ function registerRpcHandlers(
         : null;
     },
     agentProcessAlive: async (id, slug) => {
-      const pid = agentProcessTracker.pidFor(id);
-      if (pid === undefined || !isAgentSlug(slug)) return false;
-      return await agentProcessTracker.verifyLive(id, slug) && await ProcessMonitor.isRunning(pid);
+      if (!isAgentSlug(slug)) return false;
+      return agentProcessTracker.isAgentRunning(id, slug, (pid) => ProcessMonitor.isRunning(pid));
     },
     write: (id, data) => {
       const managed = sessionManager.getSession(id);
@@ -4019,9 +4091,23 @@ function registerRpcHandlers(
       // process-corroborated without waiting for a detector banner. arm() is
       // a no-op while a live agent is tracked and backoff-bounded otherwise,
       // so the hot path stays cheap.
-      onAuthorityTouched: (sessionId) => {
+      onAuthorityTouched: (sessionId, signal) => {
         const managed = sessionManager.getSession(sessionId);
-        if (managed) agentProcessTracker.arm(sessionId, managed.meta.pid);
+        if (!managed) return;
+        sessionManager.confirmAgent(sessionId);
+        const wslTarget = managed.meta.wslTarget;
+        if (!wslTarget) {
+          agentProcessTracker.arm(sessionId, managed.meta.pid);
+          return;
+        }
+        // #1727 — a WSL pane: only the pane's own hook may name its agent
+        // process (exact ptyId), and only as the agent the hook speaks for.
+        const agent = reportedAgentForPane(sessionId, true, signal);
+        if (agent) {
+          agentProcessTracker.armWsl(sessionId, {
+            shell: managed.meta.cmd, target: wslTarget, hostPid: managed.meta.pid,
+          }, agent);
+        }
       },
       // #1463 — the agent's own "question answered" signal takes the same
       // release path an answer key does (the `answered` → `session:answered`
@@ -4069,7 +4155,7 @@ function registerRpcHandlers(
       // were; `wmux web --allow-input` arms the gate.
       // The module-level binding, not the captured `webServer` const: the
       // restore path can assign the instance after this handler is registered.
-      if (gateRuntimeOff || webTerminalServer?.canResolveGates !== true) {
+      if (!gateAnswerable()) {
         ingest.handle({ ...signal, kind: 'agent.tool_started' });
         return { ok: true };
       }
@@ -4318,6 +4404,24 @@ function registerRpcHandlers(
   });
   const readChatAgentState = (id: string) => {
     const live = readDaemonAgentState(id);
+    // A chat-v2 driver reports its own run state from its stream, not from
+    // hooks or the screen.
+    const driverStatus = chatV2Host?.statusForPane(id);
+    if (driverStatus === 'starting' || driverStatus === 'idle' || driverStatus === 'running' || driverStatus === 'needs-input') {
+      const session = chatV2Host?.sessionForPane(id);
+      const user = session ? [...session.blocks].reverse().find((block) => block.role === 'user') : undefined;
+      const agentStatus: AgentStatus = driverStatus === 'running' ? 'running' : driverStatus === 'needs-input' ? 'awaiting_input' : 'idle';
+      return {
+        ...live,
+        agentName: 'Claude Code',
+        agentStatus,
+        turn: {
+          id: `c2:${session?.id ?? ''}:${user?.id ?? '0'}`,
+          state: agentStatus === 'idle' ? 'idle' as const : 'running' as const,
+          ...(user?.startedAt !== undefined ? { startedAt: user.startedAt } : {}),
+        },
+      };
+    }
     const bridge = sessionManager.getSession(id)?.bridge;
     if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
       const events = projector.snapshot(id)?.events;
@@ -4353,7 +4457,7 @@ function registerRpcHandlers(
   };
   const deliverPromptToSessionNow = (
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
-    opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized'>,
+    opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized' | 'onWrite'>,
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
@@ -4372,13 +4476,11 @@ function registerRpcHandlers(
         } : null;
       },
       isAgentProcessAlive: async () => {
-        const pid = agentProcessTracker.pidFor(id);
-        if (pid === undefined) return false;
         try {
           // #1307 — a reused pid is no longer the pane's agent descendant, and
-          // a stopped (Ctrl+Z) or zombie agent is not running.
-          return await agentProcessTracker.verifyLive(id, agentSlug) &&
-            await ProcessMonitor.isRunning(pid);
+          // a stopped (Ctrl+Z) or zombie agent is not running. #1727 — a WSL
+          // pane's agent is checked inside its distro the same way.
+          return await agentProcessTracker.isAgentRunning(id, agentSlug, (pid) => ProcessMonitor.isRunning(pid));
         } catch {
           return false;
         }
@@ -4404,6 +4506,24 @@ function registerRpcHandlers(
     }
     const result = await deliverPromptToSession(id, agentSlug, incarnationId, prompt);
     return { result };
+  });
+  // The fan-out caller nudge: one fixed line for the pane that started a
+  // fan-out. Same identity and input-revision proof as a scheduled prompt, and
+  // it waits while a person is typing there (callerNudgeDelivery.ts). A new
+  // method name, so an older daemon answers Unknown method before any write.
+  pipeServer.onRpc('daemon.deliverCallerNudgeV1', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const agentSlug = isAgentSlug(params['agentSlug']) ? params['agentSlug'] : null;
+    const incarnationId = typeof params['incarnationId'] === 'string' ? params['incarnationId'] : '';
+    const prompt = typeof params['prompt'] === 'string' ? params['prompt'] : '';
+    if (!id || !agentSlug || !incarnationId || incarnationId.length > 128) {
+      return { result: 'error' as const, pasted: false };
+    }
+    return deliverCallerNudge(prompt, {
+      usageHeld: () => usageLimits?.holds(id) === true,
+      input: () => sessionManager.getSession(id)?.bridge,
+      deliver: (opts) => deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, opts),
+    });
   });
 
   usageLimits = new UsageLimitRegistry({
@@ -6020,6 +6140,7 @@ function wireEvents(
     if (slug) {
       // The agent is live again → this pane is no longer a "resume me" shell.
       recoveredAgentShellIds.delete(payload.sessionId);
+      sessionManager.confirmAgent(payload.sessionId);
       recoveredResumeBindings.delete(payload.sessionId);
       // Resume-chip edge trigger: a live banner PROVES the agent is running
       // right now — attach the process watch so the chip can hide on process
@@ -6433,6 +6554,7 @@ async function shutdown(
 ): Promise<{ stateSaved: boolean }> {
   if (shuttingDown) return { stateSaved: false };
   shuttingDown = true;
+  gateFlag?.stop();
   sessionManager.cancelPendingCreates();
   log('info', `Received ${signal} — shutting down gracefully`);
 
@@ -6683,7 +6805,10 @@ async function main(): Promise<void> {
   // when load() restamps a corrupt lastActivity it may write the healed state
   // back to disk. The acquireLock() one-shot writer above leaves it off (default
   // false) so the two paths never race over sessions.json.
-  const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours, config.session.detachedTtlHours, true);
+  const stateWriter = new StateWriter(
+    wmuxDir, config.session.suspendedTtlHours, config.session.detachedTtlHours, true,
+    (msg) => log('warn', msg),
+  );
   // LanLink PR-2 — durable inbound inbox (remote peer messages). Daemon-owned
   // so it survives main/renderer death (C3). Lives next to sessions.json under
   // the same suffix-aware wmuxDir; every append is synchronous + fsync'd.
@@ -6721,6 +6846,10 @@ async function main(): Promise<void> {
 
   // #783 — construct the gate broker BEFORE the registry's first mutation, so
   // the notifyGateResolved/notifyGateDropped callbacks resolve to a live broker.
+  // #1730 — keep the WSL gate hint in step with "a gate could be answered".
+  gateFlag = new GateFlagFile(path.join(getWmuxDir(), WSL_GATE_FLAG_FILE), gateAnswerable,
+    (message) => log('warn', `[gate] ${message}`));
+  gateFlag.start();
   gateBroker = new GateBroker({
     log: (level, msg) => log(level, msg),
     // A deferred gate must also stop being answerable: the tool has already
@@ -7366,6 +7495,9 @@ async function main(): Promise<void> {
         // bookkept live but renders nothing and holds no agent — the worker
         // must never spend nudges on it.
         deferred: sessionManager.getSession(meta.id)?.deferred === true,
+        // Activating the output (a web stream can do it) is not the agent
+        // coming back: the pane stays excluded until its agent is seen.
+        recoveredAgentUnconfirmed: sessionManager.getSession(meta.id)?.recoveredAgentUnconfirmed === true,
         // Attached ⇔ a renderer holds this session ⇔ the Stop-hook mention
         // path can deliver to Claude panes. Detached (headless) Claude panes
         // are the worker's job (Codex round-3).
@@ -7418,7 +7550,13 @@ async function main(): Promise<void> {
   // Resume-chip edge trigger: watches the agent process (claude/codex) inside
   // interactive panes so the chip can gate on process truth instead of the
   // decaying activity heuristic. Rides processMonitor's existing batch.
-  const agentProcessTracker = new AgentProcessTracker(processMonitor);
+  const agentProcessTracker = new AgentProcessTracker(processMonitor, undefined, undefined, undefined, {
+    // #1727 — a WSL pane's agent is a Linux process: attributed from its own
+    // hook's report (onAuthorityTouched), watched from inside the distro.
+    isWslSession: (id) => !!sessionManager.getSession(id)?.meta.wslTarget,
+    watcher: new WslPidWatcher(),
+    isRunning: (agent) => checkWslAgentRunning(agent),
+  });
   // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
   // inputs change (attribution completes; a watched process dies) while no
   // detector event is in flight, and a wrong label would otherwise sit in
@@ -7449,6 +7587,7 @@ async function main(): Promise<void> {
     }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
+    if (state.alive) sessionManager.confirmAgent(sessionId);
     // A death edge, or a launch edge for a different agent than the last one
     // seen here, ends the previous agent's running episode.
     const previousSlug = managed.meta.lastDetectedAgent;
@@ -7702,7 +7841,7 @@ async function main(): Promise<void> {
   // bind must not delay the daemon's primary job. No state file → no-op, so
   // "nothing listens until asked" is unchanged for anyone who never ran
   // `wmux web`.
-  webRestore = restoreWebServer(sessionManager);
+  webRestore = restoreWebServer(sessionManager).finally(() => gateFlag?.sync());
 
   // 7. Start control pipe
   markDaemonBoot('pre-pipe-start');

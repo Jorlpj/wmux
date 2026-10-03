@@ -52,6 +52,8 @@ async function resolve(
 ): Promise<Resolution> {
   const inventory = await readInventory(request.provider, {
     homeDir: deps.homeDir,
+    projectDir: deps.projectDir,
+    surfacesStorePath: deps.surfacesStorePath,
     run: deps.run,
     now: deps.now,
     ...inventoryDeps,

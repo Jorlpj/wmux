@@ -54,6 +54,56 @@ describe('StateWriter', () => {
     expect(loaded.sessions[0].id).toBe('sess-1');
   });
 
+  it('load skips a resume binding missing its folder and keeps the session and the others', () => {
+    const good = { agent: 'claude', sessionId: 'good-id', cwd: '/tmp', ts: 1 };
+    const missingFolder = { agent: 'codex', sessionId: 'bad-id', ts: 1 } as unknown as DaemonSession['resumeBinding'];
+    writer.saveImmediate(makeState([
+      makeSession({ id: 'broken', resumeBinding: missingFolder }),
+      makeSession({ id: 'intact', resumeBinding: good }),
+    ]));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const loaded = writer.load();
+      expect(loaded.sessions.map((s) => s.id)).toEqual(['broken', 'intact']);
+      expect(loaded.sessions[0].resumeBinding).toBeUndefined();
+      expect(loaded.sessions[1].resumeBinding).toEqual(good);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('broken');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('the main writer persists the skipped binding and reports it through its own log, once', () => {
+    const missingFolder = { agent: 'codex', sessionId: 'bad-id', ts: 1 } as unknown as DaemonSession['resumeBinding'];
+    writer.saveImmediate(makeState([makeSession({ id: 'broken', resumeBinding: missingFolder })]));
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const warnings: string[] = [];
+    const main = new StateWriter(tmpDir, undefined, undefined, true, (msg) => warnings.push(msg));
+    try {
+      expect(main.load().sessions[0].resumeBinding).toBeUndefined();
+      expect(JSON.parse(fs.readFileSync(filePath, 'utf-8')).sessions[0].resumeBinding).toBeUndefined();
+      // The repaired file no longer carries it, so the next load is quiet.
+      main.load();
+      expect(warnings).toEqual(['[StateWriter] skipped an incomplete resume binding on session broken']);
+    } finally {
+      main.dispose();
+    }
+  });
+
+  it('a writer without persistHealedOnLoad leaves the file as it found it', () => {
+    const missingFolder = { agent: 'codex', sessionId: 'bad-id', ts: 1 } as unknown as DaemonSession['resumeBinding'];
+    writer.saveImmediate(makeState([makeSession({ id: 'broken', resumeBinding: missingFolder })]));
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const oneShot = new StateWriter(tmpDir, undefined, undefined, false, () => undefined);
+    try {
+      expect(oneShot.load().sessions[0].resumeBinding).toBeUndefined();
+      expect(JSON.parse(fs.readFileSync(filePath, 'utf-8')).sessions[0].resumeBinding).toEqual(missingFolder);
+    } finally {
+      oneShot.dispose();
+    }
+  });
+
   it('load restores saved data', () => {
     const state = makeState([makeSession({ id: 'abc' })]);
     writer.saveImmediate(state);

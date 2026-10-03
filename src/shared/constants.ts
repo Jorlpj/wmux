@@ -1,4 +1,5 @@
 // IPC Channel names
+import { QUICK_LAUNCH_IPC } from './quickLaunchIpc';
 export const IPC = {
   PTY_CREATE: 'pty:create',
   PTY_WRITE: 'pty:write',
@@ -147,6 +148,8 @@ export const IPC = {
   FANOUT_WORKER_MODE_SET: 'fanout:workerMode:set',
   FANOUT_REQUIRE_APPROVAL_GET: 'fanout:requireApproval:get',
   FANOUT_REQUIRE_APPROVAL_SET: 'fanout:requireApproval:set',
+  FANOUT_TRUST_AGY_FOLDERS_GET: 'fanout:trustAgyFolders:get',
+  FANOUT_TRUST_AGY_FOLDERS_SET: 'fanout:trustAgyFolders:set',
   FANOUT_AUDIT_RECENT: 'fanout:audit:recent',
   FANOUT_LINEAGE: 'fanout:lineage',
   FANOUT_PRESETS_GET: 'fanout:presets:get',
@@ -161,6 +164,12 @@ export const IPC = {
   TASK_CREATE_PR: 'task:create-pr',
   WORKTASK_SCAN: 'worktask:scan',
   WORKTASK_REFIRE: 'worktask:refire',
+  // Read-only: how many panes were started inside the given task worktrees (close confirm).
+  WORKTASK_COUNT_PANES: 'worktask:count-panes',
+  // Phone worktrees (no task) in the cleanup list: remove by path, then
+  // optionally delete their phone/<slug> branch.
+  WORKTASK_REMOVE_PHONE: 'worktask:remove-phone',
+  WORKTASK_DELETE_PHONE_BRANCH: 'worktask:delete-phone-branch',
   // Command Deck Phase 2 — the Commander brain (an Agent-SDK orchestrator that
   // runs in MAIN and drives the fleet via wmux MCP). Renderer-only surface, same
   // trust basis as channelLocal/fanout (Electron process boundary, pipe-
@@ -233,6 +242,19 @@ export const IPC = {
   //                   mounts — the same hydrate-then-subscribe shape the other
   //                   main-authoritative deck state uses.
   DECK_BRAIN_PTY_LIST: 'deck:brainpty:list',
+  //   DECK_FANOUT_CALLER (send) main → renderer: a fan-out worker's turn
+  //                   ended while its owner workspace has no brain. Carries
+  //                   the task pointer and the requester's pane/surface ids
+  //                   only (no PTY id, no worker text); the renderer types one
+  //                   fixed line into that pane if it is still there and idle.
+  DECK_FANOUT_CALLER: 'deck:fanout-caller',
+  //   DECK_FANOUT_CALLER_SESSION (invoke) renderer → main: the verified agent
+  //                   incarnation in a PTY, so a pointer is bound to the
+  //                   caller's session. Null when unverified or not daemon-backed.
+  DECK_FANOUT_CALLER_SESSION: 'deck:fanout-caller:session',
+  //   DECK_FANOUT_CALLER_SUBMIT (invoke) renderer → main: write the fixed
+  //                   nudge line through the delivery gate and the daemon.
+  DECK_FANOUT_CALLER_SUBMIT: 'deck:fanout-caller:submit',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.
@@ -364,6 +386,23 @@ export const IPC = {
   ACCOUNT_USAGE_LIST: 'account:usage:list',
   ACCOUNT_USAGE_REFRESH: 'account:usage:refresh',
   ACCOUNT_USAGE_UPDATE: 'account:usage:update',
+  // Quota-driven account choice for Claude and Codex launches (per vendor
+  // switch + quota rows).
+  ACCOUNT_ROTATION_GET: 'account:rotation:get',
+  ACCOUNT_ROTATION_SET: 'account:rotation:set',
+  // agy (Antigravity CLI) accounts. agy keeps one machine-wide sign-in, so
+  // these swap the active account rather than bind one per workspace. LIST /
+  // mutations are renderer → main invokes; CHANGED (main → renderer) is a
+  // payload-free nudge to re-list.
+  AGY_ACCOUNT_LIST: 'agy-account:list',
+  AGY_ACCOUNT_ADD_CURRENT: 'agy-account:add-current',
+  AGY_ACCOUNT_LOGIN_BEGIN: 'agy-account:login:begin',
+  AGY_ACCOUNT_LOGIN_CANCEL: 'agy-account:login:cancel',
+  AGY_ACCOUNT_ACTIVATE: 'agy-account:activate',
+  AGY_ACCOUNT_RENAME: 'agy-account:rename',
+  AGY_ACCOUNT_REMOVE: 'agy-account:remove',
+  AGY_ACCOUNT_SET_AUTO_ROTATE: 'agy-account:set-auto-rotate',
+  AGY_ACCOUNT_CHANGED: 'agy-account:changed',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',
@@ -539,6 +578,17 @@ export const IPC = {
   // anything in flight.
   COMPUTER_USE_GET: 'computer-use:get',
   COMPUTER_USE_SET: 'computer-use:set',
+  // Global quick launch (Settings › Shortcuts, and the floating composer).
+  // SETTINGS_GET/SET return QuickLaunchSettingsPayload; the rest are the
+  // composer window's own calls, refused from any other sender. The strings
+  // live in quickLaunchIpc.ts for the composer's sandboxed preload.
+  QUICK_LAUNCH_SETTINGS_GET: QUICK_LAUNCH_IPC.SETTINGS_GET,
+  QUICK_LAUNCH_SETTINGS_SET: QUICK_LAUNCH_IPC.SETTINGS_SET,
+  QUICK_LAUNCH_CONTEXT: QUICK_LAUNCH_IPC.CONTEXT,
+  QUICK_LAUNCH_SUBMIT: QUICK_LAUNCH_IPC.SUBMIT,
+  QUICK_LAUNCH_DISMISS: QUICK_LAUNCH_IPC.DISMISS,
+  QUICK_LAUNCH_FIT: QUICK_LAUNCH_IPC.FIT,
+  QUICK_LAUNCH_SHOWN: QUICK_LAUNCH_IPC.SHOWN,
   // Window control
   WINDOW_HIDE: 'window:hide',
   // Windows taskbar attention recall. Renderer asks main to flash the
@@ -577,6 +627,7 @@ export const IPC = {
   MCP_UNREGISTER: 'mcp:unregister',
   MCP_REGISTER_TARGET: 'mcp:register-target',
   // Settings -> Token usage: quota (manual refresh only) and the CLI "surface" inventory / toggles.
+  TOKEN_QUOTA_ACCOUNTS: 'tokenUsage:quota:accounts',
   TOKEN_QUOTA_READ: 'tokenUsage:quota:read',
   TOKEN_QUOTA_SENSOR_STATUS: 'tokenUsage:quota:sensor-status',
   TOKEN_QUOTA_SENSOR_INSTALL: 'tokenUsage:quota:sensor-install',

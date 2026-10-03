@@ -122,6 +122,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'catmute', tab: 'notifications', labelKey: 'settings.notificationCategories', descKey: 'settings.notificationCategoriesDesc', synonyms: 'mute category subagent approval' },
   { id: 'wsmute', tab: 'notifications', labelKey: 'settings.perWorkspaceNotifications', descKey: 'settings.perWorkspaceNotificationsDesc', synonyms: 'mute workspace quiet' },
 
+  { id: 'quicklaunch', tab: 'shortcuts', labelKey: 'settings.quickLaunch', descKey: 'settings.quickLaunchDesc', synonyms: 'quick launch global shortcut hotkey composer spotlight launcher prompt 빠른 실행 전역 단축키' },
+  { id: 'quicklaunchkey', tab: 'shortcuts', labelKey: 'settings.quickLaunchShortcut', descKey: 'settings.quickLaunchShortcutDesc', synonyms: 'quick launch global hotkey cmd shift space 빠른 실행 단축키' },
   { id: 'prefix', tab: 'shortcuts', labelKey: 'settings.prefixKey', synonyms: 'prefix tmux ctrl+b leader' },
   { id: 'customkeys', tab: 'shortcuts', labelKey: 'settings.customKeybindings', synonyms: 'hotkey shortcut keymap bind 단축키' },
 
@@ -144,11 +146,13 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'roles', tab: 'roles', labelKey: 'settings.roleBindings', descKey: 'settings.roleBindingsDesc', synonyms: 'role reviewer tester planner model bind' },
   { id: 'a2a', tab: 'roles', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },
   { id: 'fanoutapproval', tab: 'roles', labelKey: 'settings.fanoutRequireApproval', descKey: 'settings.fanoutRequireApprovalDesc', synonyms: 'fanout fan-out approval approve prompt unattended ask' },
+  { id: 'fanoutagytrust', tab: 'roles', labelKey: 'settings.fanoutTrustAgyFolders', descKey: 'settings.fanoutTrustAgyFoldersDesc', synonyms: 'agy antigravity trust trusted folder workspace fanout fan-out' },
   { id: 'fanoutworkers', tab: 'roles', labelKey: 'settings.fanoutWorkerPermissionMode', descKey: 'settings.fanoutWorkerPermissionModeDesc', synonyms: 'fanout fan-out worker permission auto bypass sandbox' },
   { id: 'fanoutpresets', tab: 'roles', labelKey: 'settings.fanoutPresets', descKey: 'settings.fanoutPresetsDesc', synonyms: 'fanout fan-out preset image video agents codex grok output folder worktree' },
   { id: 'fanoutallowtools', tab: 'roles', labelKey: 'settings.fanoutAllowWorkerTools', descKey: 'settings.fanoutAllowWorkerToolsDesc', synonyms: 'fanout worker allow tools permissions settings.json' },
 
-  { id: 'tokenprofile', tab: 'tokens', labelKey: 'settings.tokenProfile', descKey: 'settings.tokenProfileDesc', synonyms: 'token usage cost cheap minimal balanced effort model profile' },
+  { id: 'tokenquota', tab: 'tokens', labelKey: 'settings.tokenUsage.quotaTitle', synonyms: 'token usage quota limit 5h weekly fable accounts' },
+  { id: 'tokencustom', tab: 'tokens', labelKey: 'settings.tokenUsage.customizeSurface', descKey: 'settings.tokenUsage.customizeSurfaceDesc', synonyms: 'token usage tools mcp skills plugins hooks surface wmux core tools' },
 
   { id: 'browserbackend', tab: 'browser', labelKey: 'settings.browserBackend', descKey: 'settings.browserBackendDesc', synonyms: 'browser chrome chromium external builtin' },
   { id: 'browserlight', tab: 'browser', labelKey: 'settings.browserLightweight', descKey: 'settings.browserLightweightDesc', synonyms: 'browser throttle cpu lightweight' },

@@ -274,7 +274,8 @@ export type WorktaskScanCategoryWire =
   | 'unmaterialized-open'
   | 'disk-missing'
   | 'preserved'
-  | 'orphan-dir';
+  | 'orphan-dir'
+  | 'phone-worktree';
 
 export interface WorktaskScanEntryWire {
   category: WorktaskScanCategoryWire;
@@ -291,3 +292,8 @@ export interface WorktaskScanEntryWire {
 export type WorktaskScanResultWire =
   | { ok: true; scannedRoot: string; entries: WorktaskScanEntryWire[] }
   | { ok: false; error: string; scannedRoot: string; entries: WorktaskScanEntryWire[] };
+
+/** worktask:remove-phone result (PhoneWorktreeRemoval mirror). */
+export type RemovePhoneWorktreeResultWire =
+  | { ok: true; branch?: string; repo?: string }
+  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'error'; error?: string };

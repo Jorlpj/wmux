@@ -90,7 +90,7 @@ export function registerTokenUsageProfilesHandlers(options?: ProfileServiceOptio
         if (msg.includes('already exists')) {
           throw new Error('A profile with this name already exists.');
         }
-        if (msg.includes('50') || msg.includes('Maximum')) {
+        if (msg.startsWith('Maximum number of profiles')) {
           throw new Error('Maximum number of profiles (50) reached.');
         }
         if (msg.includes('Storage version') || msg.includes('storage version')) {

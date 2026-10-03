@@ -35,6 +35,52 @@ describe('sweepOrphanAtomicTemps', () => {
     expect(logs.some((l) => l.includes('promoted'))).toBe(true);
   });
 
+  describe('missing primary with a .bak', () => {
+    const setUp = (bakAgeMs: number, bakText = JSON.stringify({ version: 1, active: { ws: 'bak' } })) => {
+      const tempFile = 'deck-work.json.tmp.999999.1';
+      const tempPath = path.join(tmpDir, tempFile);
+      const bakPath = path.join(tmpDir, 'deck-work.json.bak');
+      fs.writeFileSync(tempPath, JSON.stringify({ version: 1, active: { ws: 'temp' } }));
+      fs.writeFileSync(bakPath, bakText);
+      const now = Date.now() / 1000;
+      fs.utimesSync(tempPath, now - 3600, now - 3600);
+      fs.utimesSync(bakPath, now - 3600 + bakAgeMs / 1000, now - 3600 + bakAgeMs / 1000);
+      return { tempFile, tempPath, bakPath, primaryPath: path.join(tmpDir, 'deck-work.json') };
+    };
+
+    it('does not promote a temp over a NEWER valid backup', () => {
+      const { tempFile, tempPath, bakPath, primaryPath } = setUp(60_000);
+      const logs: string[] = [];
+      const report = sweepOrphanAtomicTemps(tmpDir, { log: (l) => logs.push(l) });
+
+      expect(report.promoted).toEqual([]);
+      expect(report.deleted).toEqual([]);
+      expect(report.left).toEqual([tempFile]);
+      expect(fs.existsSync(primaryPath)).toBe(false);
+      expect(fs.existsSync(tempPath)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(bakPath, 'utf8')).active.ws).toBe('bak');
+      expect(logs.some((l) => l.includes('older than a valid backup'))).toBe(true);
+    });
+
+    it('promotes a temp that is newer than the backup', () => {
+      const { tempFile, primaryPath } = setUp(-60_000);
+      const report = sweepOrphanAtomicTemps(tmpDir, { log: () => undefined });
+      expect(report.promoted).toEqual([tempFile]);
+      expect(JSON.parse(fs.readFileSync(primaryPath, 'utf8')).active.ws).toBe('temp');
+    });
+
+    it('promotes the temp when the newer backup does not parse', () => {
+      const { tempFile } = setUp(60_000, '{ broken');
+      expect(sweepOrphanAtomicTemps(tmpDir, { log: () => undefined }).promoted).toEqual([tempFile]);
+    });
+
+    it('promotes the temp when the newer backup has no `active` record (the store would load it as empty)', () => {
+      const { tempFile, primaryPath } = setUp(60_000, '{}');
+      expect(sweepOrphanAtomicTemps(tmpDir, { log: () => undefined }).promoted).toEqual([tempFile]);
+      expect(JSON.parse(fs.readFileSync(primaryPath, 'utf8')).active.ws).toBe('temp');
+    });
+  });
+
   it('leaves invalid JSON temp untouched when primary is missing', () => {
     const tempFile = 'deck-work.json.tmp.999999.1';
     const tempPath = path.join(tmpDir, tempFile);

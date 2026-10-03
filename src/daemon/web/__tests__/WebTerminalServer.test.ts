@@ -43,6 +43,8 @@ import type { DaemonSessionManager } from '../../DaemonSessionManager';
 function makeDeps() {
   const bridge = new EventEmitter();
   const write = vi.fn();
+  // How many stream listeners the bridge had at each activation.
+  const activateListenerCounts: number[] = [];
   const managed = {
     // `cwd` and `spawnCwd` DIFFER on purpose: `cwd` is what the pane's own
     // process last claimed via OSC 7 (i.e. attacker-controlled), `spawnCwd` is
@@ -142,6 +144,12 @@ function makeDeps() {
         : undefined;
     },
     listLiveSessions: () => live,
+    // The manager's own unmute. Flips the flag like the real one so a second
+    // stream or input can be shown NOT to activate again.
+    activateDeferred: vi.fn((id: string) => {
+      activateListenerCounts.push(bridge.listenerCount('data'));
+      if (id === 's1') managed.deferred = false;
+    }),
     resizeSession: (id: string, cols: number, rows: number) => {
       resizeCalls.push({ id, cols, rows });
       if (resizeBox.throws) throw new Error(resizeBox.throws);
@@ -242,7 +250,7 @@ function makeDeps() {
   };
 
   return {
-    sessionManager, bridge, write, live, managed,
+    sessionManager, bridge, write, live, managed, activateListenerCounts,
     resizeCalls, resizeBox,
     lifecycle, lifecycleCalls, lifecycleBox,
     git, gitCalls, gitScript, gitGate, uploadsDir,
@@ -479,6 +487,7 @@ describe('WebTerminalServer', () => {
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
+  let activateListenerCounts: number[];
   let managed: {
     meta: Record<string, unknown>;
     deferred: boolean;
@@ -544,6 +553,7 @@ describe('WebTerminalServer', () => {
     gitScript = deps.gitScript;
     gitGate = deps.gitGate;
     managed = deps.managed;
+    activateListenerCounts = deps.activateListenerCounts;
     live = deps.live;
     uploadsDir = deps.uploadsDir;
     projectorMock = deps.projectorMock;
@@ -586,7 +596,9 @@ describe('WebTerminalServer', () => {
 
   afterEach(async () => {
     if (server.isRunning) await server.stop();
-    fs.rmSync(uploadsDir, { recursive: true, force: true });
+    // A timed-out Git request can still hold the repo as its process cwd.
+    // Async retries let its completion callbacks run before removing the tree.
+    await fs.promises.rm(uploadsDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   // Port 0 → ephemeral bind; status() reports the actual port.
@@ -1330,6 +1342,9 @@ describe('WebTerminalServer', () => {
       const csp = page.headers.get('content-security-policy') ?? '';
       expect(csp.match(/'sha256-[A-Za-z0-9+/=]+'/g)).toHaveLength(2);
       expect(csp).toContain("font-src 'self'");
+      // The app compiles no WebAssembly; only the classic page's image
+      // decoders need it (#1641).
+      expect(csp).not.toContain('wasm-unsafe-eval');
       // `/` is the app page too, now that it has terminals.
       const root = await fetch(`${base}/`);
       expect(await root.text()).toContain('var app=2;');
@@ -1339,7 +1354,10 @@ describe('WebTerminalServer', () => {
       for (const classicPath of ['/classic', '/pair']) {
         const classic = await fetch(`${base}${classicPath}`);
         expect(await classic.text()).toContain('var a=1;');
-        expect((classic.headers.get('content-security-policy') ?? '').match(/'sha256-/g)).toHaveLength(1);
+        const classicCsp = classic.headers.get('content-security-policy') ?? '';
+        expect(classicCsp.match(/'sha256-/g)).toHaveLength(1);
+        expect(classicCsp).toContain("'wasm-unsafe-eval'");
+        expect(classicCsp).not.toContain("'unsafe-eval'");
       }
 
       const font = await fetch(`${base}/app/assets/Inter-abc123.woff2`);
@@ -3905,6 +3923,76 @@ describe('WebTerminalServer', () => {
     }
   });
 
+  it('★ opening the stream of a recovering pane activates it once, at its saved size', async () => {
+    // A pane the daemon recovered after its own restart holds its output until
+    // a viewer attaches. The web client never resizes, so the stream itself is
+    // the attach; otherwise the pane stays silent forever.
+    const activate = (sessionManager as unknown as { activateDeferred: ReturnType<typeof vi.fn> }).activateDeferred;
+    const token = (await startRO()).token as string;
+    managed.deferred = true;
+    const rows = async () => (await (await fetch(`${base()}/api/sessions`, { headers: bearer(token) })).json()).sessions;
+    expect((await rows()).find((r: { id: string }) => r.id === 's1').deferred).toBe(true);
+
+    const ac = new AbortController();
+    try {
+      const sse = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, { signal: ac.signal });
+      expect(sse.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(activate).toHaveBeenCalledTimes(1);
+      expect(activate).toHaveBeenCalledWith('s1');
+      // Listening BEFORE the activation, so the held output it releases
+      // reaches this viewer.
+      expect(activateListenerCounts).toEqual([1]);
+      expect(resizeCalls).toEqual([]);
+      expect((await rows()).find((r: { id: string }) => r.id === 's1').deferred).toBe(false);
+
+      // An active pane is not activated again.
+      const again = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, { signal: ac.signal });
+      expect(again.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(activate).toHaveBeenCalledTimes(1);
+    } finally {
+      ac.abort();
+    }
+  });
+
+  it('★ typing into a recovering pane activates it; a read-only refusal does not', async () => {
+    const activate = (sessionManager as unknown as { activateDeferred: ReturnType<typeof vi.fn> }).activateDeferred;
+    managed.deferred = true;
+    let info = await startRO();
+    const refused = await fetch(`${base()}/api/input?session=s1`, {
+      method: 'POST', headers: bearer(info.token as string), body: 'nope',
+    });
+    expect(refused.status).toBe(403);
+    expect(activate).not.toHaveBeenCalled();
+    await server.stop();
+
+    info = await startRW();
+    const res = await fetch(`${base()}/api/input?session=s1`, {
+      method: 'POST', headers: bearer(info.token as string), body: 'echo after\r',
+    });
+    expect(res.status).toBe(204);
+    expect(activate).toHaveBeenCalledWith('s1');
+    expect(write).toHaveBeenCalledWith('echo after\r');
+    expect(managed.deferred).toBe(false);
+  });
+
+  it('★ a recovering pane takes a phone resize once its stream activated it', async () => {
+    const token = (await startRO()).token as string;
+    managed.deferred = true;
+    const ac = new AbortController();
+    try {
+      const sse = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, { signal: ac.signal });
+      expect(sse.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      const res = await postResize('s1', token, { cols: 65, rows: 50 });
+      expect(res.status).toBe(200);
+      expect(resizeCalls).toEqual([{ id: 's1', cols: 65, rows: 50 }]);
+    } finally {
+      ac.abort();
+    }
+  });
+
   it('★ refuses a pane that is still recovering', async () => {
     // The first resize of a deferred session is the desk's unmute handshake.
     // Taking it here starts capture at the phone's geometry and interleaves
@@ -3956,10 +4044,12 @@ describe('WebTerminalServer', () => {
     expect((await fetch(`${base()}/api/history?offset=-1`, {headers})).status).toBe(400);
   });
 
-  // Stage and commit are two cases on purpose: every git process costs 100ms+
-  // on the Windows runner and the route spawns ~13 per snapshot, so one case
-  // doing both sat right at the 5s limit. Test-side spawns are kept minimal too:
+  // Stage and commit stay separate, but each starts 32-36 sequential real Git
+  // processes across snapshots, writes and assertions. Their Windows startup
+  // cost can exceed Vitest's 5s default on a busy runner. Give only these two
+  // integration cases a finite 20s budget. Test-side spawns stay minimal too:
   // identity is appended to the config `init` wrote instead of `git config` calls.
+  const gitHttpTimeoutMs = 20_000;
   const gitRepo = (name: string) => {
     const root = path.join(uploadsDir, name);
     fs.mkdirSync(root);
@@ -3984,7 +4074,7 @@ describe('WebTerminalServer', () => {
     const stage = await fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify({requestId:crypto.randomUUID(),action:'stage',paths:['phone.txt'],expectedHead:before.head,expectedTree:before.tree,expectedRef:before.ref})});
     expect(await stage.json()).toEqual({applied:true});
     expect(git('ls-files')).toBe('phone.txt');
-  });
+  }, gitHttpTimeoutMs);
 
   it('commits through the authenticated Git API using spawnCwd', async () => {
     const info = await startRW();
@@ -4007,7 +4097,7 @@ describe('WebTerminalServer', () => {
     // One `rev-list` pins it all: HEAD is the returned commit, its parent is
     // the head the snapshot reported, and the replay did not commit twice.
     expect(git('rev-list','HEAD')).toBe(`${result.commit}\n${staged.head}`);
-  });
+  }, gitHttpTimeoutMs);
 
   it('gates Git control on authentication, input grants and session visibility', async () => {
     const info = await startRO();
@@ -5110,6 +5200,30 @@ describe('WebTerminalServer', () => {
         expect(write.mock.calls).toEqual([['\x1b'], ['\x03']]);
       });
 
+      it('a refused input leaves a recovering pane inactive', async () => {
+        const activate = (sessionManager as unknown as { activateDeferred: ReturnType<typeof vi.fn> }).activateDeferred;
+        const info = await startRW();
+        managed.deferred = true;
+        approvalRecords.push(tp());
+        expect((await typeInto(info.token as string, 'ls\r')).status).toBe(409);
+        const receipted = await typeInto(info.token as string, '1\r', {
+          'X-Wmux-Input-Request-ID': `${Date.now()}.${crypto.randomUUID()}`,
+          'X-Wmux-Pane-Incarnation': 'incarnation-1',
+        });
+        expect(receipted.status).toBe(409);
+        approvalRecords[0].state = 'resolved';
+        // A receipted Return whose precondition no longer holds is refused too.
+        const stale = await typeInto(info.token as string, '\r', {
+          'X-Wmux-Input-Request-ID': `${Date.now()}.${crypto.randomUUID()}`,
+          'X-Wmux-Pane-Incarnation': 'incarnation-1',
+          'X-Wmux-Input-After': 'not-the-current-revision',
+        });
+        expect(stale.status).toBe(409);
+        expect(activate).not.toHaveBeenCalled();
+        expect(write).not.toHaveBeenCalled();
+        expect(managed.deferred).toBe(true);
+      });
+
       it('only a terminal_prompt on THIS pane blocks it', async () => {
         const info = await startRW();
         approvalRecords.push(tp({ sessionId: 's2' }), mkApproval({ id: 'ap-gate', kind: 'awaiting_permission' }));
@@ -5312,6 +5426,25 @@ describe('WebTerminalServer', () => {
       toolUseId: 'toolu_plan',
       keyRevisionAtCreate: 3,
       ...over,
+    });
+
+    it('a Claude question form carries the Other width of its pane; an agent-native one does not', async () => {
+      const info = await startRW();
+      approvalRecords.push(
+        mkApproval({
+          id: 'ap-ask',
+          kind: 'awaiting_input',
+          channel: 'fenced-keys',
+          form: { v: 1, kind: 'questions', actions: [{ id: 'submit', label: 'Submit' }], questions: [{ id: 'q0', header: 'Size', text: 'Which size?', multiSelect: false, allowOther: true, options: [{ key: '1', label: 'Small', description: 'Small size' }] }] },
+          formFingerprint: FP,
+        }),
+        nativeQuestion(),
+      );
+      const listed = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...V2 } })).json();
+      const byId = (id: string) => listed.pending.find((r: { id: string }) => r.id === id);
+      // s1 is 80 columns: one row of its "Other" field holds 68.
+      expect(byId('ap-ask').form).toMatchObject({ kind: 'questions', otherMaxCells: 68, questions: [{ options: [{ key: '1', label: 'Small', description: 'Small size' }] }] });
+      expect(byId('ap-native-q').form.otherMaxCells).toBeUndefined();
     });
 
     it('a plan dialog is an informational card to the shipped app; v2 gets its form, question and detail until an answer starts', async () => {
@@ -5532,12 +5665,13 @@ describe('WebTerminalServer', () => {
         ['text over 2000 units', answerBody({ action: 'feedback', text: 'x'.repeat(2001) }), 'invalid-text'],
         ['a malformed fingerprint', answerBody({ formFingerprint: 'nope' }), 'invalid-prompt-fingerprint'],
         ['a malformed answer id', answerBody({ clientAnswerId: 'x' }), 'invalid-body'],
-      ])('400 for %s, before the registry and the journal', async (_label, body, error) => {
+      ])('400 for %s, before the registry and the journal', async (label, body, error) => {
         const info = await startRW();
         approvalRecords.push(nativeTp());
         const res = await postAnswer(info.token as string, body);
         expect(res.status).toBe(400);
-        expect(await res.json()).toEqual({ error });
+        const reason = error !== 'invalid-text' ? undefined : label === 'text over 2000 units' ? 'too-wide' : 'unsafe-text';
+        expect(await res.json()).toEqual({ error, ...(reason ? { reason } : {}) });
         expect(resolveCalls).toEqual([]);
       });
 
@@ -5623,6 +5757,27 @@ describe('WebTerminalServer', () => {
         const res = await postAnswer(phone.token, answerBody({ action: 'feedback', text: 'x' }), V2, 'ap-plan');
         expect(res.status).toBe(400);
         expect(await res.json()).toEqual({ error: 'invalid-text' });
+        // With the registry's reason.
+        approvalBox.result = { ok: false, reason: 'invalid-text', textRefusal: 'too-wide', request: planTp() };
+        const wide = await postAnswer(phone.token, answerBody({ action: 'feedback', text: 'y', clientAnswerId: 'phone-answer-0002' }), V2, 'ap-plan');
+        expect(wide.status).toBe(400);
+        expect(await wide.json()).toEqual({ error: 'invalid-text', reason: 'too-wide' });
+      });
+
+      it('an answer that was not confirmed keeps an uncertain receipt', async () => {
+        await startRW();
+        const phone = await pairDevice('Unconfirmed', true);
+        approvalRecords.push(nativeTp());
+        approvalBox.result = { ok: false, reason: 'answer-uncertain', effect: 'uncertain', request: nativeTp() };
+        const res = await postAnswer(phone.token, answerBody());
+        expect(res.status).toBe(409);
+        expect(await res.json()).toEqual({ error: 'answer-uncertain', effect: 'uncertain' });
+        const receipt = await fetch(`${base()}/api/approvals/ap-native/answer/phone-answer-0001`, { headers: { ...bearer(phone.token), ...V2 } });
+        expect(await receipt.json()).toMatchObject({ state: 'uncertain', effect: 'uncertain', status: 409 });
+        const again = await postAnswer(phone.token, answerBody());
+        expect(again.status).toBe(409);
+        expect(await again.json()).toEqual({ error: 'answer-uncertain', effect: 'uncertain' });
+        expect(resolveCalls).toHaveLength(1);
       });
 
       it('a retry while the answer runs is 202; one running when the daemon stopped is 409 uncertain and never re-run', async () => {
@@ -9590,6 +9745,20 @@ describe('WebTerminalServer', () => {
       primeRing('\x1b[?1003h\x1b[?1006h');
       resumeStates = { s1: { commandRunning: false } };
       expect((await firstSnapshotMeta()).commandRunning).toBe(false);
+    });
+
+    it('stamps the snapshot meta with the inline images switch (#1641)', async () => {
+      expect((await firstSnapshotMeta()).inlineImages).toBe(true);
+      await server.stop();
+      const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, inlineImages: false });
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+      expect(metas(text)[0].inlineImages).toBe(false);
     });
 
     it('omits commandRunning from the snapshot meta when the shell reports no prompt state', async () => {

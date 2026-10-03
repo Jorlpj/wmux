@@ -1,6 +1,13 @@
 import type { SurfaceWriter, WriterContext } from './types';
 import type { SurfaceApplyResult, SurfacePreview } from '../../../shared/tokenUsage/surfaceTypes';
-import { applyConfigEdit, ConfigChangedError, snapshotFile, SurfacesStore } from '../safeWrite';
+import {
+  applyConfigEdit,
+  ConfigChangedError,
+  rollbackWrittenFiles,
+  snapshotFile,
+  SurfacesStore,
+  type WrittenFile,
+} from '../safeWrite';
 import { isPathAllowed, resolveTargetFile } from './agy/paths';
 import { planEditsForFile } from './agy/edits';
 
@@ -68,9 +75,10 @@ export function createAgyWriter(): SurfaceWriter {
         };
       }
 
+      const written: WrittenFile[] = [];
       for (const [targetPath, changes] of changesByFile.entries()) {
-        const planned = planEditsForFile(targetPath, changes);
         const snapshot = snapshotFile(targetPath);
+        const planned = planEditsForFile(targetPath, changes, snapshot.text);
 
         try {
           const res = applyConfigEdit({
@@ -85,10 +93,23 @@ export function createAgyWriter(): SurfaceWriter {
           if (res.backupPath) {
             backups.push(res.backupPath);
           }
+          if (res.changed) {
+            written.push({
+              path: targetPath,
+              backupPath: res.backupPath,
+              preExisted: snapshot.exists,
+              postSnapshot: snapshotFile(targetPath),
+            });
+          }
           appliedItemIds.push(...planned.itemIds);
         } catch (err) {
           ok = false;
-          if (err instanceof ConfigChangedError) {
+          // Put back the files written before this one, so a failed apply changes nothing.
+          const restored = rollbackWrittenFiles(written);
+          appliedItemIds.length = 0;
+          if (!restored) {
+            error = 'Some files may have changed; check your agy settings.';
+          } else if (err instanceof ConfigChangedError) {
             error = 'The configuration changed while editing; reload and try again.';
           } else {
             error = 'Applying the change failed; no file was left half-written.';

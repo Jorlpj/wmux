@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { foldPathCase } from '../../safeWrite/pathCase';
 
 export function resolveSafeRealpath(p: string): string {
   if (fs.existsSync(p)) {
@@ -17,9 +18,9 @@ export function resolveSafeRealpath(p: string): string {
   return path.join(realBase, ...parts);
 }
 
-export function isInsideDir(child: string, parentDir: string): boolean {
-  const normChild = path.resolve(child).toLowerCase();
-  const normParent = path.resolve(parentDir).toLowerCase();
+export function isInsideDir(child: string, parentDir: string, platform: NodeJS.Platform = process.platform): boolean {
+  const normChild = foldPathCase(path.resolve(child), platform);
+  const normParent = foldPathCase(path.resolve(parentDir), platform);
   const rel = path.relative(normParent, normChild);
   return !rel.startsWith('..') && !path.isAbsolute(rel);
 }

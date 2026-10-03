@@ -1,5 +1,6 @@
 import * as fs from 'fs';
-import { findRecentJsonlFiles, type TranscriptScanDeps } from './transcripts';
+import { findRecentJsonlFiles } from './transcripts/fileUtils';
+import type { TranscriptScanDeps } from './transcripts/types';
 
 /** One rate-limit window as Codex records it in a session's `token_count` event. */
 export interface RolloutLimitWindow {

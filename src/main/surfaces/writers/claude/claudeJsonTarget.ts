@@ -27,12 +27,20 @@ export function findProjectKeyInClaudeJson(
 export function buildClaudeJsonEdits(
   deps: WriterDeps,
   changes: ResolvedChange[],
+  /** The apply snapshot's text, so the plan and the conflict check see the same content. */
+  snapshotText?: string | null,
 ): { edits: JsonEdit[]; fileEdits: SurfaceFileEdit[]; affectedItemIds: string[] } {
   const claudeJsonPath = getClaudeJsonPath(deps);
   let parsed: Record<string, unknown> = {};
-  if (fs.existsSync(claudeJsonPath)) {
+  const text =
+    snapshotText !== undefined
+      ? snapshotText
+      : fs.existsSync(claudeJsonPath)
+        ? fs.readFileSync(claudeJsonPath, 'utf8')
+        : null;
+  if (text !== null) {
     try {
-      parsed = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8'));
+      parsed = JSON.parse(text);
     } catch {
       parsed = {};
     }

@@ -16,7 +16,7 @@ import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { applyTaskQueryView } from '../../shared/a2aTaskQueryView';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
-import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
+import { applyRoleAgent, bindingEnforcesModel, launchRefusesPositionalPrompt, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import {
   FANOUT_EXTRA_AGENT_STEMS,
   applyFanoutAgentFlags,
@@ -432,6 +432,16 @@ type RpcResult = unknown;
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
+
+/** One notice per burst: a fan-out of N agy tasks hits this N times. */
+const AGY_TRUST_NOTE_INTERVAL_MS = 60_000;
+let lastAgyTrustNoteAt = 0;
+
+function noteAgyTrustScreen(now: number = Date.now()): void {
+  if (now - lastAgyTrustNoteAt < AGY_TRUST_NOTE_INTERVAL_MS) return;
+  lastAgyTrustNoteAt = now;
+  useStore.getState().pushToast({ level: 'warn', message: t('fanout.agyTrustScreenNote'), durationMs: 15_000 });
+}
 
 export function useRpcBridge(): void {
   useEffect(() => {
@@ -875,6 +885,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     return buildWorkspaceListEntries(store.workspaces);
   }
 
+  if (method === 'quickLaunch.context') {
+    // The global quick-launch composer (main/quickLaunch): which workspaces it
+    // may start an agent in, and the theme to paint itself in.
+    return {
+      workspaces: store.workspaces.map((w) => ({ id: w.id, name: w.name, cwd: w.metadata?.cwd ?? '' })),
+      activeWorkspaceId: store.activeWorkspaceId,
+      theme: store.theme,
+      locale: store.locale,
+      ...(store.theme === 'custom' ? { customThemeColors: store.customThemeColors } : {}),
+    };
+  }
+
   if (method === 'workspace.phoneSidebar') {
     // Phone Fleet only (reached through main's PhoneWorkspaces, never the
     // public RPC router): the sidebar's own labels, projected and bounded.
@@ -1191,10 +1213,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // before addWorkspace: nothing may await between that and pty.create. The
     // launcher is final after the swap (later steps only add flags). A failure
     // is not fatal — agy's own screen is then the fallback.
-    if (cwd && commandLauncherStem(swap.command) === 'agy') {
+    if (cwd && commandLauncherStem(swap.command) === 'agy' && launchRefusesPositionalPrompt(swap.command)) {
+      // Never trust a folder for a launch agy will reject anyway.
+      console.warn('[wmux:fanout] agy line has no prompt flag; folder not pre-trusted', { cwd });
+    } else if (cwd && commandLauncherStem(swap.command) === 'agy') {
       try {
         const trusted = await window.electronAPI.agentModels?.trustAgyFolder?.(cwd);
-        if (trusted && !trusted.ok) console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, reason: trusted.reason });
+        if (trusted && !trusted.ok) {
+          console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, reason: trusted.reason });
+          // Off by default (opt-in setting): say so where the operator looks,
+          // because the task now waits on agy's own trust screen.
+          if (trusted.disabled) noteAgyTrustScreen();
+        }
       } catch (err) {
         console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, err });
       }
@@ -1221,8 +1251,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // here: an await between addWorkspace and pty.create would let the
     // empty-leaf funnel spawn a plain shell into this pane first.
     const fanoutTaskOf = typeof params.fanoutTaskOf === 'string' ? params.fanoutTaskOf : '';
+    // Quick launch in the person's own checkout: nested in the sidebar under
+    // the workspace it was started from, but NOT stamped as a fan-out task —
+    // it must not count toward the fan-out cap or the depth rule.
+    const nestUnder = !fanoutTaskOf && typeof params.nestUnder === 'string' ? params.nestUnder : '';
     // #1481 — lets the sidebar nest this workspace under its owner right away.
-    if (fanoutTaskOf) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf, fanoutOrigin);
+    if (fanoutTaskOf || nestUnder) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf || nestUnder, fanoutOrigin);
 
     // Unnested so the FINAL command is readable: withDefaultShell first (there
     // has to be a command to rewrite), then the role binding, then the marker

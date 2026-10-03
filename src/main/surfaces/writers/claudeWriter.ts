@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import type {
   SurfaceApplyResult,
   SurfaceFileEdit,
@@ -7,10 +6,10 @@ import type {
 import {
   applyConfigEdit,
   ConfigChangedError,
+  rollbackWrittenFiles,
   SurfacesStore,
   snapshotFile,
-  writeFileAtomic,
-  type FileSnapshot,
+  type WrittenFile as RestorableFile,
 } from '../safeWrite';
 import type { ResolvedChange, SurfaceWriter, WriterContext } from './types';
 import { buildClaudeJsonEdits, getClaudeJsonPath } from './claude/claudeJsonTarget';
@@ -67,11 +66,7 @@ export function createClaudeWriter(): SurfaceWriter {
       const store = new SurfacesStore(deps.surfacesStorePath);
       store.load();
 
-      interface WrittenFile {
-        path: string;
-        backupPath?: string;
-        preExisted: boolean;
-        postSnapshot: FileSnapshot;
+      interface WrittenFile extends RestorableFile {
         affectedItemIds: string[];
       }
       const writtenFiles: WrittenFile[] = [];
@@ -86,14 +81,16 @@ export function createClaudeWriter(): SurfaceWriter {
           affectedItemIds: [],
         };
         if (isPathAllowed(claudeJsonPath, deps)) {
-          cjResult = buildClaudeJsonEdits(deps, changes);
+          const cjSnapshot = snapshotFile(claudeJsonPath);
+          cjResult = buildClaudeJsonEdits(deps, changes, cjSnapshot.text);
           if (cjResult.edits.length > 0) {
-            const preExisted = fs.existsSync(claudeJsonPath);
+            const preExisted = cjSnapshot.exists;
             const res = applyConfigEdit({
               path: claudeJsonPath,
               kind: 'json',
               edits: cjResult.edits,
               backup: true,
+              snapshot: cjSnapshot,
               now: deps.now(),
             });
             if (res.backupPath) backups.push(res.backupPath);
@@ -127,15 +124,17 @@ export function createClaudeWriter(): SurfaceWriter {
           if (!isPathAllowed(targetPath, deps)) {
             continue;
           }
-          const sResult = buildSettingsEdits(targetPath, deps, pathChanges, true, store);
+          const snapshot = snapshotFile(targetPath);
+          const sResult = buildSettingsEdits(targetPath, deps, pathChanges, true, store, snapshot.text);
           settingsResults.push(sResult);
           if (sResult.edits.length > 0) {
-            const preExisted = fs.existsSync(targetPath);
+            const preExisted = snapshot.exists;
             const res = applyConfigEdit({
               path: targetPath,
               kind: 'json',
               edits: sResult.edits,
               backup: true,
+              snapshot,
               now: deps.now(),
             });
             if (res.backupPath) backups.push(res.backupPath);
@@ -207,38 +206,18 @@ export function createClaudeWriter(): SurfaceWriter {
           }
         }
 
-        let rollbackFailed = false;
-
         // Roll back any files that were written in this apply call
-        for (const written of writtenFiles.slice().reverse()) {
-          try {
-            const currentSnap = snapshotFile(written.path);
-            if (!currentSnap.exists || currentSnap.sha256 !== written.postSnapshot.sha256) {
-              // File was modified or deleted concurrently; cannot safely restore
-              rollbackFailed = true;
-              continue;
-            }
-            if (written.preExisted) {
-              if (!written.backupPath || !fs.existsSync(written.backupPath)) {
-                rollbackFailed = true;
-                continue;
-              }
-              const backupContent = fs.readFileSync(written.backupPath, 'utf8');
-              writeFileAtomic(written.path, backupContent);
-            } else {
-              fs.unlinkSync(written.path);
-            }
-          } catch {
-            rollbackFailed = true;
-          }
-        }
+        const rollbackFailed = !rollbackWrittenFiles(writtenFiles);
 
         const isMissingStoreDef =
           err instanceof Error && err.message.includes('definition not found in store');
+        const isAmbiguousHook = err instanceof Error && err.message.startsWith('More than one hook matches');
         const safeError = rollbackFailed
           ? 'Some files may have changed; check your Claude settings.'
           : isMissingStoreDef
             ? 'Cannot enable hook: definition not found in store'
+            : isAmbiguousHook
+              ? (err as Error).message
             : err instanceof ConfigChangedError
               ? 'The configuration changed while editing; reload and try again.'
               : 'Applying the change failed; no file was left half-written.';

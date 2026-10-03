@@ -18,6 +18,11 @@ export function toSnakeCase(str: string): string {
     .toLowerCase();
 }
 
+/** Key Codex uses under `hooks.state` for one handler: `<file>:<snake_event>:<group>:<handler>`. */
+export function codexHookStateKey(filePath: string, event: string, handlerIdx: number): string {
+  return `${filePath}:${toSnakeCase(event)}:0:${handlerIdx}`;
+}
+
 export function formatTomlKey(key: string): string {
   if (/^[A-Za-z0-9_-]+$/.test(key)) {
     return key;
@@ -102,7 +107,7 @@ function findMatchingSkillPath(
   return originPath;
 }
 
-function normalizeDriveAndSeparators(p: string): string {
+export function normalizeDriveAndSeparators(p: string): string {
   let norm = p.replace(/\\/g, '/');
   if (/^[a-zA-Z]:/.test(norm)) {
     norm = norm[0].toLowerCase() + norm.slice(1);
@@ -169,10 +174,7 @@ function findHookStateKey(
     throw new Error(`Cannot determine hook event for '${item.name}' in ${filePath}`);
   }
 
-  const snakeEvent = toSnakeCase(rawEvent);
-  const group = 0;
-  const handler = handlerIdx;
-  const exactKey = `${filePath}:${snakeEvent}:${group}:${handler}`;
+  const exactKey = codexHookStateKey(filePath, rawEvent, handlerIdx);
 
   const hooksTable = parsed.hooks as Record<string, unknown> | undefined;
   const hooksState = (hooksTable && typeof hooksTable === 'object' && 'state' in hooksTable)

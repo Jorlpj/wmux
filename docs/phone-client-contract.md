@@ -374,13 +374,13 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
+GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
                       gatedTools, gateEnabled?, fleetSidebar?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
-                      liveness?, lastAssistantText?, surfaceTitle?, paneName?}]}
+                      liveness?, lastAssistantText?, surfaceTitle?, paneName?, deferred?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
 
@@ -427,6 +427,16 @@ only while the desktop is attached; see *Desktop sidebar fields* below.
 is too old to believe. `lastAssistantText` is a one-line cut of the agent's last
 message; it rides `--allow-transcript` and is absent until the first poll after
 the transcript changed.
+
+`deferred: true` marks a pane the daemon recovered after its own restart that
+no viewer has attached to yet. The daemon holds its output (the new shell's
+prompt) until one does. Opening the pane's `GET /api/stream` or sending it
+`POST /api/input` attaches it at its current size: the held output then arrives
+as `data` events after the snapshot, and the flag reads `false` from then on.
+Until then a resize is refused as *still recovering* (see
+[Resizing a pane](#resizing-a-pane--the-desk-owns-the-size-while-it-is-actually-showing-it)).
+A client may show the row as "recovering", but needs no extra request to wake
+it. A daemon that predates the field omits it; read a missing key as `false`.
 
 `gatedTools` lists the tools whose calls wait for a remote answer, so a client
 can say *why* something is pending. `gateEnabled` says whether that gate is
@@ -917,7 +927,9 @@ question, an approve — with or without `choiceKey` — is refused with 501
 on Claude Code 2.1.283: a digit only toggles one checkbox of a multi-select, and
 on the first of several questions it answers that one and moves to the next
 tab, so the tool is still waiting). The record stays pending; deny (Esc) still
-cancels the whole question.
+cancels the whole question. A `decision-v2` client can answer such a prompt —
+and type an "Other" answer to any of them — through the record's `questions`
+form (see "Claude AskUserQuestion" under Decision forms).
 
 Claude Code's own **permission dialog** ("Do you want to proceed?") is recorded
 as a `terminal_prompt` — see the next section for when it can be answered from
@@ -1259,7 +1271,8 @@ there before writing.
 | 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or its question left the screen (including a different dialog in its place). Stop showing it |
 | 422 | `{error: 'invalid-choice-key'}` | The `choiceKey` does not belong to this request's choices, or the option is not visible on screen. The request is still pending — retry with a valid key or omit `choiceKey` |
 | 501 | `{error: 'unsupported-agent', reason: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
-| 501 | `{error: 'answer-in-terminal', reason: 'needs-v2'}` | A multi-select or multi-question `AskUserQuestion`: one key cannot answer it, so nothing was typed. Still pending — answer it at the desktop, or deny |
+| 501 | `{error: 'answer-in-terminal', reason: 'needs-v2'}` | A multi-select or multi-question `AskUserQuestion`: one key cannot answer it, so nothing was typed. Still pending — answer it with a `decision-v2` `/answer` when the record carries a `form` (see "Claude AskUserQuestion" under Decision forms), at the desktop, or deny |
+| 409 | `{error: 'already-answered'}` | A `decision-v2` answer to this `AskUserQuestion` has started typing its keys. Nothing typed; re-read the list |
 | 501 | `{error: 'answer-in-terminal', reason: 'unsupported-shape' \| 'screen-unreadable'}` | The request carries no question text or no choices, so its dialog cannot be identified on screen (`unsupported-shape`), or the daemon cannot read the pane together with its state (`screen-unreadable`). Nothing typed; still pending — answer it at the desktop |
 | 404 | `{error: 'not-found'}` | No such request |
 
@@ -1329,7 +1342,7 @@ v1 paths.
 
 | Key | Meaning |
 | --- | --- |
-| `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here |
+| `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` and `questions` (Claude's `AskUserQuestion`; see below) while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here, and only for a record that carries a `form` |
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel`: the server runs with `--allow-transcript`, the caller has the input grant, and the chat bridge is wired |
 | `chatCancelOutcome` | `true` when `chatCancel` is true and the cancel receipt store loaded; omitted otherwise (never `false`). Advertises `cancel` on the cancel answer, the cancel receipt route and SSE `chat.cancel` (see Chat cancel outcome) |
 | `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue, and `DELETE …/chat/queue/<clientMessageId>` is open to it: the same condition as `chatSend`, plus a queue that loaded |
@@ -1465,13 +1478,13 @@ and more than 2,000 UTF-16 units. The daemon never stores the text itself.
 | --- | --- | --- |
 | 200 | `{state, effect: 'complete', durable}` | Done |
 | 202 | `{state: 'pending', replayed: true}` | The same `clientAnswerId` is still running — poll the receipt |
-| 400 | `{error: 'invalid-body' \| 'invalid-text' \| 'invalid-choice' \| 'invalid-prompt-fingerprint'}` | Nothing happened |
+| 400 | `{error: 'invalid-body' \| 'invalid-text' \| 'invalid-choice' \| 'invalid-prompt-fingerprint', reason?}` | Nothing happened. `invalid-text` carries `reason`: `too-wide` (over 2,000 UTF-16 units, or wider than the field the pane can show), `matches-placeholder` (reads as the free-text row's placeholder) or `unsafe-text` (a control character, whitespace only, or a start that reads as a checkbox) |
 | 401 | `{error: 'authorization-expired'}` | |
 | 403 | read-only | No input grant |
 | 404 | `{error: 'not-found'}` | No such request (or a brain pane) |
 | 409 | `{error: 'already-resolved' \| 'already-answered' \| 'prompt-changed', effect: 'none' \| 'partial', step?}` | Someone else answered, or the screen moved (`partial`: some keys of a stepwise answer were typed; the record stays pending and answers `already-answered` from then on) |
 | 409 | `{error: 'answer-id-reused', effect: 'none'}` | This `clientAnswerId` was used for another body |
-| 409 | `{error: 'answer-uncertain', effect: 'uncertain'}` | It was running when the daemon stopped, or the agent's server did not confirm it in time; it may or may not have landed and is never re-run |
+| 409 | `{error: 'answer-uncertain', effect: 'uncertain'}` | It was running when the daemon stopped, the agent's server did not confirm it in time, or (a Claude question) the screen did not confirm it; it may or may not have landed and is never re-run. Its receipt reads `state: 'uncertain'` |
 | 410 | `{error: 'expired' \| 'prompt-gone', effect: 'none'}` | The request is gone (an agent that no longer holds it included) |
 | 425 | `{error: 'answer-too-soon', effect: 'none'}` | Within 1.5 s of the request appearing |
 | 429 | `{error: 'answer-receipts-full', effect: 'none'}` | 512 live receipts for this caller |
@@ -1537,6 +1550,102 @@ typed to undo it; the record stays pending, answers `already-answered` (to
 `/decline` too) and settles when the dialog is answered at the terminal. A key typed at the terminal before the answer (or a
 changed dialog) is 409 `prompt-changed` with `effect: 'none'`, and the record
 is replaced by a fresh one — re-read the list.
+
+#### Claude AskUserQuestion (`form.kind: 'questions'`)
+
+A Claude Code `AskUserQuestion` stays an `awaiting_input` record, and a client
+without `decision-v2` reads exactly the bytes it read before (`choices` for one
+single-select question, a 501 `needs-v2` approve otherwise). While the
+daemon's `phoneDecisions.stepwise` switch is on, a `decision-v2` caller also
+gets the whole prompt as a form:
+
+```json
+{ "form": { "v": 1, "kind": "questions",
+    "questions": [
+      { "id": "q0", "header": "Size", "text": "Which size?", "multiSelect": false,
+        "allowOther": true, "options": [{ "key": "1", "label": "Small", "description": "Small size" },
+                                        { "key": "2", "label": "Medium", "description": "Medium size" }] },
+      { "id": "q1", "header": "Toppings", "text": "Which toppings?", "multiSelect": true,
+        "allowOther": true, "options": [{ "key": "1", "label": "Cheese" }, { "key": "2", "label": "Olives" }] } ],
+    "actions": [{ "id": "submit", "label": "Submit" }, { "id": "deny", "label": "Cancel" }],
+    "otherMaxCells": 68 },
+  "formFingerprint": "<32 hex>" }
+```
+
+Option keys are the digits Claude draws. An option carries `description` when
+Claude draws one under its label (omitted otherwise). `allowOther` is always
+true: Claude adds its "Type something" row to every question. `otherMaxCells`
+is the widest `other` the pane can take now (`cols - 12` cells, a wide
+character counting two); the pane can be resized, so the answer checks the
+width again (`invalid-text` / `too-wide`). A prompt the daemon could not
+match on screen exactly as written gets no form (more than 4 questions or 8
+options on one, a question without a header, two questions whose texts are
+the same once spaces are removed, a text, label or description with control
+characters, runs of spaces or over the form's length limits): it stays the
+card above.
+
+The daemon reads the picker as Claude draws it: each option by its whole
+label then its whole description (a long label wraps onto the next row), the
+"Type something" row last, and under the picker's bottom rule only Claude's
+`Chat about this` row and its key hint. A picker drawn any other way (a label
+cut short, another menu or an input prompt under it) is not the question the
+form describes: the answer is 409 `prompt-changed` with nothing typed.
+
+- `{answers: [...]}` (no `action`, or `submit`) — one entry per question, as for
+  OpenCode questions: the chosen `keys`, plus `other` for typed text; a
+  single-select question takes exactly one of them. The daemon types the
+  answer into the picker as Claude Code 2.1.283 was measured to take it, and
+  as checked live on 2.1.288: a single-select option's digit; a
+  multi-select's option digits (each toggles its box), then `↓` onto the
+  in-question Submit row (labelled `Next` when another question follows) and
+  Enter; typed text as
+  the "Type something" row's digit, `↓` onto it where needed, one bracketed
+  paste and Enter / `↓`. Several questions end on Claude's review screen,
+  where the daemon checks that every question lists exactly the answer given
+  before it presses `1` (Submit answers). Every key waits until the screen
+  shows what the key before it should have drawn.
+- `other` must fit one row of the pane: at most `cols - 12` columns (a wide
+  character counts two), else 400 `{error: 'invalid-text', reason:
+  'too-wide'}` with nothing typed. An `other` that reads "Type something" once
+  spaces are removed (it could not be told apart from the empty row) is
+  `reason: 'matches-placeholder'`; one that starts like a checkbox (`[ ] `,
+  `[✔] `) is `reason: 'unsafe-text'`.
+- `{action: 'deny'}` — Cancel: one Esc, as a v1 deny. 200 `{state:
+  'resolved'}`.
+- The picker must be untouched when the answer starts: the first question, no
+  tab answered, the cursor on option 1, nothing ticked, no typed text. Anything
+  else is 409 `prompt-changed` with `effect: 'none'` and nothing typed; a
+  question no longer on screen is 410 `prompt-gone`.
+- 200 `{state: 'resolved', effect: 'complete'}` only once the screen confirms
+  the answer: this prompt's picker is gone and a new "User answered Claude's
+  questions" block lists every question with exactly the answer given. When every key
+  was typed but the screen does not confirm it within 5 s, the answer is 409
+  `{error: 'answer-uncertain', effect: 'uncertain'}`: it may or may not have
+  landed as given. Its receipt reads `state: 'uncertain'`. The record stays
+  pending with `step.status: 'partial'` and no `decision`, answers
+  `already-answered` from then on, and the pane stays blocked on the
+  question. Claude's own report that the question was answered, listing
+  exactly these answers, resolves it as this answer; anything else that ends
+  it (a report of other answers or of none, the question dismissed at the
+  terminal, the turn over, the pane gone, a daemon restart) expires it. The
+  new block counts only below the rows that were above the picker when the
+  last key was typed, so an older block for the same question is never taken
+  for it. A record that Claude's next dialog replaced, or that
+  was settled, while the daemon was still confirming the answer keeps that
+  state, and the 200 carries it.
+- Once the first key is typed the record carries `step` and no `form`, and a
+  v1 approve or deny on it is 409 `already-answered`. A key typed at the
+  terminal meanwhile, a screen that does not show what the last key should
+  have drawn (a review that lists another answer included: it says nothing
+  was submitted, so it stops the answer `partial` at once rather than
+  `answer-uncertain`), a lost grant or the turn ending stops the answer, as
+  for the plan dialog's feedback: the
+  response carries `effect: 'partial'` and `step` (409 `prompt-changed`, or
+  the status of what stopped it), nothing is typed to undo it, and the rest is
+  answered at the terminal. While keys are still being typed, a newer
+  question or permission gate on the pane does not replace the record: it is
+  replaced only if the answer stops. An answer that would take more than 40
+  keys is 501 `unsupported-shape` before any key.
 
 #### OpenCode permissions and questions
 
@@ -3907,6 +4016,68 @@ seen only on the rendered screen shows on the next `/turns` read (and as
 `blockedBy:"terminal"` on a refused send); a send refused that way emits
 nothing itself.
 
+### Chat v2 records (driver-owned conversations)
+
+A pane can hold a chat-v2 conversation: the daemon runs the agent itself
+through its structured protocol, and the pane's shell stays idle as its anchor
+(see `docs/managed-chat.md`). On the phone such a pane is **read + approve
+only**, and every rule above for a `managed` binding applies:
+
+- `/turns` answers `chat.binding:"managed"`, with the same keys as any managed
+  record plus `capabilities.streaming:false`. `managed.provider` is
+  `{id:"claude", name:"Claude Code"}`; `managed.phase` is `connecting`,
+  `ready`, `running`, `blocked` or `disconnected` (an open set).
+- `historyEpoch` is `c2:<chatSessionId>:<epoch>`; compare it, never parse it.
+  It changes when the daemon reloads the record (a restart): replace your rows.
+  `agentSessionId` is the agent's own conversation id once known, the
+  record's id before that, so it can change once right after the first turn
+  starts; that reads as a conversation change.
+- Every read is a full bounded page (`mode:"snapshot"`, `reset:true` when you
+  sent a cursor, `hasMore:false`; `dir=back` answers an empty `older` page).
+  `truncatedHead:true` means older rows exist that the phone cannot page to,
+  and `chat.historyTruncated` is `true` on the same read. Tool bodies always
+  carry `n` and `bytes`; they are inline heads of at most 4 KiB with
+  `truncated:true` when cut; these rows have no `srcOffset`, so `/turns/block` cannot open them.
+  When the daemon itself cut a body, `bytes` counts only the part it kept (a
+  lower bound).
+- A pending tool permission or question is `chat.blocked`
+  `{by:"approval", approvalId}`, and its opening and closing are
+  `chat.blocked` / `chat.unblocked` events (`agent:"claude"`) under the same
+  rules as above. Answer it through `/api/approvals` exactly as
+  any other native decision (`POST /api/approvals/<id>` for the v1 Yes/No
+  projection, `POST /api/approvals/<id>/answer` with `decision-v2`). The first
+  answer from any device or the desktop wins. The record's `sessionId` is the
+  pane id, and it arrives on `/api/approvals` and the `approval` SSE event like
+  any other. A `meta` row `Waiting for approval: …` marks it in the
+  conversation; once settled the row with the **same `id`** reads `Allowed`,
+  `Denied` or `Approval cancelled`.
+- `POST …/chat/messages` answers `409 {error:"managed-read-only"}`
+  (`effect:"none"`), and `POST …/chat/launch` answers
+  `409 {error:"launch-not-ready", reason:"agent-running"}`: the pane already
+  has a writer. A launch from the phone never creates such a record. A launch
+  still in flight when the desktop starts a chat-v2 conversation in the pane is
+  refused the same way, before anything is typed.
+- `chat.agentStatus` is `running` while a turn runs and `awaiting_input` while
+  it waits on an approval or a question, as a terminal binding reads at a
+  permission prompt; `idle` between turns.
+- `POST …/chat/cancel` interrupts the running turn. As on a terminal binding,
+  `capabilities.cancel` is shown only to a caller that sent `chat-cancel`, and
+  `chat.turn` (`id` = the turn's user row id, the `turnId` a cancel may name)
+  to one that sent `chat-cancel` or `chat-queue`. Answers follow the cancel table:
+  202 `interrupt-requested` with `cancel` progress, 409 `turn-not-running`
+  `{turn}`, `session-changed`, `turn-already-interrupted`, `cancel-id-conflict`,
+  `cancel-cooldown` (the same id is still in flight), 507
+  `message-history-full`, 500 `cancel-failed` (`effect:"uncertain"`). The
+  receipt (`GET …/chat/cancel/<clientCancelId>`) and SSE `chat.cancel` follow
+  the cancel outcome rules; `ended` comes with `evidence:"native"` (the
+  conversation recorded how the turn ended). These receipts live in memory for
+  the id's 24 h lifetime: after a daemon restart a receipt reads `none`.
+- A `transcript.nudge` fires when the conversation changes.
+- When the conversation is handed to the terminal from the desktop, the pane
+  reads as an ordinary terminal binding again (the agent's TUI resumed the
+  same conversation): the binding and `historyEpoch` change, so replace your
+  rows.
+
 ---
 
 ## Proposed: contract v-next (partly served)
@@ -3919,12 +4090,12 @@ nothing itself.
 >   item 4, account per pane and handoff lineage (`paneAccount`,
 >   `paneHandoff`; #1664); and item 5's read routes,
 >   `GET /api/git/projects`, `GET …/git/branches` and `GET …/git/checks`
->   (`gitProjects`, `gitChecks`; #1663).
+>   (`gitProjects`, `gitChecks`; #1663); and item 5's worktree creation,
+>   `POST …/git/worktree` and its receipt (`gitWorktrees`; #1666).
 > - **Proposed — on hold pending client review:** item 1, typed turn failure
->   (`turnFailure`), and item 5's worktree creation, `POST …/git/worktree` and
->   its receipt (`gitWorktrees`). No daemon serves these. Do not ship a client
->   path that depends on them until the matching `/api/config` key (below)
->   appears on a real daemon.
+>   (`turnFailure`). No daemon serves it. Do not ship a client path that
+>   depends on it until the matching `/api/config` key (below) appears on a
+>   real daemon.
 >
 > Shared types: `src/shared/phoneTurnFailure.ts`,
 > `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
@@ -3946,7 +4117,7 @@ daemon"; never probe with a write.
 | `paneAccount` (**served**) | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
 | `paneHandoff` (**served**) | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
 | `gitProjects` | caller may input (**served**) | `GET /api/git/projects`, `GET …/git/branches` |
-| `gitWorktrees` | caller may input and the worktree receipt store loaded | `POST …/git/worktree` and its receipt |
+| `gitWorktrees` | caller may input and the worktree receipt store loaded (**served**) | `POST …/git/worktree` and its receipt |
 | `gitChecks` | caller may input (**served**) | `GET …/git/checks` |
 
 Per session, `/turns` `chat.capabilities` gains `accountStatus: true` for a
@@ -4269,8 +4440,8 @@ cannot pick a model or effort.
 
 > **Served:** `GET /api/git/projects`, `GET …/git/branches` and
 > `GET …/git/checks` (keys `gitProjects`, `gitChecks`;
-> `src/daemon/web/phoneGitRead.ts`). Worktree creation (`gitWorktrees`) is
-> proposed — on hold pending client review; no daemon serves it.
+> `src/daemon/web/phoneGitRead.ts`), and `POST …/git/worktree` with its
+> receipt (key `gitWorktrees`; `src/daemon/web/phoneWorktree.ts`).
 
 Every request names a session (`/api/sessions/<id>/…`), except the project
 list, whose rows hand you one. The daemon derives the repository from that
@@ -4290,8 +4461,15 @@ write no audit line. They share the existing four-slot Git/PR budget
 (`429 {error:"git-busy"}`) and the 5 s per-`git` timeout; `gh` keeps its 8 s
 timeout. Every `git` the daemon runs for the phone is local only: no
 transport is allowed and a partial clone never fetches a missing object.
-Worktree creation runs in the background (below) and serializes per
-repository, keyed by the realpath of the git common dir. Each creation that
+The exceptions to the 5 s bound are `git worktree add` itself and, when a
+repeated request recovers one, the `git status` and `git worktree remove`
+that cover its whole checkout, bounded at 120 s: they cross a whole tree,
+and killing the add at 5 s would manufacture the half-written state the
+receipt exists to describe. Worktree creations do
+not use the four read slots: each caller runs one at a time and the daemon at
+most two (`429 git-busy` beyond that). They run in the background (below)
+and serialize per repository, keyed by the realpath of the git common dir.
+Each creation that
 passes validation writes one line to the device audit log
 (`device-audit.jsonl`): event `git-worktree`, the device id (empty for the
 operator token), and the outcome tag as `reason`. No path and no branch name
@@ -4372,16 +4550,32 @@ else:
 - branch `phone/<slug>`;
 - directory `${wmuxHome}/worktrees/<projectId>/phone-<slug>`;
 - the command: `git worktree add -b phone/<slug> -- <dir> <base-oid>`, with
-  hooks disabled (`core.hooksPath=/dev/null`), so no repository hook runs.
+  `core.hooksPath` pointing at an empty directory the daemon owns (no
+  repository hook runs), `core.attributesFile` at an empty file (only the
+  tree's own attributes and `info/attributes` apply), every configured
+  content filter driver switched off on the command line, and no transport.
+
+Every directory from the daemon's data directory down to `<projectId>` must
+be a real directory, not a symbolic link or junction
+(`worktree-path-unsafe`); missing ones are created one level at a time, and
+the check is repeated right before the add.
 
 Refused before anything is written: a bare repository, an unborn `HEAD`, a
 merge/rebase/sequencer in progress, a repository with submodules
 (`.gitmodules` at the base commit; submodules are not checked out by a phone
 worktree, so they are refused rather than left empty), and content filters.
-The filter check reads the `.gitattributes` files in the base tree (and
-`info/attributes`): only a `filter=` attribute that some path in the tree
-actually uses refuses the create (`git-filters-require-desktop`). A global
-`git lfs install` alone, with no `filter=lfs` in the tree, is not a refusal.
+The filter check scans every path of the base commit's whole tree (not only
+the session's subdirectory) for a set `filter` attribute, as
+`git check-attr --source` resolves it from the tree's `.gitattributes` files
+and `info/attributes`; any hit refuses the create
+(`git-filters-require-desktop`). A global `git lfs install` alone, with no
+`filter=` attribute in effect in the tree, is not a refusal. The scan needs
+git 2.40 or later (`git-version-unsupported` otherwise) and has a 30 s
+bound. On Windows the directory plus the longest path in the tree must fit
+260 characters, and the directory, as well as the directory plus the longest
+directory in the tree, 247 (Git for Windows creates no longer directory
+without `core.longpaths`); either is `path-too-long`. Elsewhere only the
+directory is bounded.
 
 **The answer is asynchronous.** Checking out a tree can take longer than any
 reasonable request, so the create never runs inside the HTTP request:
@@ -4402,21 +4596,88 @@ GET /api/sessions/<id>/git/worktree/<requestId>
   "base": "<oid>",                                  // created: the commit the branch starts at
   "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",   // created
   "leaf": "phone-fix-login",                        // created
-  "error": "branch-exists"                          // refused, or unknown ("git-outcome-unknown")
+  "error": "branch-exists",                         // refused, or unknown ("git-outcome-unknown")
+  "retryAfterMs": 5000                              // unknown only: a step could not run to an answer, git is still writing the checkout, or a removal under way is still incomplete; repeat the POST after this
 }
 ```
 
 A repeat POST with the same body answers **200 with this same receipt body**
-plus `replayed: true`, whatever its state; there is one shape for the
-created answer. The receipt route needs the input grant, like the POST.
+plus `replayed: true`, when the receipt is `pending`, `created` or
+`refused`; there is one shape for the created answer. A repeat of an
+**`unknown`** receipt is a recovery run instead (202, `pending` again; see
+below). The receipt route needs the input grant, like the POST.
 
 | POST status | `error` | When |
 | --- | --- | --- |
 | 400 | `invalid-git-request` | body shape, extra key, malformed `requestId` |
 | 400 | `invalid-slug` | slug fails the rule |
+| 409 | `not-a-git-repo` | the session has no recorded `spawnCwd` (answered before the body is read) |
 | 409 | `request-id-conflict` | this `requestId` was used with another slug or session |
-| 429 | `git-busy` | four Git/PR jobs already running |
+| 429 | `git-busy` | this caller already has a creation running, two are running, or this caller holds 100 receipts that are all still pending |
 | 503 | `git-receipts-unavailable` | the receipt store could not be read (the key is also hidden) |
+
+The receipt route answers 400 `invalid-git-request` for an id that is not a
+UUID and 503 `git-receipts-unavailable` like the POST.
+
+**When the add does not finish.** Right before `git worktree add` starts,
+the receipt store durably records what this request is about to create: the
+repository, the base oid, the directory and the branch, both of which were
+just found absent. Recovery acts on that record only, so it never removes
+anything this request did not create. On the 120 s bound the add is stopped
+together with every process it started (the checkout runs as a child
+`git`). If the add ran and did not finish cleanly (it failed, hit the bound
+or a signal, or the daemon stopped), the daemon looks at what is there.
+Nothing left (no `phone/<slug>` branch, no directory, no registered
+worktree) is `refused` with `git-operation-failed`, and no empty
+`<projectId>` directory is left behind; when git itself failed the checkout
+and kept only the branch it had just created, untouched, that branch is
+removed and this is the same refusal (a partial clone missing objects is one
+such case: nothing is fetched). Anything left, or anything the daemon could
+not determine (a `git` that did not answer), is `unknown` with
+`git-outcome-unknown`. Repeating the same POST then recovers, before
+anything about the main checkout is checked (a merge or rebase in progress
+there does not stop it). Only the recorded directory and branch are looked
+at; no other worktree registration of the repository is touched:
+
+- a finished, clean checkout of `phone/<slug>` at the recorded base is
+  adopted: the receipt becomes `created`, also when git left it locked
+  `initializing` because the command that made it died first;
+- a checkout git is still writing (its index lock exists), or one a process
+  still holds on Windows, is left exactly as it is and the receipt stays
+  `unknown`, now with `retryAfterMs`. On Windows that process is usually a
+  `git reset --hard` that outlived a daemon restart, and once it is done the
+  finished checkout is adopted as above; it can also be a shell in the
+  checkout, a program with a file open in it, or an ACL that forbids
+  deleting it, which do not end on their own. A recovery step that could not
+  run to an answer (a `git` that timed out, could not start or could not
+  read the configuration) leaves the receipt the same way, and so does a
+  removal git ran but could not finish;
+- a checkout git left locked `initializing` before its checkout began (no
+  index, nothing in it but its `.git` file) is removed, unless a session
+  runs inside it; a removal that was cut short is finished by the next
+  repeat. A registration whose directory is gone is removed too. The
+  recorded `phone/<slug>` branch, checked out nowhere, still at the recorded
+  base and never moved since it was created, is deleted (in a repository
+  that keeps no reflogs, `core.logAllRefUpdates=false`, the record alone
+  says it is this request's). The create then runs again;
+- anything else (a checkout with changes in it or with anything else added,
+  another branch checked out, a lock with another reason, a session running
+  inside it, a branch with history) is left alone and refused
+  (`worktree-path-exists`, `branch-exists`); the desktop cleanup list
+  reclaims it. A request that never reached the add has no record and
+  recovers nothing: its repeat simply runs the create, whose refusals report
+  whatever is there.
+
+Repeat the same POST after `retryAfterMs`, a bounded number of times: stop
+after about 12 tries (a minute) and point the user at the desktop's cleanup
+list. If that list shows nothing for the slug, the worktree's registration or
+its `phone/<slug>` branch may be left in the repository. Each repeat runs
+about ten `git` commands on the desktop.
+
+Known limitation: a checkout whose writer was killed outright (the whole
+process tree at once, or a power loss) keeps a stale index lock and keeps
+answering `unknown`; the desktop cleanup list removes it (it asks first,
+since the checkout is locked).
 
 Refusals found by the background job land in the receipt as `state:
 "refused"` with `error` one of: `branch-exists` (never auto-suffixed),
@@ -4424,17 +4685,23 @@ Refusals found by the background job land in the receipt as `state:
 `worktree-path-exists`, `path-too-long` (over 260 characters),
 `not-a-git-repo` (including bare), `unborn-head`, `submodules-unsupported`,
 `git-filters-require-desktop`, `git-operation-in-progress`,
-`git-operation-failed`.
+`git-operation-failed`, `worktree-path-unsafe`, `git-version-unsupported`.
 
 **Receipt store.** A new file, `phone-worktree-receipts.json`, `version: 1`,
 mode 0600, written durably. Entries are keyed by a hash of (owner,
 `requestId`), where the owner is `device:<id>` or `operator`, and expire 24 h
-after creation. The `pending` entry is on disk before `git worktree add`
-starts. A `pending` entry found after a daemon restart becomes `unknown` with
-`error: "git-outcome-unknown"`: list branches to see whether `phone/<slug>`
-exists. If the file cannot be read or validated at start, the daemon turns
-the worktree routes off and omits `gitWorktrees` (fail closed); it never
-starts with an empty store over an unreadable one.
+after creation; each owner holds at most 100, the oldest `created` or
+`refused` ones going first (an `unknown` one is kept: its repeat still
+recovers). The `pending` entry is on disk, with its execution record, before
+`git worktree add` starts; a request still in its checks is kept in memory
+only, a request refused before that point is recorded afterwards, and a
+restart in between forgets it (nothing was written, so repeating it is
+harmless). A
+`pending` entry found after a daemon restart becomes `unknown` with `error:
+"git-outcome-unknown"`, which the same POST recovers as above. If the file
+cannot be read or validated at start, the daemon logs one warning, turns the
+worktree routes off and omits `gitWorktrees` (fail closed); it never starts
+with an empty store over an unreadable one.
 
 **Opening a pane in it.** Pass the receipt's `cwd` verbatim to the existing
 `POST /api/sessions {workspaceId, cwd}`; do not build or edit it. That route
@@ -4444,9 +4711,14 @@ refusal. The new pane's `spawnCwd` is the worktree, so every Git route
 addressed through it acts on the new branch.
 
 **Desktop cleanup.** The desktop's worktree scan lists phone worktrees in a
-category of their own, `phone-worktree`, instead of calling them orphans,
-and reclaims them through the existing cleanup flow (which already refuses a
-dirty worktree). Worktree removal from the phone is not in v1.
+category of their own, `phone-worktree`, instead of calling them orphans.
+Every `phone-*` directory without a task stamp is listed, clean or not,
+never hidden, with a **Remove** action: it refuses while a pane runs inside,
+asks before discarding uncommitted changes, removing a locked worktree
+(it is unlocked first) or deleting a directory git does not track, runs
+`git worktree remove`, then offers to delete the
+`phone/<slug>` branch as a separate confirmation. Worktree removal from the
+phone is not in v1.
 
 Not in v1: push, PR creation, worktree removal, switching an existing
 checkout's branch, remote branches.

@@ -28,6 +28,7 @@ const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
   'disk-missing': 'worktask.cleanup.cat.diskMissing',
   preserved: 'worktask.cleanup.cat.preserved',
   'orphan-dir': 'worktask.cleanup.cat.orphan',
+  'phone-worktree': 'worktask.cleanup.cat.phoneWorktree',
 };
 
 // Status tones tint a neutral badge; steel is kept for focus and links.
@@ -36,6 +37,7 @@ const CATEGORY_TONE: Record<WorktaskScanCategoryWire, BadgeTone> = {
   'disk-missing': 'danger',
   preserved: 'neutral',
   'orphan-dir': 'neutral',
+  'phone-worktree': 'neutral',
 };
 
 // ─── C-4: the prepared commit line ──────────────────────────────────────
@@ -209,6 +211,52 @@ export default function WorktaskCleanupView() {
       }
     },
     [activeWorkspaceId, pushToast, runScan, t],
+  );
+
+  // A phone worktree has no task to close: remove it by path. A worktree with
+  // changes, a locked one, or a directory git does not track, is removed only
+  // after the user confirms; its phone/<slug> branch is deleted only on a
+  // second yes.
+  const handleRemovePhone = useCallback(
+    async (worktreePath: string) => {
+      const api = window.electronAPI.workTask;
+      if (!api) return;
+      setBusyTaskId(worktreePath);
+      try {
+        let res = await api.removePhone(worktreePath, false);
+        if (!res.ok && (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered')) {
+          const question = res.reason === 'dirty'
+            ? t('worktask.cleanup.removeDirtyConfirm')
+            : res.reason === 'locked'
+              ? t('worktask.cleanup.removeLockedConfirm')
+              : t('worktask.cleanup.removeUnregisteredConfirm');
+          if (!window.confirm(question)) return;
+          res = await api.removePhone(worktreePath, true);
+        }
+        if (res.ok) {
+          pushToast({ level: 'info', message: t('worktask.cleanup.removed') });
+          if (res.branch && res.repo && window.confirm(t('worktask.cleanup.deleteBranchConfirm', { branch: res.branch }))) {
+            const deleted = await api.deletePhoneBranch(res.repo, res.branch);
+            if (!deleted.ok) pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: deleted.error ?? '' }) });
+          }
+        } else if (res.reason === 'in-use') {
+          pushToast({ level: 'warn', message: t('worktask.cleanup.removeInUse') });
+        } else if (res.reason === 'held') {
+          pushToast({ level: 'warn', message: t('worktask.cleanup.removeHeld') });
+        } else if (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered') {
+          // The confirmed, forced retry came back with the same answer.
+          pushToast({ level: 'error', message: t('worktask.cleanup.removeRetryFailed', { reason: res.reason }) });
+        } else {
+          pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: res.error ?? res.reason }) });
+        }
+      } catch (e) {
+        pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: e instanceof Error ? e.message : String(e) }) });
+      } finally {
+        setBusyTaskId(null);
+        void runScan();
+      }
+    },
+    [pushToast, runScan, t],
   );
 
   // C-4 "Open worktree" — reveal the directory the close refused to remove.
@@ -391,6 +439,18 @@ export default function WorktaskCleanupView() {
                       disabled={busyTaskId !== null}
                     >
                       {busyTaskId === e.taskId ? t('worktask.cleanup.closing') : t('worktask.cleanup.close')}
+                    </Button>
+                  )}
+                  {e.category === 'phone-worktree' && e.worktreePath && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="shrink-0"
+                      onClick={() => void handleRemovePhone(e.worktreePath!)}
+                      disabled={busyTaskId !== null}
+                      data-cleanup-remove-phone
+                    >
+                      {busyTaskId === e.worktreePath ? t('worktask.cleanup.removing') : t('worktask.cleanup.remove')}
                     </Button>
                   )}
                 </div>

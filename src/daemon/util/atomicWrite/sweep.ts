@@ -50,10 +50,31 @@ function validateTempJSON(filePath: string, primaryName: string): boolean {
     if (primaryName === 'deck-schedules.json' || primaryName === 'deck-work.archive.json') {
       return Array.isArray(parsed);
     }
-    return !Array.isArray(parsed);
+    if (Array.isArray(parsed)) return false;
+    // Mirror the Deck work store's own contract (deckWorkStore.loadFile): a file
+    // without an `active` record loads as empty. Treating `{}` as valid here
+    // would let such a backup outrank a temp that holds real work.
+    if (primaryName === 'deck-work.json') {
+      const active = (parsed as Record<string, unknown>).active;
+      return !!active && typeof active === 'object' && !Array.isArray(active);
+    }
+    return true;
   } catch {
     return false;
   }
+}
+
+/** True when `<primary>.bak` parses with the store's root type and its mtime
+ *  is not older than `mtimeMs`. */
+function validBackupNewerThan(primaryPath: string, primaryName: string, mtimeMs: number): boolean {
+  const bakPath = `${primaryPath}.bak`;
+  try {
+    const stat = fs.statSync(bakPath);
+    if (!stat.isFile() || stat.mtimeMs < mtimeMs) return false;
+  } catch {
+    return false;
+  }
+  return validateTempJSON(bakPath, primaryName);
 }
 
 interface TempEntry {
@@ -72,7 +93,9 @@ interface TempEntry {
  * Rules:
  * - Skip when pid is alive (process.kill(pid, 0) semantics, including our own pid, EPERM counts as alive).
  * - If primary file is missing AND temp is the newest for that primary AND it parses as JSON with
- *   the expected root type (object or array; for .json targets only): promote it by rename to primary.
+ *   the expected root type (object or array; for .json targets only): promote it by rename to primary,
+ *   unless a valid `<primary>.bak` is at least as new (then every temp is left untouched and the
+ *   reader keeps falling back to the backup).
  * - Every other dead-owner temp is deleted only when primary exists or temp does not parse.
  * - An unparseable temp with missing primary is left untouched and logged.
  * - Log one line per action.
@@ -167,6 +190,21 @@ export function sweepOrphanAtomicTemps(
         // Primary is missing
         const newest = temps[0];
         const isValid = validateTempJSON(newest.fullPath, primaryName);
+
+        // The atomic reader already falls back to `<primary>.bak` when the
+        // primary is missing. A dead temp is a write that never committed, so
+        // when a valid backup is at least as new, promoting the temp would put
+        // OLDER content in front of it (an orphan from an earlier crash
+        // shadowing a newer backup). Prefer the newest valid candidate: here
+        // that is the backup, so leave every temp alone.
+        const bakNewer = isValid && validBackupNewerThan(primaryPath, primaryName, newest.mtimeMs);
+        if (bakNewer) {
+          for (const t of temps) {
+            left.push(t.file);
+            log(`left dead temp older than a valid backup of missing ${primaryName}: ${t.file}`);
+          }
+          continue;
+        }
 
         if (isValid) {
           // Promote newest by rename

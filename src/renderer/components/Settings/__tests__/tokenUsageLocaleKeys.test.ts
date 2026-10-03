@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { en } from '../../../i18n/locales/en';
-import { PROFILE_KEYS } from '../tabs/TokenUsageTab/ProfileSection';
 
 function collectSourceFiles(dir: string): string[] {
   const files: string[] = [];
@@ -42,21 +41,6 @@ describe('Token usage and MCP status locale key completeness', () => {
         if (!enKeySet.has(key)) {
           missing.push({ file: filePath, key });
         }
-      }
-    }
-
-    // Dynamic keys from ProfileSection: PROFILE_KEYS values and TOKEN_PROFILES descriptions
-    for (const key of Object.values(PROFILE_KEYS)) {
-      scannedKeys.add(key);
-      if (!enKeySet.has(key)) {
-        missing.push({ file: 'ProfileSection.tsx (PROFILE_KEYS)', key });
-      }
-    }
-    for (const profile of ['full', 'coding', 'balanced', 'minimal'] as const) {
-      const descKey = `${PROFILE_KEYS[profile]}Desc`;
-      scannedKeys.add(descKey);
-      if (!enKeySet.has(descKey)) {
-        missing.push({ file: 'ProfileSection.tsx (PROFILE_KEYS Desc)', key: descKey });
       }
     }
 

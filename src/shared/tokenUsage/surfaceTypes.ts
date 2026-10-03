@@ -39,6 +39,11 @@ export interface SurfaceItem {
   /** Hooks only. */
   hookEvent: string | null;
   hookCost: HookCostHint | null;
+  /**
+   * Hooks only: hash of the event, matcher group and handler as listed. Unnamed handlers share a name
+   * (`<event>-<type>`), so writers match on this instead of the name.
+   */
+  hookFingerprint?: string;
   /** Skills only: size of name + description that enters the context. */
   descriptionChars: number | null;
   /** File the item was read from, for display and conflict checks. */

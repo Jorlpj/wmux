@@ -36,6 +36,7 @@ export class WorkspaceMirror {
   private roleBindings: Record<string, unknown> | null = null;
   private setAt = 0;
   private populated = false;
+  private sessionRestored = false;
   private readonly now: () => number;
 
   constructor(now: () => number = Date.now) {
@@ -50,6 +51,7 @@ export class WorkspaceMirror {
     this.entries = payload.entries;
     this.fleets = new Map(payload.fleets.map((f) => [f.workspaceId, f]));
     this.roleBindings = payload.roleBindings ?? null;
+    this.sessionRestored = payload.sessionRestored === true;
     // Stamp with our own clock, not the renderer's `payload.ts`: `peek().ageMs`
     // must be measured against the same clock the caller reads `now()` on, so a
     // clock skew between renderer and main can never make a snapshot look
@@ -93,6 +95,15 @@ export class WorkspaceMirror {
   peekRoleBinding(ptyId: string): { binding: unknown; ageMs: number } | null {
     if (this.roleBindings === null) return null;
     return { binding: this.roleBindings[ptyId], ageMs: this.now() - this.setAt };
+  }
+
+  /**
+   * Whether the last push came from a renderer that restored a saved session,
+   * so its workspace ids are the ones on disk. False before any push, after a
+   * failed or empty session load, and for an old renderer without the field.
+   */
+  isSessionRestored(): boolean {
+    return this.sessionRestored;
   }
 
   /** The per-workspace agent-status snapshot, or null when unknown. */

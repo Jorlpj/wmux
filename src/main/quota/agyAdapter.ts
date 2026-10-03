@@ -271,7 +271,12 @@ export async function readAgyQuota(deps: AgyAdapterDeps = {}): Promise<ProviderQ
       const parsed = Date.parse(bucket.reset_time);
       if (Number.isFinite(parsed) && parsed > 0) resetAtMs = parsed;
     } else if (typeof bucket.reset_in_seconds === 'number' && Number.isFinite(bucket.reset_in_seconds)) {
-      resetAtMs = now() + Math.round(bucket.reset_in_seconds * 1000);
+      // The countdown was relative to when the sensor wrote the file, not to now; anchoring it to now
+      // would push the reset later on every read.
+      const capturedAt = record.quotaCapturedAtMs ?? record.capturedAtMs;
+      if (typeof capturedAt === 'number' && Number.isFinite(capturedAt)) {
+        resetAtMs = capturedAt + Math.round(bucket.reset_in_seconds * 1000);
+      }
     }
 
     let windowMins: number | null = null;
@@ -281,8 +286,6 @@ export async function readAgyQuota(deps: AgyAdapterDeps = {}): Promise<ProviderQ
       windowMins = 10080;
     } else if (bucketName.includes('daily') || bucketName.includes('24h')) {
       windowMins = 1440;
-    } else if (typeof bucket.reset_in_seconds === 'number') {
-      windowMins = Math.round(bucket.reset_in_seconds / 60);
     }
 
     windows.push({

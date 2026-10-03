@@ -142,6 +142,12 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewData, setPreviewData] = useState<SurfacePreview | null>(null);
+  // The staged set the shown preview was made for. Apply sends exactly this, and only while it still
+  // equals what is staged, so a change the user never previewed cannot be written.
+  const [previewedStaged, setPreviewedStaged] = useState<{
+    provider: SurfaceProviderId;
+    staged: Map<string, boolean>;
+  } | null>(null);
   const [confirmingWmux, setConfirmingWmux] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applyResult, setApplyResult] = useState<SurfaceApplyResult | null>(null);
@@ -359,6 +365,8 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
 
     setPreviewOpen(true);
     setPreviewLoading(true);
+    setPreviewData(null);
+    setPreviewedStaged(null);
     setPreviewError(null);
     setConfirmingWmux(false);
     setApplyResult(null);
@@ -382,6 +390,9 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
       }
 
       setPreviewData(preview);
+      const previewed = new Map(stagedSnapshot);
+      for (const rej of preview.rejected ?? []) previewed.delete(rej.itemId);
+      setPreviewedStaged({ provider: requestProvider, staged: previewed });
       if (preview.rejected && preview.rejected.length > 0) {
         setStagedChanges((prev) => {
           const next = new Map(prev);
@@ -416,15 +427,24 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
     }
   }, [applying, inventory, provider, stagedChanges]);
 
+  const canApply =
+    !previewLoading &&
+    !applying &&
+    previewData !== null &&
+    previewedStaged !== null &&
+    previewedStaged.provider === provider &&
+    previewedStaged.staged.size > 0 &&
+    areStagedMapsEqual(previewedStaged.staged, stagedChanges);
+
   const executeApply = useCallback(
     async (allowWmux: boolean) => {
       if (typeof window === 'undefined' || !window.electronAPI?.tokenUsage?.applyChanges) {
         return;
       }
-      if (applying) return;
+      if (applying || !canApply || !previewedStaged) return;
 
-      const applyProvider = provider;
-      const changes: SurfaceChange[] = buildPayloadChanges(stagedChanges, applyProvider, inventory);
+      const applyProvider = previewedStaged.provider;
+      const changes: SurfaceChange[] = buildPayloadChanges(previewedStaged.staged, applyProvider, inventory);
       const requestItemIds = changes.map((c) => c.itemId);
 
       setApplying(true);
@@ -466,6 +486,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
               return next;
             });
             setConfirmingWmux(false);
+            setPreviewedStaged(null);
             setApplyResult(result);
             onApplied?.();
           }
@@ -500,11 +521,12 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
         }
       }
     },
-    [applying, fetchInventory, inventory, onApplied, provider, stagedChanges],
+    [applying, canApply, fetchInventory, inventory, onApplied, previewedStaged],
   );
 
   const handleApplyClick = useCallback(() => {
-    const changes = buildPayloadChanges(stagedChanges, provider, inventory);
+    if (!canApply || !previewedStaged) return;
+    const changes = buildPayloadChanges(previewedStaged.staged, previewedStaged.provider, inventory);
     const stagedItems = changes
       .map((c) => inventory?.items.find((i) => i.id === c.itemId))
       .filter((i): i is SurfaceItem => i !== undefined);
@@ -515,7 +537,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
       return;
     }
     void executeApply(hasWmux && confirmingWmux);
-  }, [confirmingWmux, executeApply, inventory, provider, stagedChanges]);
+  }, [canApply, confirmingWmux, executeApply, inventory, previewedStaged]);
 
   const filteredItems = useMemo(() => {
     if (!inventory) return [];
@@ -1011,7 +1033,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                 <Button
                   variant="primary"
                   onClick={handleApplyClick}
-                  disabled={previewLoading || applying || stagedChanges.size === 0}
+                  disabled={!canApply}
                   data-testid="token-custom-apply"
                 >
                   {applying
@@ -1042,6 +1064,7 @@ export function CustomPanel(props: CustomPanelProps): ReactElement {
                       handleApplyClick();
                     }
                   }}
+                  disabled={!applyResult.ok && !canApply}
                   data-testid={applyResult.ok ? 'token-custom-apply-done' : 'token-custom-apply-retry'}
                 >
                   {applyResult.ok ? t('settings.tokenUsage.done') : t('settings.tokenUsage.retry')}

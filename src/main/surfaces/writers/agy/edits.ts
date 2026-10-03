@@ -12,13 +12,20 @@ export interface PlannedFileEdits {
   itemIds: string[];
 }
 
-export function planEditsForFile(filePath: string, changes: ResolvedChange[]): PlannedFileEdits {
+/**
+ * Plans the JSON edits for one file. Pass the snapshot's text so the plan and the conflict check in
+ * applyConfigEdit see the same content; without it the file is read here (preview only).
+ */
+export function planEditsForFile(
+  filePath: string,
+  changes: ResolvedChange[],
+  snapshotText?: string | null,
+): PlannedFileEdits {
   let parsed: any = null;
   try {
-    if (fs.existsSync(filePath)) {
-      const text = fs.readFileSync(filePath, 'utf8');
-      parsed = JSON.parse(text);
-    }
+    const text =
+      snapshotText !== undefined ? snapshotText : fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
+    if (text !== null) parsed = JSON.parse(text);
   } catch {
     parsed = null;
   }

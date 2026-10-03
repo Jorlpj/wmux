@@ -9,7 +9,7 @@ import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProject
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
-import { THEME_OPTIONS, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, deriveBuiltinPalette, deriveFullPalette, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole, type FullCssPalette } from '../../themes';
+import { THEME_OPTIONS, THEME_STYLES, type ThemeStyle, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, deriveBuiltinPalette, deriveFullPalette, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole, type FullCssPalette } from '../../themes';
 import {
   TAILWIND_PALETTE,
   TAILWIND_SHADES,
@@ -29,9 +29,9 @@ import type { CustomThemeColors, NotificationCategory, Workspace, XtermThemeColo
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import type { ChromePreset } from '../../../shared/chromePresets';
+import { ROLE_PRESET_SPECS, applyRolePreset, hasRolePreset, rolePresetApplied, rolePresetSkipsPermissions } from '../../../shared/rolePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, applyRoleBinding, launcherSupportsModelFlag, type RoleBinding } from '../../../shared/orchestratorRole';
-import { ROLE_PRESET_SPECS, applyRolePreset, hasRolePreset, rolePresetApplied } from '../../../shared/rolePresets';
 import {
   DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
   FANOUT_WORKER_PERMISSION_MODES,
@@ -75,6 +75,7 @@ import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser, IconComputer, IconUsers, IconRobot, IconRemoteDevices, IconPlus, IconWarning } from '../icons';
 import { TabComputerUse } from './ComputerUseSection';
+import { QuickLaunchSection } from './QuickLaunchSection';
 import PairedDevicesModal from '../StatusBar/PairedDevicesModal';
 import { FOCUS_RING } from '../focusRing';
 import { SETTINGS_CATALOG, SETTINGS_NAV_GROUPS, resolveSettingsTab, type SettingsTabId } from '../../settings/catalog';
@@ -736,6 +737,8 @@ export interface RoleBindingsViewProps {
   catalog?: Record<string, ModelCatalogResult>;
   /** Re-run an agent's model discovery (the refresh button). */
   onRefreshModels?: (agent: string) => void;
+  /** Ask before a preset that turns on skip permissions (default window.confirm). */
+  confirm?: (message: string) => boolean;
 }
 
 /** Models to offer for an agent: the discovered list, or claude's static one. */
@@ -765,7 +768,7 @@ export function effortChoicesFor(b: RoleBinding, models: readonly CatalogModel[]
 
 /** Presentational half — the container below owns the store. Split so the view
  *  is renderable (and assertable) without a live store, matching NotificationsView. */
-export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshModels }: RoleBindingsViewProps) {
+export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshModels, confirm }: RoleBindingsViewProps) {
   const update = (role: string, patch: Partial<RoleBinding>) => {
     onChange(role, { ...(bindings[role] ?? {}), ...patch });
   };
@@ -877,21 +880,40 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                 )}
               </div>
             )}
-            {hasRolePreset(role) && (
-              <div className="mt-1.5 pl-[84px]" data-role-binding-preset={role}>
-                <UiButton
-                  variant="secondary"
-                  size="sm"
-                  disabled={rolePresetApplied(role, bindings)}
-                  title={t('settings.rolePresetTooltip', { tier: ROLE_PRESET_SPECS[role].tier })}
-                  onClick={() => onChange(role, applyRolePreset(role, bindings[role]))}
-                >
-                  {rolePresetApplied(role, bindings)
-                    ? t('settings.rolePresetApplied', { role })
-                    : t('settings.rolePresetApply', { role })}
-                </UiButton>
-              </div>
-            )}
+            {hasRolePreset(role) && (() => {
+              // Bypass is part of the preset: the label names it and a click
+              // asks first, so one click cannot silently turn every launch of
+              // this role (role-routed fan-out included) to skip permissions.
+              const skips = rolePresetSkipsPermissions(role, bindings[role]);
+              const applied = rolePresetApplied(role, bindings);
+              const tier = ROLE_PRESET_SPECS[role].tier;
+              return (
+                <div className="mt-1.5 pl-[84px]" data-role-binding-preset={role}>
+                  <UiButton
+                    variant="secondary"
+                    size="sm"
+                    disabled={applied}
+                    title={skips
+                      ? t('settings.rolePresetTooltip', { tier, role })
+                      : t('settings.rolePresetTooltipNoSkip', { tier })}
+                    data-role-preset-bypass={skips ? 'true' : undefined}
+                    onClick={() => {
+                      if (skips) {
+                        const ask = confirm ?? ((m: string) => window.confirm(m));
+                        if (!ask(t('settings.rolePresetConfirmBypass', { role }))) return;
+                      }
+                      onChange(role, applyRolePreset(role, bindings[role]));
+                    }}
+                  >
+                    {applied
+                      ? t('settings.rolePresetApplied', { role })
+                      : skips
+                        ? t('settings.rolePresetApplyBypass', { role })
+                        : t('settings.rolePresetApply', { role })}
+                  </UiButton>
+                </div>
+              );
+            })()}
             {preview && (
               <p
                 className="ui-code m-0 mt-1 pl-[84px] text-[11px] text-[var(--text-sub)]"
@@ -906,6 +928,15 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                 data-role-binding-hint={role}
               >
                 {t(hint.key, hint.params)}
+              </p>
+            )}
+            {/* Owner decision C: wmux cannot mitigate it, so say it where agy is picked. */}
+            {b.agent === 'agy' && (
+              <p
+                className="ui-field-description m-0 mt-1 pl-[84px] text-[var(--accent-red)]"
+                data-role-binding-agy-warning={role}
+              >
+                {t('fanout.agyReadsIgnoredFiles')}
               </p>
             )}
           </div>
@@ -2350,6 +2381,8 @@ function FanoutWorkersSection() {
   // Main-side too: main makes the approval decision, so the switch it reads
   // is the one this row writes.
   const [requireApproval, setRequireApprovalState] = useState(false);
+  // Main-side as well: main refuses the agy trust write while this is off.
+  const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   const [mode, setMode] = useState<FanoutWorkerPermissionMode>(DEFAULT_FANOUT_WORKER_PERMISSION_MODE);
   // Shown as its own line under the row, not in the (one-line) description,
   // so a failure's text is never cut off behind Learn more.
@@ -2366,6 +2399,11 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getRequireApproval?.()
       .then((v) => {
         if (!cancelled && typeof v === 'boolean') setRequireApprovalState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getTrustAgyFolders?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'boolean') setTrustAgyFoldersState(v);
       })
       .catch(() => undefined);
     return () => {
@@ -2385,6 +2423,13 @@ function FanoutWorkersSection() {
     window.electronAPI.fanout
       .setRequireApproval(next)
       .then((stored) => setRequireApprovalState(stored))
+      .catch(() => undefined);
+  };
+
+  const onTrustAgyFoldersChange = (next: boolean) => {
+    window.electronAPI.fanout
+      .setTrustAgyFolders(next)
+      .then((stored) => setTrustAgyFoldersState(stored))
       .catch(() => undefined);
   };
 
@@ -2413,6 +2458,17 @@ function FanoutWorkersSection() {
           checked={requireApproval}
           onChange={onRequireApprovalChange}
           label={t('settings.fanoutRequireApproval')}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanoutagytrust"
+        label={t('settings.fanoutTrustAgyFolders')}
+        description={t('settings.fanoutTrustAgyFoldersDesc')}
+      >
+        <Toggle
+          checked={trustAgyFolders}
+          onChange={onTrustAgyFoldersChange}
+          label={t('settings.fanoutTrustAgyFolders')}
         />
       </SettingRow>
       <SettingRow
@@ -2857,6 +2913,13 @@ const UI_TOKEN_GROUPS: { label: string; tokens: UITokenSpec[] }[] = [
 ];
 
 const BASE_ON_OPTIONS: { value: BuiltinThemeId; label: string }[] = [
+  { value: 'tint', label: 'Tint' },
+  { value: 'zinc', label: 'Zinc' },
+  { value: 'graphite', label: 'Graphite' },
+  { value: 'paper', label: 'Paper' },
+  { value: 'amber-line', label: 'Amber Line' },
+  { value: 'mono', label: 'Mono' },
+  { value: 'mono-light', label: 'Mono Light' },
   { value: 'amber', label: 'Amber' },
   { value: 'catppuccin-mocha', label: 'Catppuccin' },
   { value: 'stars-and-stripes', label: 'Stars & Stripes' },
@@ -3284,28 +3347,39 @@ function XtermOverrideEditor() {
  * of an abstract dot cluster or a hand-maintained tuple. Because the custom
  * card's palette is derived on each render, it tracks the user's live edits.
  */
-function ThemeThumbnail({ palette }: { palette: FullCssPalette }) {
+function ThemeThumbnail({ palette, look }: { palette: FullCssPalette; look?: ThemeStyle }) {
+  // A miniature of the window in this theme: a sidebar with a selected row
+  // (drawn the theme's way — fill, fill + ring, or a left bar), a sample of
+  // its UI face, and a chip with its radius. Older themes without style
+  // knobs draw the plain fill.
+  const selectionFill = look?.selectionFill ?? palette.bgSurface;
+  const ring = look?.selection === 'fill-ring'
+    ? `inset 0 0 0 1px ${look.selectionRing ?? look.stroke ?? palette.textMuted}`
+    : look?.selection === 'left-bar' ? `inset 2px 0 0 ${palette.accent}` : 'none';
+  const chipRadius = Math.min(look?.chipRadius ?? 6, 999);
   return (
     <div
-      className="w-full flex flex-col gap-1 p-1.5"
-      style={{ height: 56, backgroundColor: palette.bgBase }}
+      className="w-full flex gap-1.5 p-1.5"
+      style={{ height: 64, backgroundColor: palette.bgBase, fontFamily: look?.uiFont }}
       aria-hidden="true"
     >
-      {/* Top row: an accent-glow "cursor" dot + a primary-text title bar. */}
-      <div className="flex items-center gap-1">
+      <div className="flex flex-col gap-1 rounded p-1" style={{ width: '42%', backgroundColor: palette.bgMantle }}>
+        <span className="rounded-full" style={{ height: 3, width: '70%', backgroundColor: palette.textMuted }} />
         <span
-          className="rounded-full shrink-0"
-          style={{ width: 6, height: 6, backgroundColor: palette.accentCursor, boxShadow: `0 0 4px ${palette.accentCursor}` }}
+          className="rounded-sm"
+          style={{ height: 10, width: '100%', backgroundColor: selectionFill, boxShadow: ring }}
         />
-        <span className="rounded-full" style={{ height: 3, width: '55%', backgroundColor: palette.textMain }} />
+        <span className="rounded-full" style={{ height: 3, width: '55%', backgroundColor: palette.textSub }} />
       </div>
-      {/* Elevated surface block. */}
-      <span className="rounded" style={{ height: 9, width: '100%', backgroundColor: palette.bgSurface }} />
-      {/* Bottom row: a secondary-text bar + two status dots (success / danger). */}
-      <div className="flex items-center gap-1 mt-auto">
-        <span className="rounded-full" style={{ height: 3, width: '40%', backgroundColor: palette.textSub }} />
-        <span className="rounded-full shrink-0 ml-auto" style={{ width: 5, height: 5, backgroundColor: palette.accentGreen }} />
-        <span className="rounded-full shrink-0" style={{ width: 5, height: 5, backgroundColor: palette.accentRed }} />
+      <div className="flex flex-1 flex-col gap-1 min-w-0">
+        <span className="text-[13px] leading-none font-semibold" style={{ color: palette.textMain }}>Aa</span>
+        <span className="rounded-full" style={{ height: 3, width: '80%', backgroundColor: palette.textSub }} />
+        <div className="mt-auto flex items-center gap-1">
+          <span style={{ height: 9, width: 22, borderRadius: chipRadius, backgroundColor: palette.bgSurface }} />
+          <span className="rounded-full shrink-0" style={{ width: 5, height: 5, backgroundColor: palette.accent }} />
+          <span className="rounded-full shrink-0 ml-auto" style={{ width: 5, height: 5, backgroundColor: palette.accentGreen }} />
+          <span className="rounded-full shrink-0" style={{ width: 5, height: 5, backgroundColor: palette.accentRed }} />
+        </div>
       </div>
     </div>
   );
@@ -3787,10 +3861,14 @@ function TabAppearance() {
                 aria-label={label}
                 className={`settings-theme-card ${FOCUS_RING}`}
               >
-                <ThemeThumbnail palette={palette} />
+                <ThemeThumbnail palette={palette} look={value === 'custom' ? undefined : THEME_STYLES[value as BuiltinThemeId]} />
                 <div
                   className="flex items-center justify-between gap-1 px-2.5 py-1.5"
-                  style={{ backgroundColor: palette.bgMantle, color: selected ? palette.textMain : palette.textSub }}
+                  style={{
+                    backgroundColor: palette.bgMantle,
+                    color: selected ? palette.textMain : palette.textSub,
+                    fontFamily: value === 'custom' ? undefined : THEME_STYLES[value as BuiltinThemeId]?.uiFont,
+                  }}
                 >
                   <span className="text-[13px] truncate">{label}</span>
                   {selected && (
@@ -4511,6 +4589,11 @@ export function TabShortcuts() {
 
   return (
     <div className="settings-page">
+      <QuickLaunchSection
+        renderCapture={({ label, record, onCapture, onCancel }) => (
+          <KeyCaptureOverlay label={label} record={record} onCapture={(accelerator) => onCapture(accelerator)} onCancel={onCancel} />
+        )}
+      />
       <SettingsSection
         title={t('settings.shortcuts')}
         action={hasOverrides ? (
@@ -5208,6 +5291,10 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
     const handler = (e: KeyboardEvent) => {
       // A dialog Settings opened owns the keyboard (see useOwnedDialog).
       if (ownedDialogs.current > 0) return;
+      // The palette and the notification panel float above every page and
+      // own their keys: Escape closes them first, never Settings underneath.
+      const above = useStore.getState();
+      if (above.commandPaletteVisible || above.notificationPanelVisible) return;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault();
         e.stopPropagation();
@@ -5258,16 +5345,16 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
   };
 
   return (
-    // Full-bleed surface under the 36px custom titlebar (DESIGN.md Window
-    // Chrome). Settings fills the whole terminal area instead of floating as a
-    // small centered modal: no scrim, no rounding/shadow/border, opaque
-    // bg-base — it reads as an app screen, not a dialog stacked on top. Closed
-    // via Esc (keydown handler above) or the header X. `ui-surface` scopes the
-    // quiet-surface tokens (hairlines, flat buttons, 10px inputs) to it.
+    // A rail page: Settings fills the sheet in place of the Workspaces page
+    // (RailPage), with its own section nav on the left — an app screen, not a
+    // dialog stacked on top. Esc (keydown handler above) or the header X go
+    // back to Workspaces. `ui-surface` scopes the quiet-surface tokens
+    // (hairlines, flat buttons, 10px inputs) to it.
     <OwnedDialogContext.Provider value={registerOwnedDialog}>
     <div
-      className="ui-surface settings-screen fixed inset-x-0 bottom-0 z-50 flex flex-col"
-      style={{ top: 36, backgroundColor: 'var(--bg-base)' }}
+      className="ui-surface settings-screen wmux-page flex flex-col"
+      data-rail-page="settings"
+      style={{ backgroundColor: 'var(--bg-base)' }}
     >
       {/* Panel — fills the full-bleed surface */}
       <div
@@ -5374,7 +5461,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'accounts'           && <AccountsSection />}
                     {activeTab === 'orchestrator'       && <TabOrchestrator />}
                     {activeTab === 'roles'              && <TabRoles />}
-          {activeTab === 'tokens'             && <TokenUsageTab onOpenTab={setActiveTab} />}
+          {activeTab === 'tokens'             && <TokenUsageTab />}
                     {activeTab === 'browser'            && <TabBrowser />}
                     {activeTab === 'computer-use'       && <TabComputerUse />}
                     {activeTab === 'remote'             && <TabRemote />}

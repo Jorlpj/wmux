@@ -9,8 +9,10 @@
 // src/shared/__tests__/roleSurfaces.test.ts), so the server runs the core
 // profile and then drops every name outside the role's list.
 //
-// Builder / Tester are empty on purpose: those panes edit and test code and
-// never drive wmux, so the cheapest surface is no wmux tools at all.
+// Builder / Tester get only what a fan-out worker is told to do in
+// WORKER_DELIVERY_PREAMBLE (FanOutService.ts): record its ledger row, read and
+// acknowledge its mission channel, and post completion there. A Tester also
+// reads the output of the pane it checks. Nothing that types into other panes.
 
 import type { OrchRole, WmuxTools } from './orchestratorRole';
 
@@ -30,8 +32,22 @@ export const ROLE_TOOL_SURFACES: Readonly<Record<OrchRole, readonly string[]>> =
     'channel_join',
     'channel_post',
   ],
-  Builder: [],
-  Tester: [],
+  Builder: [
+    'ledger_update',
+    'channel_read',
+    'channel_unread',
+    'channel_ack',
+    'channel_post',
+  ],
+  Tester: [
+    'ledger_update',
+    'channel_read',
+    'channel_unread',
+    'channel_ack',
+    'channel_post',
+    'terminal_read',
+    'pane_list',
+  ],
 };
 
 /** Arguments for the `wmux` stdio server at a tool level. */
@@ -62,7 +78,9 @@ export function roleMcpArgv(agent: string, role: OrchRole, entry: string, tools:
   const serverArgs = wmuxServerArgs(entry, tools, role);
   switch (agent) {
     case 'claude':
-      return ['--mcp-config', JSON.stringify({ mcpServers: { wmux: { command: 'node', args: serverArgs } } })];
+      // One `=` token: --mcp-config is variadic, so a separate value would let it
+      // swallow a positional prompt that follows.
+      return [`--mcp-config=${JSON.stringify({ mcpServers: { wmux: { command: 'node', args: serverArgs } } })}`];
     case 'codex':
       // JSON string escaping is valid TOML basic-string escaping.
       return surfaceIsEmpty(tools, role)
@@ -93,7 +111,9 @@ export function toolSurfaceShellFlags(
   if (/['"`$]/.test(entry) || /['"`$]/.test(claudeConfigFile)) return null;
   switch (agent) {
     case 'claude':
-      return `--mcp-config "${claudeConfigFile}"`;
+      // The `=` form: --mcp-config is variadic, and the flags land right after
+      // the launcher, so `claude "<prompt>"` would lose its prompt to it.
+      return `--mcp-config="${claudeConfigFile}"`;
     case 'codex': {
       if (surfaceIsEmpty(tools, role)) return '-c mcp_servers.wmux.enabled=false';
       const list = wmuxServerArgs(entry, tools, role).map((a) => `'${a}'`).join(',');

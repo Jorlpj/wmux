@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { TESTED_CLI_VERSIONS } from '../../../shared/tokenUsage/capabilities';
+import { cliVersionSupport, newerCliVersionWarning } from '../../../shared/tokenUsage/capabilities';
 import type { HookCostHint, ProviderInventory, SurfaceItem, SurfaceSource } from '../../../shared/tokenUsage/surfaceTypes';
 import {
   CODEX_HOOK_EVENTS,
@@ -15,6 +15,7 @@ import {
   safeReaddir,
   safeReadFile,
 } from './helpers';
+import { codexHookStateKey, normalizeDriveAndSeparators } from '../writers/codex/planEdits';
 import {
   allocateUniqueItemId,
   LOCATION_SOURCE_ORDER,
@@ -38,7 +39,9 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
   }
 
   const cliVersion = await queryCliVersion('codex', deps.run);
-  const versionSupported = cliVersion === TESTED_CLI_VERSIONS.codex.min;
+  const support = cliVersionSupport('codex', cliVersion);
+  const versionSupported = support !== 'unsupported';
+  if (support === 'newer' && cliVersion) warnings.push(newerCliVersionWarning('codex', cliVersion));
   const writable = versionSupported;
 
   const configPath = path.join(deps.homeDir, '.codex', 'config.toml');
@@ -334,9 +337,11 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
             kind: 'context-setting',
             name: ck,
             source: 'user',
-            enabled: true,
+            // These are values, not switches, and the Codex writer has no edit for them.
+            enabled: null,
             effect: 'removes',
-            toggleable: true,
+            toggleable: false,
+            readOnlyReason: 'Edit this value in config.toml.',
             originPath: configPath,
           }),
         );
@@ -366,7 +371,7 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
       ? (hooksJson.hooks as Record<string, unknown>)
       : hooksJson;
 
-    for (const [hookName, rawConf] of Object.entries(entries)) {
+    for (const [handlerIdx, [hookName, rawConf]] of Object.entries(entries).entries()) {
       if (!rawConf || typeof rawConf !== 'object') continue;
       const conf = rawConf as Record<string, unknown>;
       const event = typeof conf.event === 'string' ? conf.event : typeof conf.type === 'string' ? conf.type : null;
@@ -383,27 +388,12 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
       const source: SurfaceSource = isWmux ? 'wmux' : isProject ? 'project' : 'user';
 
       let enabled = conf.enabled !== false;
-      // Check hooksStateMap
-      const cleanEvent = (event ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const baseFile = path.basename(filePath).toLowerCase();
-      const normFilePath = filePath.replace(/\\/g, '/').toLowerCase();
-
-      for (const [stateKey, stateVal] of hooksStateMap.entries()) {
-        const normStateKey = stateKey.replace(/\\/g, '/').toLowerCase();
-        const cleanStateKey = normStateKey.replace(/[^a-z0-9]/g, '');
-
-        const matchesFile =
-          normStateKey.includes(normFilePath) ||
-          normStateKey.includes(baseFile);
-
-        const matchesEvent =
-          Boolean(cleanEvent && cleanStateKey.includes(cleanEvent));
-
-        const matchesName =
-          normStateKey.includes(hookName.toLowerCase());
-
-        if ((matchesFile && matchesEvent) || matchesName) {
-          if (!stateVal) enabled = false;
+      // Match `hooks.state` on the exact key the writer uses; a loose match let one entry switch off
+      // every hook with the same event in any file named hooks.json.
+      if (event) {
+        const exactKey = normalizeDriveAndSeparators(codexHookStateKey(filePath, event, handlerIdx));
+        for (const [stateKey, stateVal] of hooksStateMap.entries()) {
+          if (normalizeDriveAndSeparators(stateKey) === exactKey) enabled = stateVal;
         }
       }
 

@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { foldPathCase } from '../../safeWrite/pathCase';
 import type { WriterDeps } from '../types';
 
 export function resolveCanonicalPath(filePath: string): string {
@@ -15,9 +16,9 @@ export function resolveCanonicalPath(filePath: string): string {
   return path.join(realParent, path.basename(resolved));
 }
 
-function isSubpathOrEqual(child: string, parent: string): boolean {
-  const normChild = path.normalize(child).toLowerCase();
-  const normParent = path.normalize(parent).toLowerCase();
+export function isSubpathOrEqual(child: string, parent: string, platform: NodeJS.Platform = process.platform): boolean {
+  const normChild = foldPathCase(path.normalize(child), platform);
+  const normParent = foldPathCase(path.normalize(parent), platform);
   if (normChild === normParent) return true;
   const parentWithSep = normParent.endsWith(path.sep) ? normParent : normParent + path.sep;
   return normChild.startsWith(parentWithSep);

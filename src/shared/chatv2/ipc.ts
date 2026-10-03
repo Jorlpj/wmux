@@ -74,7 +74,9 @@
  * The fold caps block text, tool detail and preview output in bytes
  * (limits.ts) and marks the block's `overflow`. `bodies` returns the full
  * value from the daemon's uncapped shadow fold (or the persisted overflow
- * store) while it is kept; otherwise `body-gone`.
+ * store) while it is kept; otherwise `body-gone`. A long value comes in pages
+ * that each stay far below the pipe's frame limit: a result with `nextOffset`
+ * is continued by calling again with `offset: nextOffset`.
  *
  * ## Restore
  * - Records are keyed by `paneId`. After a daemon restart a record is
@@ -101,9 +103,12 @@
  *   answer. A phone answers the same record through
  *   `/api/approvals/:id/answer`. First answer wins; the driver writes exactly
  *   one reply per request id.
- * - Fail-closed: when `noteNativeDecision` returns null or the record lands on
- *   the `none` channel, the host at once calls `driver.answer(deny)` and emits
- *   `approval.resolved` / `question.resolved` with `cancelled`.
+ * - Fail-closed: when there is no registry or `noteNativeDecision` returns
+ *   null, the host at once calls `driver.answer(deny)` and emits
+ *   `approval.resolved` / `question.resolved` with `cancelled`. A record on
+ *   the `none` channel (native phone decisions switched off) stays a
+ *   view-only card for the phone; the desktop still answers it through
+ *   `answer`, with the same arming delay.
  * - Question keys follow questions.ts: question ids `q0…`, option ids = form
  *   keys, free text as `other`.
  * - v1 permission replies are allow/deny; edited tool input and lasting rules
@@ -343,6 +348,18 @@ export interface ChatV2SessionParams {
   chatSessionId: string;
 }
 
+/**
+ * Both guards are optional and checked by the host in the same step that
+ * writes the interrupt: `epoch` other than the record's is `stale-epoch`;
+ * `turnId` other than the open turn's user block id answers
+ * `interrupted: false`.
+ */
+export interface ChatV2InterruptParams extends ChatV2SessionParams {
+  epoch?: string;
+  /** The user block id that opened the turn the caller means to stop. */
+  turnId?: string;
+}
+
 export interface ChatV2HistoryParams extends ChatV2SessionParams {
   epoch: string;
   /** Return the blocks before this block, newest last. */
@@ -372,6 +389,8 @@ export interface ChatV2BodiesParams extends ChatV2SessionParams {
   epoch: string;
   blockId: string;
   field: 'text' | 'detail' | 'output';
+  /** Continue a long value from here: the previous page's `nextOffset` (UTF-16 index). */
+  offset?: number;
 }
 
 export interface ChatV2ParamsByMethod {
@@ -382,7 +401,7 @@ export interface ChatV2ParamsByMethod {
   subscribe: ChatV2PaneParams;
   unsubscribe: ChatV2PaneParams;
   send: ChatV2SendParams;
-  interrupt: ChatV2SessionParams;
+  interrupt: ChatV2InterruptParams;
   answer: ChatV2AnswerParams;
   bodies: ChatV2BodiesParams;
   toTerminal: ChatV2SessionParams;
@@ -391,8 +410,12 @@ export interface ChatV2ParamsByMethod {
 
 export interface ChatV2ResultByMethod {
   create: ChatV2Result<{ binding: ChatV2Binding }>;
-  /** `binding: null` = the pane has no chat-v2 record. */
-  bindingForPane: ChatV2Result<{ binding: ChatV2Binding | null }>;
+  /**
+   * `binding: null` = the pane has no chat-v2 record; `cwd` is then the
+   * directory a chat created now would run in (the shell's verified working
+   * directory, else where the pane started), when the host knows it.
+   */
+  bindingForPane: ChatV2Result<{ binding: ChatV2Binding | null; cwd?: string }>;
   snapshot: ChatV2Result<{ snapshot: ChatV2Snapshot }>;
   history: ChatV2Result<{ page: ChatV2HistoryPage }>;
   /** Per socket; a subscriber gets every push for the pane. `binding: null` = no record yet. */
@@ -402,7 +425,8 @@ export interface ChatV2ResultByMethod {
   send: ChatV2Result<{ clientMessageId: string; seq: number; duplicate?: true }>;
   interrupt: ChatV2Result<{ interrupted: boolean }>;
   answer: ChatV2Result;
-  bodies: ChatV2Result<{ text: string }>;
+  /** One page of the value; `nextOffset` = more follows (call again with it as `offset`). */
+  bodies: ChatV2Result<{ text: string; nextOffset?: number }>;
   /** The driver is reaped, the record is `handed-off`, and the resume command was typed. */
   toTerminal: ChatV2Result;
   /** The driver is stopped and the record dropped (the agent's own history stays). */
@@ -484,8 +508,17 @@ export function parseChatV2Params<M extends ChatV2Method>(method: M, value: unkn
     case 'unsubscribe':
       parsed = { paneId };
       break;
-    case 'snapshot':
     case 'interrupt':
+      if (!session) return null;
+      if (o.epoch !== undefined && !matches(o.epoch, CHATV2_EPOCH)) return null;
+      if (o.turnId !== undefined && !matches(o.turnId, CHATV2_BLOCK_ID)) return null;
+      parsed = {
+        ...session,
+        ...(o.epoch !== undefined ? { epoch: o.epoch } : {}),
+        ...(o.turnId !== undefined ? { turnId: o.turnId } : {}),
+      };
+      break;
+    case 'snapshot':
     case 'toTerminal':
     case 'close':
       parsed = session;
@@ -523,7 +556,8 @@ export function parseChatV2Params<M extends ChatV2Method>(method: M, value: unkn
     case 'bodies':
       if (!session || !matches(o.epoch, CHATV2_EPOCH) || !matches(o.blockId, CHATV2_BLOCK_ID)) return null;
       if (o.field !== 'text' && o.field !== 'detail' && o.field !== 'output') return null;
-      parsed = { ...session, epoch: o.epoch, blockId: o.blockId, field: o.field };
+      if (o.offset !== undefined && (!Number.isSafeInteger(o.offset) || (o.offset as number) < 0)) return null;
+      parsed = { ...session, epoch: o.epoch, blockId: o.blockId, field: o.field, ...(o.offset !== undefined ? { offset: o.offset as number } : {}) };
       break;
     default:
       return null;

@@ -13,6 +13,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import { expect, it } from 'vitest';
+import { realProfileBrowserEnv } from '../../src/test-utils/realProfileBrowserEnv.ts';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright-core');
@@ -132,6 +133,9 @@ it('paints completed synchronized frames while OpenCode-style output remains act
     browser = await chromium.launch({
       channel,
       args: ['--enable-unsafe-swiftshader'],
+      // Edge refuses to start under the isolate setup's temp USERPROFILE on
+      // the Windows runner; see realProfileBrowserEnv.
+      env: realProfileBrowserEnv(),
       // Bound the one unbounded step. Everything after this — the probe's
       // waits — is capped at 10 s, so a hung launch should fail here with a
       // clear Playwright error rather than burn the whole file budget.

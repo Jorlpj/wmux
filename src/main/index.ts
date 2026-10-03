@@ -1,3 +1,4 @@
+import { setAccountQuotaClaudeUsage } from './quota/accountQuotas';
 import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
 import { webContents as phoneWebContents } from 'electron';
 import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
@@ -65,7 +66,8 @@ import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
 import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
-import { createComputerService, disposeComputerUse, registerComputerUseIpc } from './computer';
+import { createFanoutCallerSubmit } from './deck/fanoutCallerSubmit';
+import { COMPUTER_ABORT_ACCELERATOR, createComputerService, disposeComputerUse, registerComputerUseIpc } from './computer';
 import { createComputerConsentRequester } from './computer/computerConsent';
 import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
@@ -75,6 +77,7 @@ import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
 import { UsagePoller } from './claude/UsagePoller';
 import { setUsageClientVersion } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
+import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
 import { IPC, getWmuxHomeDir } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
@@ -93,6 +96,8 @@ import { registerRemoteHandlers } from './ipc/handlers/remote.handler';
 import { RemoteHostsStore } from './remote/RemoteHostsStore';
 import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
+import { initQuickLaunch } from './quickLaunch';
+import { focusedPrimaryWindow } from './window/auxiliaryWindows';
 import { createFanOutService } from './worktask/createFanOutService';
 import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
@@ -107,7 +112,6 @@ import { getProjectConfigStore } from './project/ProjectConfigStore';
 import { createWorkspaceFactsPublisher, invalidateAutonomyCache } from './workspace/workspaceFactsFeed';
 import { getTaskLedger } from './deck/taskLedgerHost';
 import { onAutonomyWritten } from './deck/deckAutonomyStore';
-import { sweepOrphanAtomicTemps } from '../daemon/util/atomicWrite';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { getWorkspaceMirror } from './workspace/WorkspaceMirror';
@@ -724,7 +728,7 @@ registerSessionHandlers(() => daemonClient?.isConnected === true);
 // holding notifications after the user locked up and left.
 attachDesktopPresenceReporter(app, () => daemonClient, {
   powerMonitor,
-  isFocused: () => BrowserWindow.getFocusedWindow() !== null,
+  isFocused: () => focusedPrimaryWindow() !== null,
 });
 
 // Bridge the in-renderer `__wmuxEventsPoll` / `__wmuxChannelsRpc` globals
@@ -887,6 +891,17 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
       })
     : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
 );
+// The fan-out caller nudge (main/deck/fanoutCallerSubmit.ts): the same
+// delivery gate, then a daemon-owned write that waits while a person types.
+const fanoutCallerSubmit = createFanoutCallerSubmit({
+  deliveryGate: (ptyId) => inputRpc.deliveryGate(ptyId),
+  ownerOf: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  agentState: async (ptyId) => (daemonClient?.isConnected ? daemonClient.getAgentState(ptyId) : null),
+  deliver: async (args) =>
+    daemonClient ? daemonClient.deliverCallerNudge(args) : { result: 'unavailable', pasted: false },
+});
+ipcMain.handle(IPC.DECK_FANOUT_CALLER_SESSION, (_e, ptyId: unknown) => fanoutCallerSubmit.session(ptyId));
+ipcMain.handle(IPC.DECK_FANOUT_CALLER_SUBMIT, (_e, payload: unknown) => fanoutCallerSubmit.submit(payload));
 registerApprovalsRpc(rpcRouter, () => daemonClient);
 registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);
@@ -1041,6 +1056,7 @@ getWorkerTempDirSweeper().setLiveTempDirs(async () => {
   }>;
   return Array.isArray(sessions) ? liveTempDirsFromSessions(sessions) : null;
 });
+let quickLaunch: ReturnType<typeof initQuickLaunch> | null = null;
 registerFanOutHandler(fanOutService);
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow);
@@ -1112,13 +1128,8 @@ onAutonomyWritten(() => {
 // getDaemonClient: the `claude-pty` brain vendor spawns its interactive TUI as
 // a daemon session, so it needs the live client (a getter, because the deck
 // handler registers before the daemon connects).
-// WMX-06: Sweep orphaned atomic write temp files before deck stores are first read
-try {
-  sweepOrphanAtomicTemps(getWmuxDir());
-} catch (err) {
-  console.warn('[Main] sweepOrphanAtomicTemps failed at startup:', err);
-}
-
+// WMX-06: registerDeckHandler sweeps orphaned atomic-write temp files in the
+// data dir before the Deck stores are first read (once per registration).
 const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
   getDaemonClient: () => daemonClient,
 });
@@ -1158,7 +1169,13 @@ const onClaudeTurnEnd = (workspaceId: string): void => {
   // the hook's ptyId instead of the workspace binding.
   const accountId = getAccountStore().getBinding(workspaceId, 'claude');
   if (accountId) void accountUsageService.maybeProbe(accountId);
+  // Panes that quota rotation moved to other accounts: refresh those too.
+  for (const rotated of getAccountRotationService().launchedAccounts(workspaceId, 'claude')) {
+    if (rotated !== accountId) void accountUsageService.maybeProbe(rotated);
+  }
 };
+getAccountRotationService().setClaudeUsage(accountUsageService);
+setAccountQuotaClaudeUsage(accountUsageService);
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd, getWorkspaceMirror, localCompletionAlarm);
 
 // ─── Phase 2 — Anthropic 5h/7d usage meter ──────────────────────────────────
@@ -1627,6 +1644,14 @@ app.on('ready', async () => {
   markBoot('plugins-loaded');
 
   mainWindow = createWindow({ deferLoad: true });
+  // Global quick launch: needs `ready` for globalShortcut, and registers from
+  // its own settings file so the chord works before the renderer has loaded.
+  quickLaunch = initQuickLaunch({
+    getMainWindow: () => mainWindow,
+    fanOutService,
+    isQuitting: () => isQuitting,
+    otherGlobalShortcuts: [COMPUTER_ABORT_ACCELERATOR],
+  });
   if (cdpEnabled) {
     const localContents = mainWindow.webContents;
     let retryDelayMs = 2_000;
@@ -1759,7 +1784,7 @@ app.on('ready', async () => {
       void client
         .rpc('daemon.client.identify', { role: 'main' })
         .then(() => {
-          reportDesktopPresence(() => client, BrowserWindow.getFocusedWindow() !== null);
+          reportDesktopPresence(() => client, focusedPrimaryWindow() !== null);
           disposePhoneBridge?.();
           disposePhoneBridge = installPhoneBridge(client,(command,payload) => command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
             backend: () => browserBackendStore.get(),
@@ -2474,6 +2499,13 @@ app.on('before-quit', async (e) => {
   // same visible behavior as the old per-agent child dying with wmux.
   mcpBrokerSupervisor.stop();
 
+  // Quick launch: give the global chord back and drop the composer window.
+  try {
+    quickLaunch?.dispose();
+  } catch (err) {
+    console.error('[Main] before-quit quick-launch dispose failed:', err);
+  }
+
   // Computer use: stop the helper, take down consent prompts, release the
   // global stop key. Synchronous, before anything below can stall.
   try {
@@ -2759,8 +2791,10 @@ if (process.platform === 'win32') {
 
 app.on('activate', () => {
   if (isQuitting) return;
-  const windows = BrowserWindow.getAllWindows();
-  if (windows.length === 0) {
+  // The main window itself, not "any window": the quick-launch composer is a
+  // hidden window too, and must neither count as the app window nor be the
+  // one a Dock click brings back.
+  if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createWindow();
     adoptMainWindow(mainWindow);
     return;
@@ -2771,8 +2805,7 @@ app.on('activate', () => {
   // 2026-07-19). Windows/Linux는 트레이 컨텍스트 메뉴가 이미 이 경로를
   // 담당하므로 이 핸들러는 mac에서만 의미 있지만, 숨겨진 창이 있으면
   // 어느 OS에서든 보여주는 편이 안전하다.
-  const hidden = windows.find((w) => !w.isVisible());
-  if (hidden) hidden.show();
+  if (!mainWindow.isVisible()) mainWindow.show();
 });
 
 } // end appInit()

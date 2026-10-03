@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildWslInjection } from '../wslIntegration';
+import { buildWslInjection, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
+import { HOOK_SPECS } from '../../cli/commands/setupHooks';
+import { parseWslAgentReport, pickReportedAgent } from '../../daemon/wslAgentProcess';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { BASH_INIT } from '../../daemon/shell-integration';
 
@@ -41,8 +43,18 @@ describe('WSL per-launch Claude integration', () => {
     expect(injected.env.WSLENV).toContain('MY_VAR/p:WMUX_PTY_ID:');
     expect(injected.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE');
     const settings = JSON.parse(fs.readFileSync(injected.env.WMUX_WSL_SETTINGS, 'utf8'));
-    expect(Object.keys(settings.hooks)).toEqual(['SessionStart', 'Stop', 'StopFailure']);
+    // #1730 — the same events and matchers a Windows pane registers (setupHooks.ts).
+    expect(Object.keys(settings.hooks).sort()).toEqual(['PermissionRequest', 'PostToolUse', 'PreToolUse',
+      'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(settings.hooks.SessionStart[0].hooks[0].command).toBe('/bin/sh "$WMUX_WSL_HOOK" SessionStart');
+    expect(settings.hooks.PreToolUse.map((g: { matcher: string; hooks: Array<{ command: string; timeout: number }> }) =>
+      [g.matcher, g.hooks[0].command, g.hooks[0].timeout])).toEqual([
+      ['AskUserQuestion', '/bin/sh "$WMUX_WSL_HOOK" PreToolUse', 10],
+      ['', '/bin/sh "$WMUX_WSL_HOOK" PreToolUse --permission-gate', 150],
+    ]);
+    expect(settings.hooks.PostToolUse[0].matcher).toBe('AskUserQuestion');
+    expect(injected.env.WMUX_WSL_GATE_FLAG).toBe(path.join(dir, 'gate-armed'));
+    expect(injected.env.WSLENV).toContain('WMUX_WSL_GATE_FLAG/p');
     expect(fs.readdirSync(dir)).toEqual(['wsl']);
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bashrc.integration'), 'utf8')).toContain('# original shell integration');
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8')).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"');
@@ -241,4 +253,107 @@ describe('WSL per-launch Claude integration', () => {
     });
   });
 
+});
+
+// #1727 — the hook runs inside Linux as the agent's descendant and reports
+// which process the agent is. Linux only: it reads /proc.
+describe.runIf(process.platform === 'linux' && fs.existsSync('/proc/sys/kernel/random/boot_id'))('WSL hook agent-process report (#1727)', () => {
+  it('reports the boot id and the agent among its ancestors, and keeps its own arguments', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-hook-')); dirs.push(dir);
+    const hook = path.join(dir, 'hook.sh');
+    fs.writeFileSync(hook, WSL_HOOK);
+    // The fake Windows runtime records what the bridge would receive.
+    const node = path.join(dir, 'node');
+    fs.writeFileSync(node, `#!/bin/sh\nprintf '%s' "$WMUX_WSL_AGENT_PROC" > '${dir}/report'\nprintf '%s\n' "$WSLENV" "$@" > '${dir}/args'\n`, { mode: 0o755 });
+    // A process whose image stem is `claude` stands in for the agent; the
+    // trailing `true` keeps it from exec-replacing itself with the hook.
+    const claude = path.join(dir, 'claude');
+    fs.symlinkSync('/bin/sh', claude);
+    execFileSync(claude, ['-c', `echo $$ > '${dir}/pid'; /bin/sh '${hook}' SessionStart; true`], {
+      env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: node, WMUX_WSL_BRIDGE: '/bridge.mjs' },
+    });
+
+    const report = parseWslAgentReport(fs.readFileSync(path.join(dir, 'report'), 'utf8'));
+    expect(report?.bootId).toBe(fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim());
+    const picked = pickReportedAgent(report, 'claude');
+    expect(picked?.pid).toBe(Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8')));
+    expect(picked?.start).toMatch(/^\d+$/);
+    expect(fs.readFileSync(path.join(dir, 'args'), 'utf8').split('\n').slice(0, 3))
+      .toEqual(['ELECTRON_RUN_AS_NODE/w:WMUX_WSL_AGENT_PROC/w:CLAUDE_CODE_ENTRYPOINT/w:WMUX_GATE/w', '/bridge.mjs', 'SessionStart']);
+  });
+
+  it('still runs the bridge when /proc cannot be read', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-hook-')); dirs.push(dir);
+    const hook = path.join(dir, 'hook.sh');
+    // Point the boot-id read at a missing file: the report is skipped.
+    fs.writeFileSync(hook, WSL_HOOK.replace('/proc/sys/kernel/random/boot_id', `${dir}/missing`));
+    const node = path.join(dir, 'node');
+    fs.writeFileSync(node, `#!/bin/sh\nprintf '[%s]' "$WMUX_WSL_AGENT_PROC" > '${dir}/report'\n`, { mode: 0o755 });
+    execFileSync('/bin/sh', [hook, 'Stop'], { env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: node, WMUX_WSL_BRIDGE: '/b' } });
+    expect(fs.readFileSync(path.join(dir, 'report'), 'utf8')).toBe('[]');
+  });
+});
+
+// #1730 — the permission gate fires on every tool call; without the daemon's
+// flag the hook must answer "no opinion" without starting the Windows bridge.
+describe.skipIf(process.platform === 'win32')('WSL hook permission gate (#1730)', () => {
+  function setup() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-gate-')); dirs.push(dir);
+    const hook = path.join(dir, 'hook.sh');
+    fs.writeFileSync(hook, WSL_HOOK);
+    const node = path.join(dir, 'node');
+    fs.writeFileSync(node, `#!/bin/sh\nprintf '%s\n' "$WSLENV" "[$WMUX_WSL_AGENT_PROC]" "$@" > '${dir}/ran'\n`, { mode: 0o755 });
+    const flag = path.join(dir, 'gate-armed');
+    const run = (args: string[]) => execFileSync('/bin/sh', [hook, ...args], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: node, WMUX_WSL_BRIDGE: '/bridge.mjs', WMUX_WSL_GATE_FLAG: flag },
+    });
+    return { dir, flag, run, ran: () => fs.existsSync(path.join(dir, 'ran')) ? fs.readFileSync(path.join(dir, 'ran'), 'utf8').split('\n') : null };
+  }
+
+  it('says nothing and starts nothing while the gate is not armed', () => {
+    const { run, ran } = setup();
+    expect(run(['PreToolUse', '--permission-gate'])).toBe('');
+    expect(ran()).toBeNull();
+  });
+
+  it('runs the bridge once armed, forwarding the entrypoint and opt-out, without the /proc walk', () => {
+    const { flag, run, ran } = setup();
+    fs.writeFileSync(flag, '');
+    run(['PreToolUse', '--permission-gate']);
+    const out = ran()!;
+    expect(out[0]).toContain('CLAUDE_CODE_ENTRYPOINT/w');
+    expect(out[0]).toContain('WMUX_GATE/w');
+    expect(out[1]).toBe('[]');
+    expect(out.slice(2, 5)).toEqual(['/bridge.mjs', 'PreToolUse', '--permission-gate']);
+  });
+
+  it('stays silent with no flag path, or under the WMUX_GATE=0 opt-out', () => {
+    const { flag, dir, ran } = setup();
+    fs.writeFileSync(flag, '');
+    const hook = path.join(dir, 'hook.sh');
+    const base = { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: path.join(dir, 'node'), WMUX_WSL_BRIDGE: '/b' };
+    execFileSync('/bin/sh', [hook, 'PreToolUse', '--permission-gate'], { env: base });
+    execFileSync('/bin/sh', [hook, 'PreToolUse', '--permission-gate'], { env: { ...base, WMUX_WSL_GATE_FLAG: '' } });
+    execFileSync('/bin/sh', [hook, 'PreToolUse', '--permission-gate'], { env: { ...base, WMUX_WSL_GATE_FLAG: flag, WMUX_GATE: '0' } });
+    expect(ran()).toBeNull();
+  });
+
+  it('never gates the other hooks on the flag', () => {
+    const { run, ran } = setup();
+    run(['UserPromptSubmit']);
+    expect(ran()?.slice(2, 4)).toEqual(['/bridge.mjs', 'UserPromptSubmit']);
+  });
+});
+
+// #1730 — a WSL pane must register exactly the hooks a Windows pane does.
+describe('WSL hook parity with Windows (#1730)', () => {
+  it('registers every Windows hook spec, with the same matcher and arguments', () => {
+    const wsl = Object.entries(wslClaudeHooks()).flatMap(([event, groups]) => groups.map((g) => {
+      const extra = g.hooks[0].command.split(` ${event}`)[1]?.trim() ?? '';
+      return `${event}|${g.matcher}|${extra}`;
+    })).sort();
+    const windows = HOOK_SPECS.map((s) => `${s.event}|${s.matcher}|${s.extraArgs ?? ''}`).sort();
+    expect(wsl).toEqual(windows);
+  });
 });

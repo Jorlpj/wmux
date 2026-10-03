@@ -34,6 +34,13 @@ export {
   type ApplyConfigEditResult,
 } from './applyConfigEdit';
 
+export { foldPathCase } from './pathCase';
+
+export {
+  rollbackWrittenFiles,
+  type WrittenFile,
+} from './rollback';
+
 export {
   SurfacesStore,
   type RemovedHookEntry,

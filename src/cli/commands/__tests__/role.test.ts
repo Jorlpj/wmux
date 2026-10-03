@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { defaultSessionPath, handleRole, resolveRole } from '../role';
+import { defaultMcpEntry, defaultSessionPath, handleRole, resolveRole } from '../role';
 import { dataSuffix } from '../../../shared/constants';
 import type { RoleBinding } from '../../../shared/orchestratorRole';
 
@@ -137,25 +137,69 @@ describe('wmux role resolve', () => {
 
   it('prints the wmux tool level only when the binding picks one (opt-in, argv unchanged)', () => {
     const entry = 'C:\\u\\.wmux\\mcp\\index.js';
+    const registered = () => true;
     expect(resolveRole('Planner', { agent: 'claude' }, entry).mcp).toBeUndefined();
     const planner = resolveRole('Planner', { agent: 'claude', tools: 'role' }, entry);
     expect(planner.argv).toEqual(['claude']);
     expect(planner.mcp?.level).toBe('role');
     expect(planner.mcp?.tools).toContain('terminal_send');
-    expect(JSON.parse(planner.mcp?.argv[1] ?? '')).toEqual({
+    expect(planner.mcp?.argv).toHaveLength(1);
+    expect(JSON.parse(planner.mcp?.argv[0].replace(/^--mcp-config=/, '') ?? '')).toEqual({
       mcpServers: { wmux: { command: 'node', args: [entry, '--role=Planner'] } },
     });
-    expect(resolveRole('Reviewer', { agent: 'codex', tools: 'role' }, entry).mcp).toEqual({
+    expect(resolveRole('Reviewer', { agent: 'codex', tools: 'role' }, entry, registered).mcp).toEqual({
       level: 'role',
       tools: ['terminal_read', 'workspace_list', 'pane_list', 'channel_join', 'channel_post'],
       argv: ['-c', 'mcp_servers.wmux.args=["C:\\\\u\\\\.wmux\\\\mcp\\\\index.js","--role=Reviewer"]'],
     });
-    expect(resolveRole('Reviewer', { agent: 'codex', tools: 'core' }, entry).mcp?.argv[1]).toContain('"--core"');
-    expect(resolveRole('Reviewer', { agent: 'codex', tools: 'full' }, entry).mcp?.tools).toEqual(['*']);
-    expect(resolveRole('Tester', { agent: 'codex', tools: 'role' }, entry).mcp?.argv).toEqual(['-c', 'mcp_servers.wmux.enabled=false']);
-    expect(resolveRole('Builder', { agent: 'agy', tools: 'role' }, entry).mcp).toEqual({ level: 'role', tools: [], argv: [] });
+    expect(resolveRole('Reviewer', { agent: 'codex', tools: 'core' }, entry, registered).mcp?.argv[1]).toContain('"--core"');
+    expect(resolveRole('Reviewer', { agent: 'codex', tools: 'full' }, entry, registered).mcp?.tools).toEqual(['*']);
+    // A fan-out worker keeps the tools its preamble asks for (ledger, mission channel).
+    expect(resolveRole('Tester', { agent: 'codex', tools: 'role' }, entry, registered).mcp?.argv).toEqual(
+      ['-c', 'mcp_servers.wmux.args=["C:\\\\u\\\\.wmux\\\\mcp\\\\index.js","--role=Tester"]'],
+    );
+    expect(resolveRole('Builder', { agent: 'agy', tools: 'role' }, entry).mcp).toEqual({
+      level: 'role',
+      tools: ['ledger_update', 'channel_read', 'channel_unread', 'channel_ack', 'channel_post'],
+      argv: [],
+    });
     expect(resolveRole('Builder', { agent: 'opencode', tools: 'role' }, entry).mcp).toBeUndefined();
     expect(resolveRole('Custom', { agent: 'claude', tools: 'role' }, entry).mcp).toBeUndefined();
     expect(resolveRole('Custom', { agent: 'claude', tools: 'core' }, entry).mcp?.level).toBe('core');
+  });
+
+  it('points mcp.argv at the unsuffixed stable bundle and drops it when that bundle is missing', async () => {
+    expect(defaultMcpEntry(path.join('C:', 'h'))).toBe(path.join('C:', 'h', '.wmux', 'mcp', 'index.js'));
+    const session = JSON.stringify({ orchestratorRoleBindings: { Planner: { agent: 'claude', tools: 'core' } } });
+    const entry = path.join('C:', 'h', '.wmux', 'mcp', 'index.js');
+    const resolveWith = async (exists: boolean) => {
+      const out: string[] = [];
+      await handleRole(['resolve', 'Planner'], true, {
+        sessionPath: '/fake/session.json',
+        readFile: () => session,
+        mcpEntry: entry,
+        exists: () => exists,
+        log: (l) => out.push(l),
+        error: () => undefined,
+        exit: () => undefined,
+      });
+      return JSON.parse(out[0]);
+    };
+    expect((await resolveWith(true)).mcp.argv[0]).toContain(JSON.stringify(entry).slice(1, -1));
+    const missing = await resolveWith(false);
+    expect(missing.mcp).toBeUndefined();
+    expect(missing.mcpUnavailable).toBe(`wmux MCP bundle not found at ${entry}`);
+  });
+
+  it('prints no codex override when codex has no wmux server registered (codex would refuse to start)', () => {
+    const entry = 'C:\\u\\.wmux\\mcp\\index.js';
+    for (const tools of ['full', 'core', 'role'] as const) {
+      const r = resolveRole('Reviewer', { agent: 'codex', tools }, entry, () => false);
+      expect(r.mcp).toBeUndefined();
+      expect(r.mcpUnavailable).toMatch(/no wmux MCP server registered/);
+      expect(r.argv).toEqual(['codex']);
+    }
+    // claude needs no prior registration: its --mcp-config file is complete.
+    expect(resolveRole('Planner', { agent: 'claude', tools: 'role' }, entry, () => false).mcp?.level).toBe('role');
   });
 });

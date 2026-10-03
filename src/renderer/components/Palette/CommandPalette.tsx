@@ -16,6 +16,8 @@ import { runProjectCommand } from '../../utils/projectCommands';
 import { applyProjectLayoutFresh } from '../../utils/projectConfigProbe';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
+import { isChatV2Covering } from '../ChatV2/coverage';
+import { showWorkspaces } from '../../utils/showWorkspaces';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -176,6 +178,7 @@ export default function CommandPalette() {
         icon: <IconWorkspace />,
         action: () => {
           useStore.getState().setActiveWorkspace(ws.id);
+          showWorkspaces(useStore.getState());
           setVisible(false);
         },
       });
@@ -195,6 +198,7 @@ export default function CommandPalette() {
               icon: <IconSurface />,
               action: () => {
                 useStore.getState().setActiveSurface(pane.id, surface.id);
+                showWorkspaces(useStore.getState());
                 setVisible(false);
               },
             });
@@ -218,6 +222,7 @@ export default function CommandPalette() {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
           if (ws) state.splitPane(ws.activePaneId, 'horizontal');
+          showWorkspaces(useStore.getState());
           setVisible(false);
         },
       },
@@ -227,6 +232,7 @@ export default function CommandPalette() {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
           if (ws) state.splitPane(ws.activePaneId, 'vertical');
+          showWorkspaces(useStore.getState());
           setVisible(false);
         },
       },
@@ -240,6 +246,7 @@ export default function CommandPalette() {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
           if (ws) state.stashPane(ws.activePaneId, ws.id);
+          showWorkspaces(useStore.getState());
           setVisible(false);
         },
       },
@@ -248,11 +255,11 @@ export default function CommandPalette() {
       // typing "move pane l" should just do it.
       ...(['left', 'right', 'up', 'down'] as const).map((dir) => ({
         label: t(`palette.cmd.movePane.${dir}` as Parameters<typeof t>[0]),
-        action: () => { useStore.getState().moveActivePaneDirection(dir); setVisible(false); },
+        action: () => { useStore.getState().moveActivePaneDirection(dir); showWorkspaces(useStore.getState()); setVisible(false); },
       })),
       {
         label: t('palette.cmd.newWorkspace'),
-        action: () => { useStore.getState().addWorkspace(); setVisible(false); },
+        action: () => { useStore.getState().addWorkspace(); showWorkspaces(useStore.getState()); setVisible(false); },
       },
       {
         label: t('palette.cmd.newSurface'),
@@ -278,6 +285,7 @@ export default function CommandPalette() {
                 useStore.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', result.data.cwd || '');
               }
             });
+            showWorkspaces(state);
           }
           setVisible(false);
         },
@@ -304,7 +312,11 @@ export default function CommandPalette() {
           // toolbar for remote views and then adding an unguarded keyboard
           // route would have reopened the hole from the other side.
           if (isRemoteMirrorVisible(state)) { setVisible(false); return; }
-          if (state.activeWorkspaceId) state.openFanOut(state.activeWorkspaceId, null);
+          if (state.activeWorkspaceId) {
+            state.openFanOut(state.activeWorkspaceId, null);
+            // The fan-out dialog opens over the Workspaces page.
+            showWorkspaces(useStore.getState());
+          }
           setVisible(false);
         },
       },
@@ -329,6 +341,7 @@ export default function CommandPalette() {
           // forceNew: the explicit "Open Browser" command always creates a
           // fresh split — reuse is for link/port clicks (browserPaneActions).
           openUrlInBrowserPane(undefined, { forceNew: true });
+          showWorkspaces(useStore.getState());
           setVisible(false);
         },
       },
@@ -364,6 +377,7 @@ export default function CommandPalette() {
             }
             const repoName = r.repoPath.split(/[/\\]/).filter(Boolean).pop() || r.repoPath;
             st.addWorkspaceDiffSurface(leaf.id, r.repoPath, `diff: ${repoName}`);
+            showWorkspaces(st);
           }).catch((err) => {
             // IPC reject(핸들러 미등록·직렬화 실패 등)도 무음이 아니라 토스트로.
             useStore.getState().pushToast({ level: 'warn', message: t('diff.noRepo') });
@@ -399,6 +413,8 @@ export default function CommandPalette() {
         icon: <IconCommand />,
         action: () => {
           openTaskDiff(task.id, activeWorkspaceId, task.title, task.owner.verifiedWorkspaceId);
+          // The diff opens in a pane, which is on the Workspaces page.
+          showWorkspaces(useStore.getState());
           setVisible(false);
         },
       });
@@ -664,7 +680,8 @@ export default function CommandPalette() {
           const pane = findPaneLeaf(ws.rootPane, ws.activePaneId);
           if (pane) {
             const surface = pane.surfaces.find((s) => s.id === pane.activeSurfaceId);
-            if (surface?.ptyId) {
+            // Never into a shell the chat-v2 view hides.
+            if (surface?.ptyId && !isChatV2Covering(surface.ptyId)) {
               // Route through the paste chunker. Recent commands originate
               // from the user's `inputBuffer`, which accumulates raw paste
               // payloads (`useTerminal.ts: terminal.onData`) — so a

@@ -131,71 +131,34 @@ describe('mcp.handler', () => {
     await expect(handler({}, 'agy')).rejects.toThrow('auth token not ready');
   });
 
-  it('MCP_REGISTER_TARGET for agy triggers sensor install exactly once with injected installer', async () => {
-    const mockInstallSensor = vi.fn().mockResolvedValue({ ok: true });
-    registerMcpHandlers(mockRegistrar as McpRegistrar, mockGetAuthToken, mockInstallSensor);
-    const handler = await getHandler(IPC.MCP_REGISTER_TARGET);
-    const result = (await handler({}, 'agy')) as McpRegisterTargetResult;
+  it('MCP_REGISTER_TARGET for agy registers MCP only and never installs the quota sensor', async () => {
+    const quota = await import('../tokenUsageQuota.handler');
+    const getService = vi.spyOn(quota, 'getDefaultQuotaService');
+    try {
+      registerMcpHandlers(mockRegistrar as McpRegistrar, mockGetAuthToken);
+      const handler = await getHandler(IPC.MCP_REGISTER_TARGET);
+      const result = (await handler({}, 'agy')) as McpRegisterTargetResult & { sensor?: unknown };
 
-    expect(mockRegistrar.registerTarget).toHaveBeenCalledWith('test-auth-token', 'agy');
-    expect(mockInstallSensor).toHaveBeenCalledTimes(1);
-    expect(result.id).toBe('agy');
-    expect(result.success).toBe(true);
-    expect(result.sensor).toEqual({ ok: true });
+      expect(mockRegistrar.registerTarget).toHaveBeenCalledWith('test-auth-token', 'agy');
+      expect(getService).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ id: 'agy', success: true });
+      expect(result.sensor).toBeUndefined();
+    } finally {
+      getService.mockRestore();
+    }
   });
 
-  it('MCP_REGISTER_TARGET keeps success: true when sensor install fails (returns ok: false)', async () => {
-    const mockInstallSensor = vi.fn().mockResolvedValue({ ok: false });
-    registerMcpHandlers(mockRegistrar as McpRegistrar, mockGetAuthToken, mockInstallSensor);
-    const handler = await getHandler(IPC.MCP_REGISTER_TARGET);
-    const result = (await handler({}, 'agy')) as McpRegisterTargetResult;
-
-    expect(mockInstallSensor).toHaveBeenCalledTimes(1);
-    expect(result.id).toBe('agy');
-    expect(result.success).toBe(true);
-    expect(result.sensor).toEqual({ ok: false });
-  });
-
-  it('MCP_REGISTER_TARGET keeps success: true when sensor installer throws', async () => {
-    const mockInstallSensor = vi.fn().mockRejectedValue(new Error('sensor install crashed'));
-    registerMcpHandlers(mockRegistrar as McpRegistrar, mockGetAuthToken, mockInstallSensor);
-    const handler = await getHandler(IPC.MCP_REGISTER_TARGET);
-    const result = (await handler({}, 'agy')) as McpRegisterTargetResult;
-
-    expect(mockInstallSensor).toHaveBeenCalledTimes(1);
-    expect(result.id).toBe('agy');
-    expect(result.success).toBe(true);
-    expect(result.sensor).toEqual({ ok: false });
-  });
-
-  it('MCP_REGISTER_TARGET for non-agy target never installs the sensor', async () => {
-    const mockInstallSensor = vi.fn().mockResolvedValue({ ok: true });
-    registerMcpHandlers(mockRegistrar as McpRegistrar, mockGetAuthToken, mockInstallSensor);
-    const handler = await getHandler(IPC.MCP_REGISTER_TARGET);
-    const result = (await handler({}, 'claude')) as McpRegisterTargetResult;
-
-    expect(mockRegistrar.registerTarget).toHaveBeenCalledWith('test-auth-token', 'claude');
-    expect(mockInstallSensor).not.toHaveBeenCalled();
-    expect(result.id).toBe('claude');
-    expect(result.success).toBe(true);
-    expect(result.sensor).toBeUndefined();
-  });
-
-  it('MCP_REGISTER_TARGET does not install sensor when agy registration fails', async () => {
-    const mockInstallSensor = vi.fn().mockResolvedValue({ ok: true });
+  it('MCP_REGISTER_TARGET reports a failed agy registration', async () => {
     (mockRegistrar.registerTarget as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       id: 'agy',
       success: false,
       error: 'Registration failed',
     });
-    registerMcpHandlers(mockRegistrar as McpRegistrar, mockGetAuthToken, mockInstallSensor);
+    registerMcpHandlers(mockRegistrar as McpRegistrar, mockGetAuthToken);
     const handler = await getHandler(IPC.MCP_REGISTER_TARGET);
     const result = (await handler({}, 'agy')) as McpRegisterTargetResult;
 
-    expect(mockInstallSensor).not.toHaveBeenCalled();
-    expect(result.id).toBe('agy');
-    expect(result.success).toBe(false);
-    expect(result.sensor).toBeUndefined();
+    expect(result).toMatchObject({ id: 'agy', success: false, error: 'Registration failed' });
   });
 
   it('cleanup unregisters all handlers including MCP_REGISTER_TARGET', async () => {

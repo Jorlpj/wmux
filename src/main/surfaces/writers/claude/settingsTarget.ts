@@ -5,15 +5,13 @@ import { SurfacesStore } from '../../safeWrite';
 import type { JsonEdit } from '../../safeWrite';
 import type { ResolvedChange, WriterDeps } from '../types';
 import { applyHookChangesToRoot } from './hookTarget';
+import { foldPathCase } from '../../safeWrite/pathCase';
 import { isPathAllowed, resolveCanonicalPath } from './pathSecurity';
 
 function pathsEqual(p1: string, p2: string): boolean {
   const norm1 = path.normalize(p1);
   const norm2 = path.normalize(p2);
-  if (process.platform === 'win32') {
-    return norm1.toLowerCase() === norm2.toLowerCase();
-  }
-  return norm1 === norm2;
+  return foldPathCase(norm1) === foldPathCase(norm2);
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -84,15 +82,19 @@ export function buildSettingsEdits(
   changes: ResolvedChange[],
   isApply: boolean,
   store?: SurfacesStore,
+  /** The apply snapshot's text, so the plan and the conflict check see the same content. */
+  snapshotText?: string | null,
 ): { edits: JsonEdit[]; fileEdits: SurfaceFileEdit[]; affectedItemIds: string[] } {
   if (!isPathAllowed(targetPath, deps)) {
     return { edits: [], fileEdits: [], affectedItemIds: [] };
   }
 
   let origRoot: Record<string, unknown> = {};
-  if (fs.existsSync(targetPath)) {
+  const text =
+    snapshotText !== undefined ? snapshotText : fs.existsSync(targetPath) ? fs.readFileSync(targetPath, 'utf8') : null;
+  if (text !== null) {
     try {
-      origRoot = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+      origRoot = JSON.parse(text);
     } catch {
       origRoot = {};
     }
@@ -286,27 +288,15 @@ export function buildSettingsEdits(
       }
 
       case 'context-setting': {
-        const currentVal = root[item.name];
-        if (typeof currentVal !== 'boolean' && typeof currentVal !== 'number') {
-          // Refuse non-boolean and non-number context settings
-          break;
-        }
-        if (typeof currentVal === 'boolean') {
-          root[item.name] = enabled;
-          fileEdits.push({
-            path: targetPath,
-            summary: `set ${item.name} = ${enabled}`,
-          });
-          affectedItemIds.push(item.id);
-        } else {
-          const numVal = enabled ? 1 : 0;
-          root[item.name] = numVal;
-          fileEdits.push({
-            path: targetPath,
-            summary: `set ${item.name} = ${numVal}`,
-          });
-          affectedItemIds.push(item.id);
-        }
+        // Numbers and lists are listed read-only; writing 1/0 over them would lose the user's value.
+        if (typeof root[item.name] !== 'boolean') break;
+        const value = item.name.startsWith('disable') ? !enabled : enabled;
+        root[item.name] = value;
+        fileEdits.push({
+          path: targetPath,
+          summary: `set ${item.name} = ${value}`,
+        });
+        affectedItemIds.push(item.id);
         break;
       }
 

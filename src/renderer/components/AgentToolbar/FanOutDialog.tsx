@@ -15,7 +15,7 @@ import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjectio
 import { openTaskDiff } from '../../utils/openTaskDiff';
 import { generateId } from '../../../shared/types';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
-import { ORCH_ROLES } from '../../../shared/orchestratorRole';
+import { ORCH_ROLES, promptFlagForLauncher } from '../../../shared/orchestratorRole';
 import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
 import Button from '../ui/Button';
@@ -158,6 +158,11 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
   // would otherwise hide the checkbox with the Claude-only flag still on the
   // line — and fire it at a CLI that rejects it (panel review, GLM).
   const staleSkipPermissions = hasStaleSkipPermissions(effectiveAgentCmd);
+  // agy reads ignored files (owner decision C): warn when this fan-out can put
+  // a task on agy, by the command above or by a task's role binding.
+  const usesAgy =
+    fanoutAgentStem(effectiveAgentCmd) === 'agy' ||
+    roles.some((r) => !!r && roleBindings[r]?.agent === 'agy');
 
   const setTitleAt = useCallback((k: number, v: string) => {
     setTitles((prev) => {
@@ -435,6 +440,11 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
       {skipPermissions && canSkipPermissions && (
         <div className="mb-1 text-[11px] text-[var(--accent-red)]">{t('fanout.skipPermissionsWarning')}</div>
       )}
+      {usesAgy && (
+        <div className="mb-1 text-[11px] text-[var(--accent-red)]" data-testid="fanout-agy-warning">
+          {t('fanout.agyReadsIgnoredFiles')}
+        </div>
+      )}
 
       {/* Launch command — the line the task pane fires, and the value remembered
           for the next fan-out. main appends the prompt file as one argument
@@ -447,6 +457,8 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
         data-testid="fanout-command-preview"
       >
         {effectiveAgentCmd}
+        {/* agy takes its prompt only from -i: main puts it there, so does the preview. */}
+        {!promptAllEmpty && promptFlagForLauncher(effectiveAgentCmd) && ` ${promptFlagForLauncher(effectiveAgentCmd)}`}
         {!promptAllEmpty && (
           <span className="text-[var(--text-sub)]"> {t('fanout.commandPreviewPromptArg')}</span>
         )}

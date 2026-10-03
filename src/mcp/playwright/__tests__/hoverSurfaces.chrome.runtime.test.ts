@@ -9,6 +9,7 @@ import {
   type HoverCandidate,
 } from '../hoverSurfaces';
 import { generateSnapshot } from '../snapshot';
+import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 
 // ---------------------------------------------------------------------------
 // Phase 1 and phase 2 against REAL Chrome.
@@ -107,7 +108,8 @@ const WINDOWS_CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.e
  * not always answer that by throwing: it can sit there. A `beforeAll` that
  * merely catches would then fail the suite on its own timeout, which is exactly
  * how the cross-platform Baseline job went red on this branch. So the attempt is
- * bounded, and anything but a prompt success means "skip", never "fail".
+ * bounded, and anything but a prompt success means "skip", never "fail" --
+ * except on a CI runner that must run the mode (requiredOnThisRunner).
  */
 const LAUNCH_TIMEOUT_MS = 30_000;
 
@@ -154,6 +156,22 @@ const MODES = [
   { name: 'headed', headless: false },
 ] as const;
 
+/**
+ * Whether this mode must actually run here instead of skipping.
+ *
+ * Skipping is right on a contributor machine without Chrome, but on CI a skip
+ * hid a real regression: a change to the test setup stopped Chrome from
+ * launching on the Windows runner and all twelve cases went from passing to
+ * skipped while the job stayed green. The GitHub Windows and macOS runners
+ * ship Chrome and a display, so both modes must run there; the Linux runner
+ * has Chrome but no display, so only headless is required.
+ */
+function requiredOnThisRunner(mode: (typeof MODES)[number]): boolean {
+  if (!process.env.CI) return false;
+  if (process.platform === 'win32' || process.platform === 'darwin') return true;
+  return mode.headless;
+}
+
 function reason(error: unknown): string {
   return error instanceof Error ? error.message.split('\n')[0] : String(error);
 }
@@ -173,7 +191,7 @@ interface Harness {
  * playwright-core, a launch that throws, a launch that never answers, no
  * loopback port — becomes a reason string, and every test then marks itself
  * SKIPPED rather than passing vacuously and reporting green for work it did not
- * do. A machine with no display fails the HEADED launch and skips exactly those
+ * do, or FAILS where requiredOnThisRunner says the mode has to run. A machine with no display fails the HEADED launch and skips exactly those
  * tests, keeping the headless ones.
  */
 function harnessFor(mode: (typeof MODES)[number]): Harness {
@@ -203,7 +221,13 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
       return;
     }
 
-    const launching = chromium.launch({ channel: 'chrome', headless: mode.headless });
+    // Chrome refuses to start under the isolate setup's temp USERPROFILE on the
+    // Windows runner, which skipped every case here; see realProfileBrowserEnv.
+    const launching = chromium.launch({
+      channel: 'chrome',
+      headless: mode.headless,
+      env: realProfileBrowserEnv(),
+    });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       browser = (await Promise.race([
@@ -332,6 +356,11 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
     origin: () => origin,
     skipUnless: (ctx) => {
       if (!skipReason) return false;
+      if (requiredOnThisRunner(mode)) {
+        throw new Error(
+          `[hoverSurfaces.chrome ${mode.name}] must run on this CI runner but could not: ${skipReason}`,
+        );
+      }
       ctx.skip(skipReason);
       return true;
     },

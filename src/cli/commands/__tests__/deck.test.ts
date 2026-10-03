@@ -30,6 +30,7 @@ import {
   loadDeckSchedules,
 } from '../../../main/deck/deckScheduleStore';
 import type { RpcResponse } from '../../../shared/rpc';
+import { reconcileOrphanDeckState } from '../../../main/deck/deckOrphanReconcile';
 
 let dir: string;
 
@@ -57,6 +58,12 @@ function createMockDeps(overrides?: Partial<DeckDeps>): {
         ok: true,
         result: [{ id: 'ws-live', name: 'Live Workspace' }],
       }),
+    // Stands in for the running app: the real 'deck.state.prune' handler runs
+    // the same reconcile in-process against the live workspace list.
+    pruneInApp: async () => {
+      const report = await reconcileOrphanDeckState(['ws-live'], { dir, now: Date.now(), dryRun: false, log: () => undefined });
+      return { id: '2', ok: true, result: { archived: report.archived, tornDown: report.tornDown ?? [], skipped: report.skippedIds ?? [] } };
+    },
     getWmuxDir: () => dir,
     now: () => Date.now(),
     console: {
@@ -436,5 +443,16 @@ describe('wmux deck CLI', () => {
 
       expect(logs.join('\n')).toContain('orphans: 3');
     });
+  });
+});
+
+describe('wmux deck state --prune runs in the app', () => {
+  it('never rewrites Deck files itself and reports the app refusal', async () => {
+    const pruneInApp = vi.fn(async (): Promise<RpcResponse> => ({ id: '9', ok: false, error: 'deck.state.prune: the saved session was not restored' }));
+    const { deps, errors } = createMockDeps({ pruneInApp });
+    const code = await runDeck(['state', '--prune', '--yes'], deps);
+    expect(pruneInApp).toHaveBeenCalledTimes(1);
+    expect(code).toBe(1);
+    expect(errors.join('\n')).toContain('saved session was not restored');
   });
 });

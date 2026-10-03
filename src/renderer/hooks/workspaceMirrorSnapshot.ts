@@ -33,6 +33,7 @@ import { selectFleetPanes, surfaceAttentionStatus, type FleetPane, type FleetSel
  */
 export type MirrorSnapshotState = FleetSnapshotState & {
   orchestratorRoleBindings?: StoreState['orchestratorRoleBindings'];
+  sessionRestored?: StoreState['sessionRestored'];
 };
 
 /**
@@ -339,5 +340,6 @@ export function buildWorkspaceMirrorPayload(
     entries: buildWorkspaceListEntries(state.workspaces),
     fleets: buildFleetSnapshots(state, ts),
     roleBindings: buildRoleBindings(state),
+    sessionRestored: state.sessionRestored === true,
   };
 }

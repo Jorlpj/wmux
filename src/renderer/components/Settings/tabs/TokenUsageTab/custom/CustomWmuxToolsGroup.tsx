@@ -1,11 +1,21 @@
 import { useCallback, useMemo, useState } from 'react';
-import { CORE_TOOL_SURFACE } from '../../../../../../shared/coreSurface';
 import { ROLE_TOOL_SURFACES } from '../../../../../../shared/roleSurfaces';
 import type { SurfaceItem } from '../../../../../../shared/tokenUsage/surfaceTypes';
 import { useT } from '../../../../../hooks/useT';
 import Badge from '../../../../ui/Badge';
 import Button from '../../../../ui/Button';
 import Switch from '../../../../ui/Switch';
+
+type WmuxToolsPreset = 'Planner' | 'Reviewer' | 'Builder' | 'Tester' | 'none' | 'all';
+
+const PRESETS: ReadonlyArray<{ preset: WmuxToolsPreset; labelKey: string; testId: string }> = [
+  { preset: 'Planner', labelKey: 'settings.tokenUsage.presetPlanner', testId: 'wmux-preset-planner' },
+  { preset: 'Reviewer', labelKey: 'settings.tokenUsage.presetReviewer', testId: 'wmux-preset-reviewer' },
+  { preset: 'Builder', labelKey: 'settings.tokenUsage.presetBuilder', testId: 'wmux-preset-builder' },
+  { preset: 'Tester', labelKey: 'settings.tokenUsage.presetTester', testId: 'wmux-preset-tester' },
+  { preset: 'none', labelKey: 'settings.tokenUsage.presetNone', testId: 'wmux-preset-none' },
+  { preset: 'all', labelKey: 'settings.tokenUsage.presetAll', testId: 'wmux-preset-all' },
+];
 
 export interface CustomWmuxToolsGroupProps {
   tools: SurfaceItem[];
@@ -42,38 +52,13 @@ export function CustomWmuxToolsGroup({
   }, [fullToolList, stagedChanges]);
 
   const applyPreset = useCallback(
-    (preset: 'core' | 'planner' | 'reviewer' | 'none' | 'all-core' | 'all') => {
+    (preset: WmuxToolsPreset) => {
       if (!onBatchToggle) return;
       const targetTools = allTools ?? tools;
-      const updates: Array<{ itemId: string; next: boolean }> = [];
-
-      // Note: presets target only the wmux core tools shown in this group (CORE_TOOL_SURFACE).
+      // Presets target only the wmux core tools shown in this group (CORE_TOOL_SURFACE);
       // browser_* and company_* tools are not included here.
-      let isTargetEnabled: (name: string) => boolean;
-      if (preset === 'core') {
-        const coreSet = new Set(CORE_TOOL_SURFACE);
-        isTargetEnabled = (name) => coreSet.has(name);
-      } else if (preset === 'planner') {
-        const plannerSet = new Set(ROLE_TOOL_SURFACES.Planner);
-        isTargetEnabled = (name) => plannerSet.has(name);
-      } else if (preset === 'reviewer') {
-        const reviewerSet = new Set(ROLE_TOOL_SURFACES.Reviewer);
-        isTargetEnabled = (name) => reviewerSet.has(name);
-      } else if (preset === 'none') {
-        isTargetEnabled = () => false;
-      } else {
-        // 'all-core' (and legacy 'all'): enables all core tools in this group
-        isTargetEnabled = () => true;
-      }
-
-      for (const item of targetTools) {
-        updates.push({
-          itemId: item.id,
-          next: isTargetEnabled(item.name),
-        });
-      }
-
-      onBatchToggle(updates);
+      const keep = preset === 'all' ? null : new Set(preset === 'none' ? [] : ROLE_TOOL_SURFACES[preset]);
+      onBatchToggle(targetTools.map((item) => ({ itemId: item.id, next: keep === null || keep.has(item.name) })));
     },
     [allTools, onBatchToggle, tools],
   );
@@ -124,46 +109,18 @@ export function CustomWmuxToolsGroup({
             )}
           </button>
           <div className="flex items-center gap-1.5 flex-wrap">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => applyPreset('core')}
-              data-testid="wmux-preset-core"
-            >
-              {t('settings.tokenUsage.presetCore')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => applyPreset('planner')}
-              data-testid="wmux-preset-planner"
-            >
-              {t('settings.tokenUsage.presetPlanner')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => applyPreset('reviewer')}
-              data-testid="wmux-preset-reviewer"
-            >
-              {t('settings.tokenUsage.presetReviewer')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => applyPreset('none')}
-              data-testid="wmux-preset-none"
-            >
-              {t('settings.tokenUsage.presetNone')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => applyPreset('all-core')}
-              data-testid="wmux-preset-all-core"
-            >
-              {t('settings.tokenUsage.presetAllCore')}
-            </Button>
+            {PRESETS.map(({ preset, labelKey, testId }) => (
+              <Button
+                key={preset}
+                variant="secondary"
+                size="sm"
+                onClick={() => applyPreset(preset)}
+                data-testid={testId}
+                title={preset === 'none' || preset === 'all' ? undefined : (ROLE_TOOL_SURFACES[preset] as readonly string[]).join(', ')}
+              >
+                {t(labelKey as Parameters<typeof t>[0])}
+              </Button>
+            ))}
           </div>
         </div>
 

@@ -9,6 +9,22 @@ import { ConfigChangedError, SurfacesStore } from '../../safeWrite';
 import type { WriterDeps } from '../types';
 import type { SurfaceItem } from '../../../../shared/tokenUsage/surfaceTypes';
 
+/**
+ * Make `file` impossible to replace, on every platform. A read-only file
+ * blocks the atomic rename on Windows only; on Linux/macOS rename(2) needs
+ * write permission on the DIRECTORY, so the parent is locked too there.
+ * Returns the function that undoes both.
+ */
+function makeUnwritable(file: string): () => void {
+  const dir = path.dirname(file);
+  fs.chmodSync(file, 0o444);
+  if (process.platform !== 'win32') fs.chmodSync(dir, 0o555);
+  return () => {
+    try { if (process.platform !== 'win32') fs.chmodSync(dir, 0o755); } catch { /* best-effort */ }
+    try { fs.chmodSync(file, 0o666); } catch { /* best-effort */ }
+  };
+}
+
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -346,50 +362,53 @@ describe('claudeWriter', () => {
     expect(skill3.enabled).toBe(true);
   });
 
-  it('toggles boolean and number context-settings and refuses non-bool/num', async () => {
+  it('switches boolean context-settings both ways and keeps numbers and lists read-only', async () => {
     seedFixtures();
     const deps = makeDeps(tempHome, tempProj);
-    const inv = await readInventory('claude', { homeDir: tempHome, projectDir: tempProj, run: deps.run });
+    const settingsFile = path.join(tempHome, '.claude', 'settings.json');
+    const inventoryOf = () => readInventory('claude', { homeDir: tempHome, projectDir: tempProj, run: deps.run });
+    const find = (items: SurfaceItem[], name: string) =>
+      items.find((i) => i.name === name && i.kind === 'context-setting')!;
 
-    const autoMem = inv.items.find((i) => i.name === 'autoMemoryEnabled' && i.kind === 'context-setting')!;
-    expect(autoMem).toBeDefined();
+    let inv = await inventoryOf();
+    const autoMem = find(inv.items, 'autoMemoryEnabled');
+    expect(autoMem.enabled).toBe(true);
 
-    const budget = inv.items.find((i) => i.name === 'skillListingBudgetFraction' && i.kind === 'context-setting')!;
-    expect(budget).toBeDefined();
+    // Off, then back on: the inventory must report the real value or re-enabling is refused.
+    const off = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: autoMem.id, enabled: false }] }, { deps });
+    expect(off.ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).autoMemoryEnabled).toBe(false);
+    inv = await inventoryOf();
+    expect(find(inv.items, 'autoMemoryEnabled').enabled).toBe(false);
+    const on = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: autoMem.id, enabled: true }] }, { deps });
+    expect(on.ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).autoMemoryEnabled).toBe(true);
 
-    const excludes = inv.items.find((i) => i.name === 'claudeMdExcludes' && i.kind === 'context-setting')!;
-    expect(excludes).toBeDefined();
+    // A number or a list is shown but cannot be switched, and the value stays.
+    for (const name of ['skillListingBudgetFraction', 'claudeMdExcludes']) {
+      const item = find(inv.items, name);
+      expect(item.toggleable).toBe(false);
+      expect(item.enabled).toBeNull();
+      const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: item.id, enabled: false }] }, { deps });
+      expect(res.ok).toBe(false);
+    }
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    expect(settings.skillListingBudgetFraction).toBe(0.25);
+    expect(settings.claudeMdExcludes).toEqual(['vendor/**']);
+  });
 
-    // Toggle boolean
-    const disMem = await applySurfaceChanges(
-      { provider: 'claude', changes: [{ itemId: autoMem.id, enabled: false }] },
-      { deps },
-    );
-    expect(disMem.ok).toBe(true);
-    let settings = JSON.parse(fs.readFileSync(path.join(tempHome, '.claude', 'settings.json'), 'utf8'));
-    expect(settings.autoMemoryEnabled).toBe(false);
+  it('inverts disable* keys: switching the feature off writes true', async () => {
+    const deps = makeDeps(tempHome, tempProj);
+    fs.mkdirSync(path.join(tempHome, '.claude'), { recursive: true });
+    const settingsFile = path.join(tempHome, '.claude', 'settings.json');
+    fs.writeFileSync(settingsFile, JSON.stringify({ disableBundledSkills: false }), 'utf8');
 
-    // Toggle number
-    const disBudget = await applySurfaceChanges(
-      { provider: 'claude', changes: [{ itemId: budget.id, enabled: false }] },
-      { deps },
-    );
-    expect(disBudget.ok).toBe(true);
-    settings = JSON.parse(fs.readFileSync(path.join(tempHome, '.claude', 'settings.json'), 'utf8'));
-    expect(settings.skillListingBudgetFraction).toBe(0);
-
-    // Attempt non-boolean/number toggle -> refused in writer
-    const previewEx = await previewSurfaceChanges(
-      { provider: 'claude', changes: [{ itemId: excludes.id, enabled: false }] },
-      { deps },
-    );
-    expect(previewEx.edits).toHaveLength(0);
-
-    const applyEx = await applySurfaceChanges(
-      { provider: 'claude', changes: [{ itemId: excludes.id, enabled: false }] },
-      { deps },
-    );
-    expect(applyEx.appliedItemIds).not.toContain(excludes.id);
+    const inv = await readInventory('claude', { homeDir: tempHome, run: deps.run });
+    const item = inv.items.find((i) => i.name === 'disableBundledSkills')!;
+    expect(item.enabled).toBe(true);
+    const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: item.id, enabled: false }] }, { deps });
+    expect(res.ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).disableBundledSkills).toBe(true);
   });
 
   it('hook disable then enable restores a definition deep-equal to the original and the hooks structure equals the original except possibly ordering within the same matcher group', async () => {
@@ -521,7 +540,7 @@ describe('claudeWriter', () => {
     };
 
     // Make the settings file read-only on disk to trigger write failure in applyConfigEdit
-    fs.chmodSync(settingsPath, 0o444);
+    const restoreWritable = makeUnwritable(settingsPath);
 
     const writer = createClaudeWriter();
     const result = await writer.apply({
@@ -539,9 +558,7 @@ describe('claudeWriter', () => {
     });
 
     // Restore permissions
-    try {
-      fs.chmodSync(settingsPath, 0o666);
-    } catch {}
+    restoreWritable();
 
     // Writer should report failure
     expect(result.ok).toBe(false);
@@ -892,7 +909,7 @@ describe('claudeWriter', () => {
     store.save();
 
     // Make settings.json read-only so applyConfigEdit fails on write
-    fs.chmodSync(settingsPath, 0o444);
+    const restoreWritable = makeUnwritable(settingsPath);
 
     const writer = createClaudeWriter();
     const result = await writer.apply({
@@ -910,9 +927,7 @@ describe('claudeWriter', () => {
     });
 
     // Restore permissions
-    try {
-      fs.chmodSync(settingsPath, 0o666);
-    } catch {}
+    restoreWritable();
 
     expect(result.ok).toBe(false);
 
@@ -1279,7 +1294,7 @@ describe('claudeWriter', () => {
     store.save();
 
     // Trigger failure by making settingsPath read-only
-    fs.chmodSync(settingsPath, 0o444);
+    const restoreWritable = makeUnwritable(settingsPath);
 
     const writer = createClaudeWriter();
     const result = await writer.apply({
@@ -1296,9 +1311,7 @@ describe('claudeWriter', () => {
       changes: [{ item: hookItem, enabled: true }],
     });
 
-    try {
-      fs.chmodSync(settingsPath, 0o666);
-    } catch {}
+    restoreWritable();
 
     expect(result.ok).toBe(false);
     expect(result.error).toBeDefined();
@@ -1342,7 +1355,7 @@ describe('claudeWriter', () => {
     };
 
     // Make settingsPath read-only so the second edit fails
-    fs.chmodSync(settingsPath, 0o444);
+    const restoreWritable = makeUnwritable(settingsPath);
 
     const writer = createClaudeWriter();
     const result = await writer.apply({
@@ -1359,9 +1372,7 @@ describe('claudeWriter', () => {
       changes: [{ item: projServerItem, enabled: true }],
     });
 
-    try {
-      fs.chmodSync(settingsPath, 0o666);
-    } catch {}
+    restoreWritable();
 
     expect(result.ok).toBe(false);
     expect(result.appliedItemIds).not.toContain(projServerItem.id);
@@ -1603,5 +1614,59 @@ describe('claudeWriter', () => {
     const storeAfter = new SurfacesStore(deps.surfacesStorePath);
     storeAfter.load();
     expect(storeAfter.removedHooks.get('claude', hookId)).toBeUndefined();
+  });
+});
+
+describe('claudeWriter hook identity', () => {
+  let home: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    home = makeTempDir('claude-writer-hookid-');
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    settingsPath = path.join(home, '.claude', 'settings.json');
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  });
+
+  async function listHooks(deps: WriterDeps): Promise<SurfaceItem[]> {
+    const inv = await readInventory('claude', {
+      homeDir: deps.homeDir,
+      run: deps.run,
+      now: deps.now,
+      surfacesStorePath: deps.surfacesStorePath,
+    });
+    return inv.items.filter((i) => i.kind === 'hook');
+  }
+
+  it('disables the unnamed hook that was picked, not the first one with the same generated name', async () => {
+    const deps = makeDeps(home);
+    const wmuxHook = { type: 'command', command: 'node C:/Users/x/.wmux/hooks/stop.js' };
+    const userHook = { type: 'command', command: 'node my-stop.js' };
+    fs.writeFileSync(settingsPath, JSON.stringify({ hooks: { Stop: [{ hooks: [wmuxHook, userHook] }] } }), 'utf8');
+
+    const hooks = await listHooks(deps);
+    expect(hooks.map((h) => h.name)).toEqual(['Stop-command', 'Stop-command']);
+    const target = hooks.find((h) => !h.wmuxRequired)!;
+
+    const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: target.id, enabled: false }] }, { deps });
+    expect(res.ok).toBe(true);
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    expect(after.hooks.Stop[0].hooks).toEqual([wmuxHook]);
+  });
+
+  it('refuses when two identical handlers match, and leaves the file untouched', async () => {
+    const deps = makeDeps(home);
+    const dup = { type: 'command', command: 'node my-stop.js' };
+    const original = JSON.stringify({ hooks: { Stop: [{ hooks: [dup] }, { hooks: [dup] }] } });
+    fs.writeFileSync(settingsPath, original, 'utf8');
+
+    const [first] = await listHooks(deps);
+    const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: first.id, enabled: false }] }, { deps });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/More than one hook matches/);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(original);
   });
 });

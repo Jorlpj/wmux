@@ -104,7 +104,7 @@ describe('McpStatusSection', () => {
     expect(mockApi.registerTarget).toHaveBeenCalledWith('agy');
   });
 
-  it('pushes success toast and "Quota sensor installed" toast when sensor.ok is true', async () => {
+  it('pushes the registered toast and nothing about a quota sensor', async () => {
     const updatedStatus = {
       targets: [
         mockStatus.targets[0],
@@ -116,7 +116,6 @@ describe('McpStatusSection', () => {
       return {
         id: 'agy',
         success: true,
-        sensor: { ok: true },
         status: updatedStatus,
       };
     });
@@ -133,35 +132,11 @@ describe('McpStatusSection', () => {
 
     const toasts = useStore.getState().toasts;
     expect(toasts.some((t) => t.message === 'Registered Antigravity CLI' && t.level === 'info')).toBe(true);
-    expect(toasts.some((t) => t.message === 'Quota sensor installed' && t.level === 'info')).toBe(true);
+    expect(toasts.some((t) => t.message.includes('Quota'))).toBe(false);
 
     // After success, row flips to Re-register
     const updatedBtn = container.querySelector('[data-mcp-action="agy"]') as HTMLButtonElement;
     expect(updatedBtn.textContent).toBe('Re-register');
-  });
-
-  it('shows no sensor error toast when sensor.ok is false or absent', async () => {
-    (mockApi.registerTarget as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      id: 'agy',
-      success: true,
-      sensor: { ok: false },
-      status: mockStatus,
-    });
-
-    const { container, cleanup } = render(<McpStatusSection api={mockApi} />);
-    cleanups.push(cleanup);
-    await flush();
-
-    const agyBtn = container.querySelector('[data-mcp-action="agy"]') as HTMLButtonElement;
-    await act(async () => {
-      agyBtn.click();
-    });
-    await flush();
-
-    const toasts = useStore.getState().toasts;
-    expect(toasts.some((t) => t.message === 'Registered Antigravity CLI' && t.level === 'info')).toBe(true);
-    expect(toasts.some((t) => t.message.includes('Quota'))).toBe(false);
-    expect(toasts.some((t) => t.level === 'error')).toBe(false);
   });
 
   it('pushes error toast on registration failure with known sentence', async () => {

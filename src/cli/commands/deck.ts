@@ -34,6 +34,11 @@ export interface DeckDeps {
    */
   getWorkspaces: () => Promise<RpcResponse>;
   /**
+   * Ask the running app to prune ('deck.state.prune'). The app owns the Deck
+   * store files and their write locks, so the CLI never rewrites them itself.
+   */
+  pruneInApp: () => Promise<RpcResponse>;
+  /**
    * Resolve wmux state directory.
    */
   getWmuxDir: () => string;
@@ -69,6 +74,7 @@ Options:
 export function createDefaultDeckDeps(overrides?: Partial<DeckDeps>): DeckDeps {
   return {
     getWorkspaces: () => sendRequest('workspace.list', {}),
+    pruneInApp: () => sendRequest('deck.state.prune', {}),
     getWmuxDir: () => getWmuxDir(),
     now: () => Date.now(),
     console: {
@@ -154,14 +160,23 @@ export async function runDeck(
       archivePath = path.join(dir, 'deck-work.archive.json');
     }
 
-    const pruneReport = await reconcileOrphanDeckState(liveIds, {
-      dir,
-      now,
-      dryRun: false,
-      log: () => {
-        /* quiet in CLI */
-      },
-    });
+    let pruneReport: { archived: string[]; tornDown?: string[]; skippedIds?: string[] };
+    try {
+      const resp = await deps.pruneInApp();
+      if (!resp || !resp.ok) {
+        const reason = resp && !resp.ok && typeof resp.error === 'string' ? resp.error : 'no answer from wmux';
+        deps.console.error(`deck state --prune: ${reason}`);
+        deps.exit(1);
+        return 1;
+      }
+      const r = (resp.result ?? {}) as { archived?: unknown; tornDown?: unknown; skipped?: unknown };
+      const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+      pruneReport = { archived: strings(r.archived), tornDown: strings(r.tornDown), skippedIds: strings(r.skipped) };
+    } catch (err) {
+      deps.console.error(`deck state --prune: ${err instanceof Error ? err.message : String(err)}`);
+      deps.exit(1);
+      return 1;
+    }
 
     // Re-list orphans
     const remainingReport = await reconcileOrphanDeckState(liveIds, {

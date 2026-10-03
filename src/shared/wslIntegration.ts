@@ -5,9 +5,63 @@ import { mergeWslEnv, wslTargetArgs, type WslTarget } from './wsl';
 // Per-launch settings only. Never edit ~/.claude/settings.json in either OS.
 // Use the existing bridge in its Windows runtime: this preserves the named-pipe
 // authentication and pane routing instead of adding a network listener.
+//
+// #1727 — the hook also says WHICH Linux process the agent is. Windows cannot
+// see Linux processes, so the daemon's process-tree walk never finds a WSL
+// pane's agent; but this script runs inside Linux as the agent's descendant.
+// It reports the boot id and up to WSL_AGENT_PROC_HOPS ancestors (pid,
+// starttime, first arguments), RS-separated; the daemon picks the one whose
+// command line names the hook's agent (a `sh -c` may sit in between), and the
+// rest of the chain tells a nested `claude -p` from the pane's own agent.
+// Reading /proc here is builtins plus a few tiny filters per hop: no scan, no
+// extra Windows spawn. Any failure leaves the report empty; the hook runs on.
+export const WSL_AGENT_PROC_HOPS = 8;
+/** The /proc ancestor report both WSL hooks run (Claude's WSL_HOOK, Codex's
+ *  WSL_CODEX_HOOK); it sets WMUX_WSL_AGENT_PROC for the Windows bridge. */
+const WSL_AGENT_PROC_FN = `wmux_agent_proc() {
+  # A function, so set -- below cannot touch the hook's own arguments. No
+  # set -f: it would outlive the function and break the Codex hook's later
+  # rollout globs, and stat's fields after the last ')' hold no glob characters.
+  # Cleared first, so a value inherited from the environment never passes on.
+  WMUX_WSL_AGENT_PROC=
+  { read -r wmux_boot < /proc/sys/kernel/random/boot_id; } 2>/dev/null || return 0
+  wmux_out="1:$wmux_boot"
+  wmux_p=$PPID
+  wmux_n=0
+  while [ "$wmux_n" -lt ${WSL_AGENT_PROC_HOPS} ] && [ "$wmux_p" -gt 1 ] 2>/dev/null; do
+    wmux_stat=$(cat "/proc/$wmux_p/stat" 2>/dev/null) || break
+    # comm (field 2) may hold spaces and parens: split after the LAST ')'.
+    set -- \${wmux_stat##*) }
+    [ $# -ge 20 ] || break
+    # The first 4 WHOLE arguments (a byte cut could split a multibyte
+    # character), US-separated; RS, US and newlines inside them become spaces.
+    wmux_cmd=$(tr '\\000\\036\\037\\n' '\\n   ' < "/proc/$wmux_p/cmdline" 2>/dev/null | head -n 4 | tr '\\n' '\\037')
+    wmux_out="$wmux_out$(printf '\\036')$wmux_p:\${20}:$wmux_cmd"
+    wmux_p=$2
+    wmux_n=$((wmux_n + 1))
+  done
+  WMUX_WSL_AGENT_PROC=$wmux_out
+}`;
 export const WSL_HOOK = `#!/bin/sh
+# #1730 — the permission gate fires on EVERY tool call. It is dormant unless
+# someone can answer it (wmux web --allow-input), and the daemon keeps a flag
+# file for exactly that state. Without the flag: no opinion (exit 0, empty
+# stdout), for the cost of one stat, instead of a Windows process per call.
+wmux_gate=
+for wmux_arg; do [ "$wmux_arg" = --permission-gate ] && wmux_gate=1; done
+if [ -n "$wmux_gate" ]; then
+  [ -n "\${WMUX_WSL_GATE_FLAG:-}" ] && [ -e "$WMUX_WSL_GATE_FLAG" ] || exit 0
+  # The per-session opt-out the bridge would honour anyway, without the spawn.
+  [ "\${WMUX_GATE:-}" != 0 ] || exit 0
+fi
 export ELECTRON_RUN_AS_NODE=1
-export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
+${WSL_AGENT_PROC_FN}
+# Per tool call while the gate is armed: skip the /proc walk; other hooks attribute.
+[ -n "$wmux_gate" ] || wmux_agent_proc
+export WMUX_WSL_AGENT_PROC
+# The bridge tells an interactive session from a headless one (claude -p) by
+# CLAUDE_CODE_ENTRYPOINT, and honours WMUX_GATE=0; both are Linux env (#1730).
+export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_AGENT_PROC/w:CLAUDE_CODE_ENTRYPOINT/w:WMUX_GATE/w"
 exec "$WMUX_WSL_NODE" "$WMUX_WSL_BRIDGE" "$@"
 `;
 
@@ -97,6 +151,11 @@ if [ -r "/proc/$PPID/cmdline" ]; then
   export WMUX_CODEX_NOTIFIER_ARGV
   export WSLENV="$WSLENV:WMUX_CODEX_NOTIFIER_ARGV/w"
 fi
+# #1727 — which Linux process this pane's Codex is, as Claude's WSL_HOOK
+# reports it; run only for the notification the bridge will actually get
+# (below). The bridge refuses a shared app-server's notification outright, so
+# a report only ever comes from the Codex that owns this pane.
+${WSL_AGENT_PROC_FN}
 # Codex also notifies for temporary title-generation and subagent threads.
 # Only a saved top-level CLI session is a valid Resume target. Match the exact
 # reported UUID and inspect its first metadata record; never guess the newest.
@@ -112,6 +171,9 @@ for file in "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id".jsonl 
   [ -f "$file" ] || continue
   IFS= read -r metadata < "$file" || continue
   if printf '%s' "$metadata" | "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --is-resumable "$id"; then
+    wmux_agent_proc
+    export WMUX_WSL_AGENT_PROC
+    export WSLENV="$WSLENV:WMUX_WSL_AGENT_PROC/w"
     exec "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_BRIDGE" "$payload"
   fi
 done
@@ -251,6 +313,41 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
   return found;
 }
 
+/**
+ * #1730 — the daemon keeps this file in its data dir exactly while the
+ * permission gate can be answered; the WSL hook checks it before paying for a
+ * Windows process (WSL_HOOK). It carries no authority: the daemon still decides.
+ */
+export const WSL_GATE_FLAG_FILE = 'gate-armed';
+
+/**
+ * The hooks a WSL claude runs, per launch. The same events and matchers as a
+ * Windows pane's (src/cli/commands/setupHooks.ts), each through hook.sh: the
+ * lifecycle and human-paced ones (prompt, subagent, dialog, question) plus
+ * the wide permission gate, which hook.sh short-circuits unless armed. The
+ * wide PostToolUse activity hook stays out here as it does on Windows.
+ */
+export function wslClaudeHooks(): Record<string, Array<{ matcher: string; hooks: Array<{ type: 'command'; command: string; timeout: number }> }>> {
+  const hook = (event: string, matcher = '', extra = '', timeout = 10) => ({
+    matcher,
+    hooks: [{ type: 'command' as const, command: `/bin/sh "$WMUX_WSL_HOOK" ${event}${extra ? ` ${extra}` : ''}`, timeout }],
+  });
+  return {
+    SessionStart: [hook('SessionStart')],
+    Stop: [hook('Stop')],
+    StopFailure: [hook('StopFailure')],
+    SubagentStop: [hook('SubagentStop')],
+    UserPromptSubmit: [hook('UserPromptSubmit')],
+    PermissionRequest: [hook('PermissionRequest')],
+    PostToolUse: [hook('PostToolUse', 'AskUserQuestion')],
+    PreToolUse: [
+      hook('PreToolUse', 'AskUserQuestion'),
+      // The broker self-defers at 120 s and the bridge gives up at 130 s.
+      hook('PreToolUse', '', '--permission-gate', 150),
+    ],
+  };
+}
+
 function wslMcpConfig(): string {
   return JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH] } } });
 }
@@ -280,10 +377,7 @@ export function buildWslInjection(options: {
   write(path.join(bin, 'claude'), WSL_CLAUDE_SHIM);
   write(path.join(dir, 'codex-hook.sh'), WSL_CODEX_HOOK);
   write(path.join(bin, 'codex'), WSL_CODEX_SHIM);
-  const hooks = Object.fromEntries(['SessionStart', 'Stop', 'StopFailure'].map((event) => [event, [{
-    matcher: '', hooks: [{ type: 'command', command: `/bin/sh "$WMUX_WSL_HOOK" ${event}`, timeout: 10 }],
-  }]]));
-  write(path.join(dir, 'claude-settings.json'), JSON.stringify({ hooks }));
+  write(path.join(dir, 'claude-settings.json'), JSON.stringify({ hooks: wslClaudeHooks() }));
   const mcpEntry = options.mcpEntryPath === undefined
     ? findUp(__dirname, ['mcp-bundle/index.js', 'dist/mcp/mcp/entry.js'])
     : options.mcpEntryPath;
@@ -314,6 +408,7 @@ fi
     WMUX_WSL_CODEX_CONFIG: options.codexConfigPath ?? findBridge(__dirname, 'wmux-wsl-codex-config.mjs', 'codex'),
     WMUX_WSL_CODEX_HOOK: path.join(dir, 'codex-hook.sh'),
     WMUX_WSL_HOOK: path.join(dir, 'hook.sh'),
+    WMUX_WSL_GATE_FLAG: path.join(integrationDir, WSL_GATE_FLAG_FILE),
     WMUX_WSL_SETTINGS: path.join(dir, 'claude-settings.json'),
     WMUX_WSL_BIN: bin,
     WMUX_WSL_BASHRC: path.join(dir, 'bashrc'),
@@ -321,7 +416,7 @@ fi
   };
   const entries = [
     'WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_DATA_SUFFIX',
-    'WMUX_WSL_NODE/p', 'WMUX_WSL_BRIDGE/u', 'WMUX_WSL_HOOK/p',
+    'WMUX_WSL_NODE/p', 'WMUX_WSL_BRIDGE/u', 'WMUX_WSL_HOOK/p', 'WMUX_WSL_GATE_FLAG/p',
     'WMUX_WSL_CODEX_BRIDGE/u', 'WMUX_WSL_CODEX_CONFIG/u', 'WMUX_WSL_CODEX_HOOK/p',
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
     ...(mcpEntry ? ['WMUX_WSL_MCP/u', 'WMUX_WSL_MCP_CONFIG/p'] : []),

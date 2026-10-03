@@ -1,6 +1,7 @@
-import { applyWmuxToolsToCommand, isWmuxToolsHint } from '../../agents/toolSurfaceLaunch';
+import { applyWmuxToolsToCommand, isWmuxToolsHint, locateWmuxMcpEntry } from '../../agents/toolSurfaceLaunch';
+import { codexConfigPath, codexHasWmuxServer } from '../../../shared/mcpRegistration';
 import { WSL_RPC_TIMEOUT_MS } from '../../../shared/wsl';
-import { ipcMain, BrowserWindow } from 'electron';
+import { app, ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
@@ -16,6 +17,7 @@ import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
+import { withAccountQuota } from '../../account/accountQuotaGate';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -130,13 +132,30 @@ type PtyCreateOptions = {
 };
 
 
+/** The MCP bundle this app would register (packaged stable copy or dev dist). */
+function currentMcpEntry(): string | null {
+  try {
+    return locateWmuxMcpEntry({
+      home: app.getPath('home'),
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** Splice a role binding's wmux tool level into the typed launch line, then
  *  drop the hint so it never reaches a spawn API. Invalid hints are ignored. */
 function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions | undefined {
   if (!options || options.wmuxTools === undefined) return options;
   const { wmuxTools, ...rest } = options;
   if (!rest.initialCommand || !isWmuxToolsHint(wmuxTools)) return rest;
-  const initialCommand = applyWmuxToolsToCommand(rest.initialCommand, wmuxTools);
+  const initialCommand = applyWmuxToolsToCommand(rest.initialCommand, wmuxTools, {
+    entry: currentMcpEntry(),
+    codexHasWmuxServer: () => codexHasWmuxServer(codexConfigPath(rest.env)),
+  });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
 }
@@ -386,7 +405,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
-      options = withWmuxTools(options);
+      options = withWmuxTools(await withAccountQuota(options));
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -621,7 +640,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
-      options = withWmuxTools(options);
+      options = withWmuxTools(await withAccountQuota(options));
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user

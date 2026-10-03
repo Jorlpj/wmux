@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { HookCostHint, ProviderInventory, SurfaceItem, SurfaceSource } from '../../../shared/tokenUsage/surfaceTypes';
 import { SurfacesStore } from '../safeWrite';
 import {
+  hookFingerprint,
   normalizePath,
   parseSkillFrontmatter,
   queryCliVersion,
@@ -38,6 +39,11 @@ function deepEqual(a: unknown, b: unknown): boolean {
     if (!deepEqual(objA[k], objB[k])) return false;
   }
   return true;
+}
+
+/** `disable*` keys are inverted: `disableBundledSkills: true` means the feature is off. */
+export function contextSettingEnabled(key: string, value: boolean): boolean {
+  return key.startsWith('disable') ? !value : value;
 }
 
 interface LiveHookInfo {
@@ -177,20 +183,23 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
       'disableBundledSkills',
     ];
     for (const ck of contextKeys) {
-      if (ck in parsed) {
-        addItem(
-          makeItem({
-            provider: 'claude',
-            kind: 'context-setting',
-            name: ck,
-            source: 'user',
-            enabled: true,
-            effect: 'removes',
-            toggleable: true,
-            originPath: sp,
-          }),
-        );
-      }
+      if (!(ck in parsed)) continue;
+      const value = parsed[ck];
+      // Only booleans can be switched: a number or list has no "off" value to write and restore.
+      const isBoolean = typeof value === 'boolean';
+      addItem(
+        makeItem({
+          provider: 'claude',
+          kind: 'context-setting',
+          name: ck,
+          source: 'user',
+          enabled: isBoolean ? contextSettingEnabled(ck, value) : null,
+          effect: 'removes',
+          toggleable: isBoolean,
+          readOnlyReason: isBoolean ? null : 'Only on/off settings can be switched here; edit this value in settings.json.',
+          originPath: sp,
+        }),
+      );
     }
 
     // Hooks in settings.json
@@ -210,7 +219,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
               if (!item || typeof item !== 'object') continue;
               const h = item as Record<string, unknown>;
               liveHooks.push({ event, handler: h, groupMeta, originPath: sp });
-              addLiveHookItem(event, h, sp);
+              addLiveHookItem(event, h, sp, groupMeta);
             }
           } else {
             const h = groupOrHandler;
@@ -222,7 +231,12 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
     }
   }
 
-  function addLiveHookItem(event: string, h: Record<string, unknown>, originPath: string): void {
+  function addLiveHookItem(
+    event: string,
+    h: Record<string, unknown>,
+    originPath: string,
+    groupMeta?: Record<string, unknown>,
+  ): void {
     const type = typeof h.type === 'string' ? h.type : 'command';
     let hookCost: HookCostHint = 'none';
     if (type === 'prompt' || type === 'agent') {
@@ -252,6 +266,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
         readOnlyReason: isManaged ? 'Managed hooks cannot be toggled' : null,
         hookEvent: event,
         hookCost,
+        hookFingerprint: hookFingerprint(event, groupMeta, h),
         originPath,
         wmuxRequired: isWmux,
       }),

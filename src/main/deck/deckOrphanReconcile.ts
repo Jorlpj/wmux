@@ -250,13 +250,16 @@ export async function reconcileOrphanDeckState(
           }
         }
 
-        // Archive before teardown
+        // Archive before teardown. A record that cannot be archived is not
+        // torn down: its workspace keeps all of its Deck state for now.
         try {
           archiveDeckWork(work, dir);
           archived.push(id);
           log(`archived active work ${work.id} for orphan ${id}`);
         } catch (err) {
-          log(`failed to archive work for orphan ${id}: ${String(err)}`);
+          skippedIds.push(id);
+          log(`skipping orphan ${id}: failed to archive its work: ${String(err)}`);
+          continue;
         }
       }
 
@@ -264,6 +267,7 @@ export async function reconcileOrphanDeckState(
       try {
         await teardownWorkspaceDeckState(id, {
           dir,
+          archiveActiveWork: false,
           onStrandedWork: () => {
             /* noop: do not raise decisions for workspaces that do not exist */
           },
@@ -310,6 +314,21 @@ export async function tryStartupDeckReconcile(opts?: {
 
   if (entries && entries.length > 0 && peek && peek.ageMs <= maxAge) {
     startupDeckReconcileDone = true;
+    // A failed or empty session load still flips the renderer's pane gate and
+    // pushes a mirror holding one freshly generated default workspace. Every
+    // real workspace id on disk would then look orphaned and lose its Deck
+    // state for good, although the next healthy boot restores those
+    // workspaces. Same rule session.json saves follow: nothing destructive
+    // unless the saved session actually came back.
+    if (!mirror.isSessionRestored()) {
+      const line = 'skipped startup reconcile: the renderer did not restore a saved session (load failed, was empty, or the renderer is too old to say)';
+      if (opts?.log) opts.log(line);
+      else {
+        // eslint-disable-next-line no-console
+        console.log(`[deck:reconcile] ${line}`);
+      }
+      return true;
+    }
     const liveIds = entries.map((e) => e.id);
     try {
       await reconcileOrphanDeckState(liveIds, opts);
