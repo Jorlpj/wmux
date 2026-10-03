@@ -24,6 +24,7 @@ import { codexConfigPath, codexHasWmuxServer } from '../../shared/mcpRegistratio
 import { tokenize, launcherStem } from '../../shared/agentResume';
 import { WMUX_TOOLS, type WmuxTools } from '../../shared/orchestratorRole';
 import { resolveRoleName, toolSurfaceShellFlags, wmuxServerArgs } from '../../shared/roleSurfaces';
+import { splitModelEnvMarker } from '../../shared/workerLaunch';
 
 export interface WmuxToolsHint {
   tools: WmuxTools;
@@ -94,7 +95,11 @@ export interface ToolSurfaceDeps {
   log?: (line: string) => void;
 }
 
-export function applyWmuxToolsToCommand(command: string, hint: WmuxToolsHint, deps: ToolSurfaceDeps = {}): string {
+export function applyWmuxToolsToCommand(fullCommand: string, hint: WmuxToolsHint, deps: ToolSurfaceDeps = {}): string {
+  // A fan-out worker line may lead with the model-env marker (POSIX), which
+  // hides the launcher from tokens[0]; splice into the rest and put it back.
+  const { marker, command } = splitModelEnvMarker(fullCommand);
+  if (marker) return marker + applyWmuxToolsToCommand(command, hint, deps);
   const mcpDir = deps.mcpDir ?? path.join(getWmuxHomeDir(), 'mcp');
   const exists = deps.exists ?? fs.existsSync;
   const writeFile = deps.writeFile ?? ((p, d) => {

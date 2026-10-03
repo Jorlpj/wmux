@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { applyWmuxToolsToCommand, isWmuxToolsHint, locateWmuxMcpEntry } from '../toolSurfaceLaunch';
 import { codexConfigPath, codexHasWmuxServer } from '../../../shared/mcpRegistration';
 import { tokenize } from '../../../shared/agentResume';
+import { MODEL_ENV_MARKER } from '../../../shared/workerLaunch';
 
 // Config files go to the instance's (suffixed) data dir; the bundle lives in
 // the unsuffixed stable copy McpRegistrar keeps.
@@ -70,6 +71,15 @@ describe('wmux tool level on a role-bound launch line', () => {
     expect(out).toBe(`claude --mcp-config="${file}" "fix the bug"`);
     const words = tokenize(out).map((t) => t.value);
     expect(words).toEqual(['claude', `--mcp-config=${file}`, 'fix the bug']);
+  });
+
+  it('splices behind a leading model-env marker and keeps the marker in front', () => {
+    const file = path.join(mcpDir, 'surface-core.json');
+    const { out, written } = run(`${MODEL_ENV_MARKER}claude "$(cat '/m/p.md')"`, 'core');
+    expect(out).toBe(`${MODEL_ENV_MARKER}claude --mcp-config="${file}" "$(cat '/m/p.md')"`);
+    expect(written[file]).toBeDefined();
+    // A marked line with a non-agent launcher is still left alone.
+    expect(run(`${MODEL_ENV_MARKER}npm test`, 'core').out).toBe(`${MODEL_ENV_MARKER}npm test`);
   });
 
   it('validates the hint shape', () => {
