@@ -113,6 +113,7 @@ describe('AgyAccountService', () => {
 
   it('does not swap away from an unregistered sign-in it cannot copy, and blames no account', async () => {
     const s = make();
+    await s.setAutoRotate(true);
     await withAccounts(s, ['a@x.com', 'b@x.com']);
     snapshots.set('a@x.com', quota(0.6));
     snapshots.set('b@x.com', quota(0.6));
@@ -126,6 +127,7 @@ describe('AgyAccountService', () => {
 
   it('holds instead of using a registered active account that is out when the swap is refused', async () => {
     const s = make();
+    await s.setAutoRotate(true);
     await withAccounts(s, ['b@x.com', 'a@x.com']); // a is live now
     snapshots.set('a@x.com', quota(0));
     snapshots.set('b@x.com', quota(0.6));
@@ -136,12 +138,23 @@ describe('AgyAccountService', () => {
     expect(agyBlobEmail(backend.read(AGY_ACTIVE_TARGET))).toBe('a@x.com');
   });
 
+  it('keeps automatic switching off until the user turns it on', async () => {
+    const s = make();
+    expect(s.snapshot().autoRotate).toBe(false);
+    await withAccounts(s, ['a@x.com', 'b@x.com']); // b is live now
+    snapshots.set('b@x.com', quota(0.6));
+    snapshots.set('a@x.com', quota(0.9));
+    expect(await s.prepareLaunch()).toMatchObject({ ok: true, switched: false });
+    expect(agyBlobEmail(backend.read(AGY_ACTIVE_TARGET))).toBe('b@x.com');
+  });
+
   it('lets a launch through unchanged with no accounts', async () => {
     expect(await make().prepareLaunch()).toEqual({ ok: true, account: null, switched: false });
   });
 
   it('switches to the account with quota before a launch', async () => {
     const s = make();
+    await s.setAutoRotate(true);
     await withAccounts(s, ['a@x.com', 'b@x.com']); // b is live now
     snapshots.set('b@x.com', quota(0));
     snapshots.set('a@x.com', quota(0.6));
@@ -171,6 +184,7 @@ describe('AgyAccountService', () => {
 
   it('marks an account that lost its saved sign-in and moves on', async () => {
     const s = make();
+    await s.setAutoRotate(true);
     await withAccounts(s, ['a@x.com', 'b@x.com', 'c@x.com']);
     snapshots.set('c@x.com', quota(0));
     snapshots.set('a@x.com', quota(0.9));

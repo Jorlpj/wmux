@@ -66,7 +66,8 @@ function sanitizeFile(raw: unknown): AgyAccountsFile {
   const accounts = (Array.isArray(o.accounts) ? o.accounts : [])
     .map(sanitizeAccount)
     .filter((a): a is AgyAccount => a !== null && !seen.has(a.email) && Boolean(seen.add(a.email)));
-  return { version: SCHEMA_VERSION, autoRotate: o.autoRotate !== false, accounts };
+  // Automatic switching is opt-in: a new install, or a file without the field, keeps it off.
+  return { version: SCHEMA_VERSION, autoRotate: o.autoRotate === true, accounts };
 }
 
 export class AgyAccountError extends Error {
