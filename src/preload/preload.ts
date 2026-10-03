@@ -4,6 +4,29 @@ import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2Res
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 import type {
+  AgySensorInstallResult,
+  AgySensorStatus,
+  QuotaReadRequest,
+  QuotaReadResult,
+} from '../shared/tokenUsage/quotaTypes';
+import type {
+  ProviderInventory,
+  SurfaceApplyResult,
+  SurfaceChangeRequest,
+  SurfaceInventoryRequest,
+  SurfacePreview,
+  SurfaceProviderId,
+} from '../shared/tokenUsage/surfaceTypes';
+import type {
+  ApplyProfileOptions,
+  ProfileApplyAggregateResult,
+  ProfilePreviewResult,
+  SaveProfileRequest,
+  SaveProfileResult,
+  SurfaceProfile,
+} from '../shared/tokenUsage/profileTypes';
+import type { SurfaceReconcileResult } from '../main/surfaces/reconcile';
+import type {
   FirstRunCheckResult,
   RegisterMcpResult,
   SampleTaskStartPayload,
@@ -53,8 +76,14 @@ export interface McpTargetStatusPayload {
   verified: boolean;
   wmux: { registered: boolean; path: string | null };
 }
-interface McpStatusPayload {
+export interface McpStatusPayload {
   targets: McpTargetStatusPayload[];
+}
+export interface McpRegisterTargetResult {
+  id: string;
+  success: boolean;
+  error?: string;
+  status: McpStatusPayload;
 }
 
 const chat: ChatBridgeApi = {
@@ -637,6 +666,32 @@ const electronAPI = {
       }>,
     set: (vendor: 'claude' | 'codex', on: boolean) =>
       ipcRenderer.invoke(IPC.ACCOUNT_ROTATION_SET, { vendor, on }) as Promise<{ ok: boolean }>,
+  },
+  // agy (Antigravity CLI) accounts: one machine-wide sign-in, swapped by main.
+  // Snapshots carry emails, labels and quota fractions only — never a credential.
+  agyAccounts: {
+    list: () =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_LIST) as Promise<
+        import('../shared/agyAccounts').AgyAccountsSnapshot & {
+          login: import('../main/account/AgyAccountService').AgyLoginState;
+        }
+      >,
+    addCurrent: (label?: string) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_ADD_CURRENT, { label }) as Promise<import('../shared/agyAccounts').AgyAccount>,
+    beginLogin: () =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_LOGIN_BEGIN) as Promise<import('../main/account/AgyAccountService').AgyLoginState>,
+    cancelLogin: () => ipcRenderer.invoke(IPC.AGY_ACCOUNT_LOGIN_CANCEL) as Promise<{ ok: boolean }>,
+    activate: (id: string) => ipcRenderer.invoke(IPC.AGY_ACCOUNT_ACTIVATE, { id }) as Promise<{ ok: boolean }>,
+    rename: (id: string, label: string) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_RENAME, { id, label }) as Promise<{ ok: boolean }>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.AGY_ACCOUNT_REMOVE, { id }) as Promise<{ ok: boolean }>,
+    setAutoRotate: (on: boolean) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_SET_AUTO_ROTATE, { on }) as Promise<{ ok: boolean }>,
+    onChanged: (callback: () => void) => {
+      const listener = (): void => callback();
+      ipcRenderer.on(IPC.AGY_ACCOUNT_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.AGY_ACCOUNT_CHANGED, listener); };
+    },
   },
   // Scheduled runs. Invokes pass through to the daemon's automation.* RPCs and
   // never reject for a missing daemon (empty lists / `{ ok:false }`). onPush
@@ -1300,6 +1355,40 @@ const electronAPI = {
     check: () => ipcRenderer.invoke(IPC.MCP_CHECK) as Promise<McpStatusPayload>,
     reregister: () => ipcRenderer.invoke(IPC.MCP_REREGISTER) as Promise<McpStatusPayload>,
     unregister: () => ipcRenderer.invoke(IPC.MCP_UNREGISTER) as Promise<McpStatusPayload>,
+    registerTarget: (targetId: string) =>
+      ipcRenderer.invoke(IPC.MCP_REGISTER_TARGET, targetId) as Promise<McpRegisterTargetResult>,
+  },
+  tokenUsage: {
+    readQuota: (request?: QuotaReadRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_READ, request) as Promise<QuotaReadResult>,
+    readAccountQuotas: (request?: import('../shared/tokenUsage/accountQuotaTypes').AccountQuotasRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_ACCOUNTS, request) as Promise<import('../shared/tokenUsage/accountQuotaTypes').AccountQuotasResult>,
+    agySensorStatus: () => ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_STATUS) as Promise<AgySensorStatus>,
+    installAgySensor: () =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_INSTALL) as Promise<AgySensorInstallResult>,
+    readInventory: (request: SurfaceInventoryRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_INVENTORY, request) as Promise<ProviderInventory>,
+    previewChanges: (request: SurfaceChangeRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_PREVIEW, request) as Promise<SurfacePreview>,
+    applyChanges: (request: SurfaceChangeRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_APPLY, request) as Promise<SurfaceApplyResult>,
+    listProfiles: () =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_LIST) as Promise<SurfaceProfile[]>,
+    saveProfile: (nameOrRequest: string | SaveProfileRequest, maybeProviders?: SurfaceProviderId[]) => {
+      const payload: SaveProfileRequest =
+        typeof nameOrRequest === 'string'
+          ? { name: nameOrRequest, providers: maybeProviders }
+          : nameOrRequest;
+      return ipcRenderer.invoke(IPC.TOKEN_PROFILES_SAVE, payload) as Promise<SaveProfileResult>;
+    },
+    deleteProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_DELETE, { id }) as Promise<boolean>,
+    previewProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_PREVIEW, { id }) as Promise<ProfilePreviewResult>,
+    applyProfile: (id: string) =>
+      ipcRenderer.invoke(IPC.TOKEN_PROFILES_APPLY, { id }) as Promise<ProfileApplyAggregateResult>,
+    reconcileSurface: (provider: SurfaceProviderId) =>
+      ipcRenderer.invoke(IPC.TOKEN_SURFACE_RECONCILE, { provider }) as Promise<SurfaceReconcileResult>,
   },
   firstRun: {
     check: () => ipcRenderer.invoke(IPC.FIRST_RUN_CHECK) as Promise<FirstRunCheckResult>,

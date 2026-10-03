@@ -25,7 +25,13 @@ export function useAccountRotation(): { state: RotationState | null; reload: () 
 }
 
 /** Per-vendor "Switch accounts by quota" switches at the top of Accounts. */
-export function AccountRotationControls({ state, reload }: { state: RotationState | null; reload: () => void }): React.ReactElement | null {
+export function AccountRotationControls({ state, reload, children, termsKey = 'accounts.rotateTerms' }: {
+  state: RotationState | null;
+  reload: () => void;
+  /** More switch rows (agy), shown with the Claude and Codex ones above the notes. */
+  children?: React.ReactNode;
+  termsKey?: 'accounts.rotateTerms' | 'agyAccounts.rotateTerms';
+}): React.ReactElement | null {
   const t = useT();
   const api = window.electronAPI?.accountRotation;
   if (!api || !state) return null;
@@ -46,8 +52,9 @@ export function AccountRotationControls({ state, reload }: { state: RotationStat
           </span>
         </div>
       ))}
+      {children}
       <p className="settings-note">{t('accounts.rotateDesc')}</p>
-      <p className="settings-note">{t('accounts.rotateTerms')}</p>
+      <p className="settings-note">{t(termsKey)}</p>
     </>
   );
 }

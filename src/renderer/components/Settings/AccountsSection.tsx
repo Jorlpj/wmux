@@ -13,6 +13,7 @@ import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import { SettingsSection } from './SettingsLayout';
 import { AccountRotationControls, RotationQuotaBit, useAccountRotation } from './AccountRotationControls';
+import { AgyAccountRows, AgyRotationRow, useAgyAccounts, type AgyAccounts } from './AgyAccountsSection';
 import {
   startAccountLogin,
   checkAccountLoginAgain,
@@ -24,6 +25,7 @@ import {
 } from '../../utils/accountLogin';
 
 type Vendor = 'claude' | 'codex';
+type WizardVendor = Vendor | 'agy';
 type AccountRow = Account & { status: CredentialStatus; loginCommand: string };
 
 // ─── M2 — per-account usage (hook-gated) ─────────────────────────────────────
@@ -173,9 +175,13 @@ function PendingLoginRow({ entry }: { entry: PendingLogin }): React.ReactElement
   );
 }
 
-function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }): React.ReactElement {
+function AddAccountWizard({ onDone, onCancel, agy }: {
+  onDone: () => void;
+  onCancel: () => void;
+  agy: AgyAccounts | null;
+}): React.ReactElement {
   const t = useT();
-  const [vendor, setVendor] = useState<Vendor>('claude');
+  const [vendor, setVendor] = useState<WizardVendor>('claude');
   const [name, setName] = useState('');
   const [share, setShare] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -184,7 +190,7 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
   const prepare = useCallback(async () => {
     setError(null);
     const api = window.electronAPI?.accounts;
-    if (!api) return;
+    if (!api || vendor === 'agy') return;
     if (!name.trim()) { setError(t('accounts.enterName')); return; }
     setBusy(true);
     try {
@@ -209,8 +215,28 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
           options={[
             { value: 'claude', label: 'Claude' },
             { value: 'codex', label: 'Codex' },
+            ...(agy ? [{ value: 'agy' as const, label: 'Antigravity' }] : []),
           ]}
         />
+        {vendor === 'agy' ? (
+          // agy has one machine-wide sign-in: no name or config dir, just sign in from a new tab.
+          <>
+            <div className="text-[11px] text-[var(--text-sub)]">
+              {agy?.snap.supported ? t('agyAccounts.machineWideNote') : t('agyAccounts.unsupported')}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="md" onClick={onCancel}>{t('common.cancel')}</Button>
+              <Button
+                variant="primary"
+                size="md"
+                disabled={!agy?.snap.supported || agy.snap.login.pending}
+                onClick={() => { agy?.signIn(); onDone(); }}
+              >
+                {t('agyAccounts.signInAnother')}
+              </Button>
+            </div>
+          </>
+        ) : (<>
         <Input
           className="settings-input"
           placeholder={t('accounts.namePlaceholder')}
@@ -230,6 +256,7 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
           <Button variant="ghost" size="md" onClick={onCancel}>{t('common.cancel')}</Button>
           <Button variant="primary" size="md" onClick={prepare} disabled={busy}>{t('accounts.createAndLogin')}</Button>
         </div>
+        </>)}
       </div>
     </div>
   );
@@ -247,6 +274,8 @@ export function AccountsSection(): React.ReactElement | null {
   const [usage, setUsage] = useState<Map<string, AccountUsageEntry>>(new Map());
   const pending = useSyncExternalStore(subscribeAccountLogins, getPendingAccountLogins);
   const rotation = useAccountRotation();
+  const agy = useAgyAccounts();
+  const agyRows = agy?.snap.supported ? agy.snap.accounts.length : 0;
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.accounts;
@@ -325,9 +354,16 @@ export function AccountsSection(): React.ReactElement | null {
     // No heading: the Accounts page title already names this, its only group.
     <SettingsSection id="claudeacct">
       <p className="settings-note">{t('accounts.intro')}</p>
-      <AccountRotationControls state={rotation.state} reload={rotation.reload} />
+      <AccountRotationControls
+        state={rotation.state}
+        reload={rotation.reload}
+        termsKey={agy?.snap.supported ? 'agyAccounts.rotateTerms' : 'accounts.rotateTerms'}
+      >
+        {agy && <AgyRotationRow agy={agy} />}
+      </AccountRotationControls>
+      {agy?.snap.supported && <p className="settings-note">{t('agyAccounts.autoRotateDesc')}</p>}
       {removeNotice && <p className="settings-note">{removeNotice}</p>}
-      {loaded && rows.length === 0 && !adding && (
+      {loaded && rows.length === 0 && agyRows === 0 && !adding && (
         <p className="settings-note">{t('accounts.empty')}</p>
       )}
       {rows.map((r) => (
@@ -395,14 +431,16 @@ export function AccountsSection(): React.ReactElement | null {
           )}
         </div>
       ))}
+      {agy && <AgyAccountRows agy={agy} />}
+      {agyRows > 0 && <p className="settings-note">{t('agyAccounts.machineWideNote')}</p>}
       {pending.map((p) => <PendingLoginRow key={p.configDir} entry={p} />)}
       {adding ? (
-        <AddAccountWizard onDone={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
+        <AddAccountWizard agy={agy} onDone={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
       ) : (
         <div className="settings-row" style={{ minHeight: 0 }}>
           {/* With no account yet, adding one is what the tab is for. */}
           <Button
-            variant={rows.length === 0 ? 'primary' : 'secondary'}
+            variant={rows.length === 0 && agyRows === 0 ? 'primary' : 'secondary'}
             size="md"
             className="self-start"
             onClick={() => setAdding(true)}
