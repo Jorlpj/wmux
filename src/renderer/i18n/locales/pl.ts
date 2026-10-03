@@ -1093,10 +1093,11 @@ export const pl = {
   'accounts.rotateTerms': "Odpowiadasz za przestrzeganie warunków każdego dostawcy.",
   // Settings — Accounts — Antigravity (agy): one machine-wide sign-in, swapped by quota
   'agyAccounts.title': "Konta Antigravity (agy)",
-  'agyAccounts.intro': "Dodaj kilka kont agy, a wmux użyje tego, które ma jeszcze limit.",
+  'agyAccounts.intro': "Dodaj własne konta agy, a wmux będzie mógł wybierać między nimi według limitu.",
   'agyAccounts.machineWideNote': "agy przechowuje jedno logowanie dla całego komputera, więc zmiana konta tutaj zmienia je też dla sesji agy uruchamianych później poza wmux oraz dla Antigravity IDE, jeśli korzysta z tego samego logowania. Już działające sesje zachowują konto, na którym wystartowały.",
   'agyAccounts.autoRotate': "Przełączaj konta według limitu",
-  'agyAccounts.autoRotateDesc': "Zanim wmux uruchomi agy, zachowuje aktywne konto, dopóki ma limit, a w przeciwnym razie przełącza na konto z największym pozostałym limitem. Gdy wszystkie konta są wyczerpane, agy nie startuje, dopóki któreś się nie zresetuje. Po wyłączeniu wmux nie przełącza kont, ale nadal nie uruchomi agy na wyczerpanym koncie.",
+  'agyAccounts.autoRotateDesc': "Zanim wmux uruchomi agy, zachowuje aktywne konto, dopóki ma limit, a w przeciwnym razie przełącza na konto z największym pozostałym limitem. Gdy wszystkie konta są wyczerpane, agy nie startuje, dopóki któreś się nie zresetuje. Po wyłączeniu wmux nie przełącza kont, ale nadal nie uruchomi agy na wyczerpanym koncie. Konto wybrane przyciskiem Użyj teraz lub to, na które się zalogujesz, nigdy nie jest przełączane automatycznie.",
+  'agyAccounts.rotateTerms': "Odpowiadasz za przestrzeganie warunków każdego dostawcy. Google podejmowało działania wobec kont przełączanych w celu obejścia limitów Antigravity.",
   'agyAccounts.empty': "Nie dodano jeszcze żadnego konta agy.",
   'agyAccounts.unsupported': "Kilka kont agy wymaga Menedżera poświadczeń Windows, więc działa to tylko w systemie Windows.",
   'agyAccounts.active': "Aktywne",

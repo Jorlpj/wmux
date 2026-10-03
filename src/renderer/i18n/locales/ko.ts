@@ -2408,10 +2408,11 @@ export const ko = {
   'accounts.rotateTerms': "각 제공자의 약관 준수는 사용자 책임입니다.",
   // Settings — Accounts — Antigravity (agy): one machine-wide sign-in, swapped by quota
   'agyAccounts.title': "Antigravity (agy) 계정",
-  'agyAccounts.intro': "여러 agy 계정을 추가하면 wmux가 할당량이 남은 계정을 사용합니다.",
+  'agyAccounts.intro': "보유한 agy 계정을 추가하면 wmux가 할당량에 따라 그중에서 선택할 수 있습니다.",
   'agyAccounts.machineWideNote': "agy는 컴퓨터 전체에 로그인을 하나만 유지합니다. 여기서 계정을 바꾸면 이후 wmux 밖에서 시작하는 agy 세션과, 같은 로그인을 공유한다면 Antigravity IDE도 함께 바뀝니다. 이미 실행 중인 세션은 시작할 때의 계정을 유지합니다.",
   'agyAccounts.autoRotate': "할당량에 따라 계정 전환",
-  'agyAccounts.autoRotateDesc': "wmux가 agy를 시작하기 전에, 활성 계정에 할당량이 있으면 유지하고 없으면 남은 할당량이 가장 많은 계정으로 전환합니다. 모든 계정이 소진되면 하나가 초기화될 때까지 agy를 시작하지 않습니다. 끄면 전환하지 않지만, 소진된 계정으로는 여전히 agy를 시작하지 않습니다.",
+  'agyAccounts.autoRotateDesc': "wmux가 agy를 시작하기 전에, 활성 계정에 할당량이 있으면 유지하고 없으면 남은 할당량이 가장 많은 계정으로 전환합니다. 모든 계정이 소진되면 하나가 초기화될 때까지 agy를 시작하지 않습니다. 끄면 전환하지 않지만, 소진된 계정으로는 여전히 agy를 시작하지 않습니다. 지금 사용으로 고르거나 로그인한 계정은 자동으로 전환되지 않습니다.",
+  'agyAccounts.rotateTerms': "각 제공자의 약관 준수는 사용자 책임입니다. Google은 Antigravity 할당량을 우회하려고 계정을 전환한 계정에 조치를 취한 적이 있습니다.",
   'agyAccounts.empty': "아직 추가된 agy 계정이 없습니다.",
   'agyAccounts.unsupported': "여러 agy 계정은 Windows 자격 증명 관리자가 필요하므로 Windows에서만 사용할 수 있습니다.",
   'agyAccounts.active': "활성",
