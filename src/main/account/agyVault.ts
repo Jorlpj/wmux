@@ -12,6 +12,8 @@
 // koffi missing) disables the vault for the process and the feature reports
 // itself unsupported instead of throwing.
 
+import { createHash } from 'node:crypto';
+
 export const AGY_ACTIVE_TARGET = 'gemini:antigravity';
 const AGY_ACTIVE_USER = 'antigravity';
 const COPY_PREFIX = 'wmux:agy:';
@@ -51,12 +53,30 @@ export function agyBlobEmail(blob: Buffer | null): string | null {
  *  replaced; `failed` = the vault write itself failed. */
 export type AgySwapResult = 'ok' | 'no-copy' | 'live-not-saved' | 'failed';
 
+/** Short hash of the blob's refresh token; null when absent. A new sign-in, even to the same account,
+ *  gets a new refresh token, while a running session refreshing its access token keeps it. */
+export function agyRefreshDigest(blob: Buffer | null): string | null {
+  if (!blob) return null;
+  try {
+    const parsed = JSON.parse(blob.toString('utf8')) as { token?: { refresh_token?: unknown } };
+    const token = parsed.token?.refresh_token;
+    return typeof token === 'string' && token ? createHash('sha256').update(token).digest('hex').slice(0, 16) : null;
+  } catch {
+    return null;
+  }
+}
+
 export class AgyVault {
   constructor(private readonly backend: AgyVaultBackend) {}
 
   /** Email of the account agy is signed in with right now. */
   activeEmail(): string | null {
     return agyBlobEmail(this.backend.read(AGY_ACTIVE_TARGET));
+  }
+
+  /** Refresh-token digest of the live sign-in (never the token itself). */
+  activeRefreshDigest(): string | null {
+    return agyRefreshDigest(this.backend.read(AGY_ACTIVE_TARGET));
   }
 
   /** Copy the live sign-in into its account slot. Returns the email saved, or

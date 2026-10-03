@@ -250,16 +250,28 @@ describe('AgyAccountService — self-healing signals', () => {
   });
   afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
 
+  it('sign-in accepts the same account signed in again (new refresh token)', async () => {
+    const s = make();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', 'r1'));
+    await s.addCurrent();
+    await s.beginLogin();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', 'r-new'));
+    await s.pollLogin();
+    expect(s.loginState()).toMatchObject({ pending: false, lastResult: 'a@x.com' });
+    expect(agyBlobEmail(backend.read(AGY_ACTIVE_TARGET))).toBe('a@x.com');
+  });
+
   it('sign-in ignores the previous account written back by a running session', async () => {
     const s = make();
     backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
     await s.addCurrent();
     await s.beginLogin();
-    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', 'r9'));
+    // A running session refreshes its access token; the refresh token stays the same.
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
     await s.pollLogin();
     expect(s.loginState().pending).toBe(true);
     expect(backend.read(AGY_ACTIVE_TARGET)).toBeNull();
-    expect(JSON.parse(String(backend.read(copyTarget('a@x.com')))).token.refresh_token).toBe('r9');
+    expect(JSON.parse(String(backend.read(copyTarget('a@x.com')))).token.refresh_token).toBe('r1');
     backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('b@x.com'));
     await s.pollLogin();
     expect(s.loginState()).toMatchObject({ pending: false, lastResult: 'b@x.com' });
