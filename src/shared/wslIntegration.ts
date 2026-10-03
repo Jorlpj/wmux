@@ -58,6 +58,15 @@ if [ -z "$real" ]; then
   # beats telling the user their installed claude does not exist.
   wmux_bash=/bin/bash
   command -v timeout >/dev/null 2>&1 && wmux_bash="timeout -k 1 10 /bin/bash"
+  # #1721 — and in its OWN session. timeout runs bash in a background process
+  # group; with a controlling terminal, which every real pane has, the
+  # interactive bash finds itself outside the terminal's foreground group, is
+  # stopped (SIGTTIN/SIGTTOU), and sits there until the KILL above. Measured in
+  # a WSL pane: 11 s, then the 127 below for a claude that is installed. With
+  # no controlling terminal there is nothing to take, and /dev/tty is gone.
+  # setsid outside timeout: if setsid has to fork, timeout still bounds bash.
+  # util-linux and busybox both ship setsid; without it, behave as before.
+  command -v setsid >/dev/null 2>&1 && wmux_bash="setsid $wmux_bash"
   # Unquoted on purpose: wmux_bash is a command plus its arguments.
   # shellcheck disable=SC2086
   login_path=$($wmux_bash -ic 'printf "\\nWMUX_RESOLVED_PATH=%s\\n" "$PATH"' </dev/null 2>/dev/null \
@@ -72,7 +81,8 @@ if [ -z "$real" ]; then
   exit 127
 fi
 # Retain the pane PATH for subprocesses; only command lookup excludes the shim.
-exec "$real" --settings "$WMUX_WSL_SETTINGS" "$@"
+# --mcp-config is variadic: the = form keeps it from swallowing a prompt argument.
+exec "$real" --settings "$WMUX_WSL_SETTINGS" \${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"
 `;
 
 export const WSL_CODEX_HOOK = `#!/bin/sh
@@ -108,6 +118,24 @@ done
 exit 0
 `;
 
+// The MCP server runs in the Windows runtime, like the hook bridge: named-pipe
+// auth, CDP on Windows loopback and Playwright all stay where they already work.
+// One interop spawn per agent session, never per tool call. The server also
+// learns which distro called it and where Windows drives are mounted (`wslpath
+// -u 'C:\'`, e.g. /mnt/c/), so file tools can speak the agent's paths.
+export const WSL_MCP_LAUNCH = 'export ELECTRON_RUN_AS_NODE=1 WMUX_WSL_DISTRO="$WSL_DISTRO_NAME"'
+  + ' WMUX_WSL_MOUNT="$(wslpath -u \'C:\\\' 2>/dev/null)"'
+  + ' WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w";'
+  + ' exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"';
+
+const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
+// Codex gets the same server through -c. JSON string syntax is valid TOML.
+// Codex starts MCP servers with a sanitized environment (PATH, HOME, ...), so
+// the shim appends env={...} with the pane's own values as literal strings.
+// 30 s, not Codex's 10 s default: a cold Electron start over interop can take
+// longer on Windows machines that scan every launch (antivirus, endpoint scanning).
+const WSL_CODEX_MCP = `mcp_servers.wmux={command="/bin/sh",args=["-c",${JSON.stringify(WSL_MCP_LAUNCH)}],startup_timeout_sec=30`;
+
 export const WSL_CODEX_SHIM = `#!/bin/bash
 old_ifs=$IFS
 IFS=:
@@ -125,10 +153,12 @@ if [ "\${WMUX_SHELL_INTEGRATION:-1}" = 0 ]; then exec "$real" "$@"; fi
 # Scan the actual launch directory, including Codex's --cd override. No
 # startup files or user commands are evaluated to inspect configuration.
 launch_dir=$PWD
+server_mode=
 args=("$@")
 for ((i=0; i<\${#args[@]}; i++)); do
   case "\${args[i]}" in
     --) break ;;
+    app-server|mcp-server|remote-control|exec-server) server_mode=1 ;;
     -C|--cd) ((i++)); launch_dir=\${args[i]:-} ;;
     --cd=*) launch_dir=\${args[i]#--cd=} ;;
     -C?*) launch_dir=\${args[i]#-C} ;;
@@ -151,23 +181,60 @@ collect_configs() {
 # Only this short-lived helper needs Electron's Node mode. Do not leak it to
 # Codex or other Linux applications. It never runs on the daemon event loop.
 # Bounded like the Claude shim's PATH lookup: a stalled interop call falls back
-# to launching Codex unchanged instead of hanging the launch.
+# to launching Codex unchanged instead of hanging the launch. 30 s, the MCP
+# server's own startup budget: on antivirus-scanned machines this helper is the same
+# cold Electron start, and a timeout here drops notify and MCP together.
 wmux_guard=
-command -v timeout >/dev/null 2>&1 && wmux_guard="timeout -k 1 10"
-override=$(collect_configs | ELECTRON_RUN_AS_NODE=1 \
+command -v timeout >/dev/null 2>&1 && wmux_guard="timeout -k 1 30"
+# The helper prints one line per key that no configuration layer owns.
+free=$(collect_configs | ELECTRON_RUN_AS_NODE=1 \
   WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w" \
   $wmux_guard "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" "$WMUX_WSL_CODEX_HOOK" "$@")
-if [ $? = 0 ] && [ -n "$override" ]; then
-  exec "$real" -c "$override" "$@"
+[ $? = 0 ] || free=
+notify= mcp=
+while IFS= read -r line; do
+  case $line in notify=*) notify=$line ;; mcp) mcp=1 ;; esac
+done <<< "$free"
+overrides=()
+[ -z "$notify" ] || overrides+=(-c "$notify")
+# Server modes may serve other panes; never stamp this pane's identity on them.
+# remote-control starts the shared app-server daemon; exec-server is a
+# standalone service (both Codex 0.160+, both take -c).
+# Global options may precede the subcommand (codex -c k=v app-server). Any
+# matching word before -- counts: a false match only skips MCP, which is safe.
+[ -z "$server_mode" ] || mcp=
+if [ -n "$mcp" ] && [ -n "\${WMUX_WSL_MCP:-}" ]; then
+  # TOML literal strings keep Windows backslashes as-is but cannot hold a
+  # quote or control character. Codex refuses to start on an override it
+  # cannot parse, so any such value skips the server instead.
+  mcp_env=
+  for name in WMUX_WSL_NODE WMUX_WSL_MCP WMUX_PTY_ID WMUX_WORKSPACE_ID WMUX_SURFACE_ID \
+      WMUX_DATA_SUFFIX WSLENV WSL_DISTRO_NAME WSL_INTEROP; do
+    [ -n "\${!name+set}" ] || continue
+    case \${!name} in *"'"*|*[[:cntrl:]]*) mcp=; break ;; esac
+    mcp_env="\${mcp_env:+$mcp_env,}$name='\${!name}'"
+  done
+  if [ -n "$mcp" ]; then
+    overrides+=(-c ${shellQuote(WSL_CODEX_MCP)}",env={$mcp_env}}")
+  else
+    printf '%s\\n' 'wmux: wmux MCP server not mounted (a pane value cannot be passed to Codex safely); launching Codex without it.' >&2
+  fi
 fi
-printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex unchanged.' >&2
-exec "$real" "$@"
+if [ -z "$notify" ]; then
+  # Without notify, overrides holds only the MCP server, if it was mounted.
+  if [ \${#overrides[@]} = 0 ]; then
+    printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex unchanged.' >&2
+  else
+    printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex with only the wmux MCP server added.' >&2
+  fi
+fi
+exec "$real" "\${overrides[@]}" "$@"
 `;
 
-function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'claude'): string {
+function findUp(startDir: string, rels: string[]): string | null {
   let dir = startDir;
   for (let i = 0; i < 8; i++) {
-    for (const rel of [`cli-bundle/${basename}`, `integrations/${agent}/bin/${basename}`, `dist/cli-bundle/${basename}`]) {
+    for (const rel of rels) {
       const candidate = path.join(dir, rel);
       if (fs.existsSync(candidate)) return candidate;
     }
@@ -175,7 +242,17 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error(`WSL integration: bundled ${agent} bridge ${basename} is missing`);
+  return null;
+}
+
+function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'claude'): string {
+  const found = findUp(startDir, [`cli-bundle/${basename}`, `integrations/${agent}/bin/${basename}`, `dist/cli-bundle/${basename}`]);
+  if (!found) throw new Error(`WSL integration: bundled ${agent} bridge ${basename} is missing`);
+  return found;
+}
+
+function wslMcpConfig(): string {
+  return JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH] } } });
 }
 
 export function buildWslInjection(options: {
@@ -189,6 +266,8 @@ export function buildWslInjection(options: {
   bridgePath?: string;
   codexBridgePath?: string;
   codexConfigPath?: string;
+  /** Windows MCP entry; null skips MCP. Missing bundle also skips, never fails the pane. */
+  mcpEntryPath?: string | null;
 }): { args: string[]; env: Record<string, string> } {
   const { target, cwd, integrationDir } = options;
   const dir = path.join(integrationDir, 'wsl');
@@ -205,6 +284,10 @@ export function buildWslInjection(options: {
     matcher: '', hooks: [{ type: 'command', command: `/bin/sh "$WMUX_WSL_HOOK" ${event}`, timeout: 10 }],
   }]]));
   write(path.join(dir, 'claude-settings.json'), JSON.stringify({ hooks }));
+  const mcpEntry = options.mcpEntryPath === undefined
+    ? findUp(__dirname, ['mcp-bundle/index.js', 'dist/mcp/mcp/entry.js'])
+    : options.mcpEntryPath;
+  if (mcpEntry) write(path.join(dir, 'claude-mcp.json'), wslMcpConfig());
   write(path.join(dir, 'bashrc.integration'), options.bashInit);
   write(path.join(dir, 'bashrc'), `
 # Keep the user's shell setup even when wmux hooks are disabled.
@@ -234,12 +317,14 @@ fi
     WMUX_WSL_SETTINGS: path.join(dir, 'claude-settings.json'),
     WMUX_WSL_BIN: bin,
     WMUX_WSL_BASHRC: path.join(dir, 'bashrc'),
+    ...(mcpEntry ? { WMUX_WSL_MCP: mcpEntry, WMUX_WSL_MCP_CONFIG: path.join(dir, 'claude-mcp.json') } : {}),
   };
   const entries = [
     'WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_DATA_SUFFIX',
     'WMUX_WSL_NODE/p', 'WMUX_WSL_BRIDGE/u', 'WMUX_WSL_HOOK/p',
     'WMUX_WSL_CODEX_BRIDGE/u', 'WMUX_WSL_CODEX_CONFIG/u', 'WMUX_WSL_CODEX_HOOK/p',
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
+    ...(mcpEntry ? ['WMUX_WSL_MCP/u', 'WMUX_WSL_MCP_CONFIG/p'] : []),
   ];
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);
   // WSL runs bash explicitly so --rcfile reaches Linux, never wsl.exe. The

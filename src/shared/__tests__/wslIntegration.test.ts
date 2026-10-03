@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildWslInjection } from '../wslIntegration';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { BASH_INIT } from '../../daemon/shell-integration';
 
 const dirs: string[] = [];
@@ -45,7 +45,43 @@ describe('WSL per-launch Claude integration', () => {
     expect(settings.hooks.SessionStart[0].hooks[0].command).toBe('/bin/sh "$WMUX_WSL_HOOK" SessionStart');
     expect(fs.readdirSync(dir)).toEqual(['wsl']);
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bashrc.integration'), 'utf8')).toContain('# original shell integration');
-    expect(fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8')).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" "$@"');
+    expect(fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8')).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"');
+  });
+
+  it('mounts the Windows wmux MCP server per launch, and skips it without a bundle', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-mcp-')); dirs.push(dir);
+    const base = { target: { distribution: 'Ubuntu', user: 'developer' }, cwd: '/home/developer',
+      env: { WMUX_PTY_ID: 'pane-one' }, integrationDir: dir, bashInit: '',
+      runtimePath: 'C:\\wmux\\wmux.exe', bridgePath: 'C:\\wmux\\wmux-bridge.mjs' };
+    const injected = buildWslInjection({ ...base, mcpEntryPath: 'C:\\wmux\\mcp-bundle\\index.js' });
+    expect(injected.env.WMUX_WSL_MCP).toBe('C:\\wmux\\mcp-bundle\\index.js');
+    // The entry is a Windows path for the Windows runtime; the config is read by Linux claude.
+    expect(injected.env.WSLENV).toContain('WMUX_WSL_MCP/u:WMUX_WSL_MCP_CONFIG/p');
+    const config = JSON.parse(fs.readFileSync(injected.env.WMUX_WSL_MCP_CONFIG, 'utf8'));
+    expect(Object.keys(config.mcpServers)).toEqual(['wmux']);
+    expect(config.mcpServers.wmux.command).toBe('/bin/sh');
+    expect(config.mcpServers.wmux.args[1]).toContain('exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"');
+
+    const skipped = buildWslInjection({ ...base, integrationDir: path.join(dir, 'none'), mcpEntryPath: null });
+    expect(skipped.env).not.toHaveProperty('WMUX_WSL_MCP_CONFIG');
+    expect(skipped.env.WSLENV).not.toContain('WMUX_WSL_MCP');
+    expect(fs.existsSync(path.join(dir, 'none', 'wsl', 'claude-mcp.json'))).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('launches the MCP entry in Electron node mode without leaking it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-mcp-run-')); dirs.push(dir);
+    const injected = buildWslInjection({ target: { distribution: 'test', user: 'test' }, cwd: dir,
+      env: {}, integrationDir: dir, bashInit: '', runtimePath: '/unused', bridgePath: '/unused', mcpEntryPath: '/entry.js' });
+    const fakeNode = path.join(dir, 'fake-node');
+    fs.writeFileSync(fakeNode, '#!/bin/sh\nprintf "%s|%s|%s|%s|%s" "$ELECTRON_RUN_AS_NODE" "$WSLENV" "$WMUX_WSL_DISTRO" "$WMUX_WSL_MOUNT" "$*"\n', { mode: 0o755 });
+    const fakeBin = path.join(dir, 'fake-bin'); fs.mkdirSync(fakeBin);
+    // wslpath only exists inside WSL; stand in with what it answers for C:\.
+    fs.writeFileSync(path.join(fakeBin, 'wslpath'), '#!/bin/sh\nprintf "%s|" "$@" > "$0.args"; printf "/mnt/c/"\n', { mode: 0o755 });
+    const { args } = JSON.parse(fs.readFileSync(injected.env.WMUX_WSL_MCP_CONFIG, 'utf8')).mcpServers.wmux;
+    const out = execFileSync('/bin/sh', args, { encoding: 'utf8',
+      env: { PATH: `${fakeBin}:/usr/bin:/bin`, WMUX_WSL_NODE: fakeNode, WMUX_WSL_MCP: '/entry.js', WSLENV: 'WMUX_PTY_ID', WSL_DISTRO_NAME: 'Ubuntu' } });
+    expect(out).toBe('1|WMUX_PTY_ID:ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w|Ubuntu|/mnt/c/|/entry.js');
+    expect(fs.readFileSync(path.join(fakeBin, 'wslpath.args'), 'utf8')).toBe('-u|C:\\|');
   });
   it.skipIf(process.platform === 'win32')('exec units skip noisy interactive startup files and diagnose missing cwd transport', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-exec-')); dirs.push(dir);
@@ -102,6 +138,40 @@ describe('WSL per-launch Claude integration', () => {
 
       expect(out).toBe(`claude ran: --settings ${env.WMUX_WSL_SETTINGS} --help`);
       expect(out).not.toContain('MOTD banner');
+    });
+
+    // #1721 — a real pane has a controlling terminal; CI does not, so the test
+    // above passed while every real pane waited out the 10 s bound and then got
+    // 127. `script` gives the shim a pty of its own. util-linux `script` only:
+    // BSD `script` (macOS) takes different arguments.
+    const hasUtilLinuxScript = process.platform === 'linux'
+      && spawnSync('script', ['--version'], { encoding: 'utf8' }).stdout?.includes('util-linux');
+    it.runIf(hasUtilLinuxScript)('finds it promptly under a controlling terminal', () => {
+      const { dir, env } = homeWithInteractiveClaude();
+      const nvmBin = path.join(dir, 'nvm-bin'); fs.mkdirSync(nvmBin);
+      fs.writeFileSync(path.join(nvmBin, 'claude'), '#!/bin/sh\nprintf "claude ran: %s" "$*"\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, '.bashrc'), `export PATH="${nvmBin}:$PATH"\n`);
+
+      const started = Date.now();
+      const out = execFileSync('script', ['-qec', `/bin/sh '${shimOf(dir)}' --help`, '/dev/null'], {
+        encoding: 'utf8', env, timeout: 20_000, killSignal: 'SIGKILL',
+      });
+
+      expect(out).toContain(`claude ran: --settings ${env.WMUX_WSL_SETTINGS} --help`);
+      // Stopped on the terminal, the lookup only ends at the 10 s KILL.
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    // --mcp-config is variadic in claude's parser: passed as two words it would
+    // also take the user's prompt as a config path.
+    it('passes the MCP config as one = argument, leaving the prompt alone', () => {
+      const { dir, env } = homeWithInteractiveClaude();
+      const bin = path.join(dir, 'claude-bin'); fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nprintf "%s|" "$@"\n', { mode: 0o755 });
+      const config = path.join(dir, 'mcp dir', 'claude-mcp.json');
+      const out = execFileSync('/bin/sh', [shimOf(dir), 'fix the bug'], { encoding: 'utf8',
+        env: { ...env, PATH: `${env.PATH}:${bin}`, WMUX_WSL_MCP_CONFIG: config } });
+      expect(out).toBe(`--settings|${env.WMUX_WSL_SETTINGS}|--mcp-config=${config}|fix the bug|`);
     });
 
     // The lookup is BOUNDED, and the bound is the KILL, not the TERM: an
