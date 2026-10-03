@@ -90,35 +90,7 @@ export async function readClaudeQuota(deps: ClaudeAdapterDeps = {}): Promise<Pro
 
   try {
     const snapshot = await fetchApi(credential.accessToken);
-    const windows: QuotaWindow[] = [
-      {
-        id: 'five_hour',
-        label: '5h',
-        usedPct: snapshot.sessionPct,
-        resetAtMs: snapshot.sessionResetEpochSec > 0 ? snapshot.sessionResetEpochSec * 1000 : null,
-        windowMins: 300,
-      },
-      {
-        id: 'weekly',
-        label: 'weekly',
-        usedPct: snapshot.weeklyPct,
-        resetAtMs: snapshot.weeklyResetEpochSec > 0 ? snapshot.weeklyResetEpochSec * 1000 : null,
-        windowMins: 10080,
-      },
-    ];
-
-    if (Array.isArray(snapshot.scoped)) {
-      for (const item of snapshot.scoped) {
-        const scopeKey = item.scope ? `scoped-${item.scope}` : `scoped-${item.group}`;
-        windows.push({
-          id: scopeKey,
-          label: item.scope ? `${item.scope} (weekly)` : `${item.group} (weekly)`,
-          usedPct: item.pct,
-          resetAtMs: item.resetEpochSec && item.resetEpochSec > 0 ? item.resetEpochSec * 1000 : null,
-          windowMins: 10080,
-        });
-      }
-    }
+    const windows = windowsFromUsageSnapshot(snapshot);
 
     const result: ProviderQuota = {
       ...base,
@@ -188,4 +160,38 @@ export async function readClaudeQuota(deps: ClaudeAdapterDeps = {}): Promise<Pro
       message: 'Failed to fetch Claude usage.',
     };
   }
+}
+
+/** The usage endpoint's snapshot as quota windows: 5h, weekly, then each scoped weekly cap. */
+export function windowsFromUsageSnapshot(snapshot: UsageSnapshot): QuotaWindow[] {
+  const windows: QuotaWindow[] = [
+    {
+      id: 'five_hour',
+      label: '5h',
+      usedPct: snapshot.sessionPct,
+      resetAtMs: snapshot.sessionResetEpochSec > 0 ? snapshot.sessionResetEpochSec * 1000 : null,
+      windowMins: 300,
+    },
+    {
+      id: 'weekly',
+      label: 'weekly',
+      usedPct: snapshot.weeklyPct,
+      resetAtMs: snapshot.weeklyResetEpochSec > 0 ? snapshot.weeklyResetEpochSec * 1000 : null,
+      windowMins: 10080,
+    },
+  ];
+
+  if (Array.isArray(snapshot.scoped)) {
+    for (const item of snapshot.scoped) {
+      const scopeKey = item.scope ? `scoped-${item.scope}` : `scoped-${item.group}`;
+      windows.push({
+        id: scopeKey,
+        label: item.scope ? `${item.scope} (weekly)` : `${item.group} (weekly)`,
+        usedPct: item.pct,
+        resetAtMs: item.resetEpochSec && item.resetEpochSec > 0 ? item.resetEpochSec * 1000 : null,
+        windowMins: 10080,
+      });
+    }
+  }
+  return windows;
 }

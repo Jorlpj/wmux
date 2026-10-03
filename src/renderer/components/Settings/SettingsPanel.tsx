@@ -5461,7 +5461,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'accounts'           && <AccountsSection />}
                     {activeTab === 'orchestrator'       && <TabOrchestrator />}
                     {activeTab === 'roles'              && <TabRoles />}
-          {activeTab === 'tokens'             && <TokenUsageTab onOpenTab={setActiveTab} />}
+          {activeTab === 'tokens'             && <TokenUsageTab />}
                     {activeTab === 'browser'            && <TabBrowser />}
                     {activeTab === 'computer-use'       && <TabComputerUse />}
                     {activeTab === 'remote'             && <TabRemote />}

@@ -1,3 +1,4 @@
+import { setAccountQuotaClaudeUsage } from './quota/accountQuotas';
 import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
 import { webContents as phoneWebContents } from 'electron';
 import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
@@ -1174,6 +1175,7 @@ const onClaudeTurnEnd = (workspaceId: string): void => {
   }
 };
 getAccountRotationService().setClaudeUsage(accountUsageService);
+setAccountQuotaClaudeUsage(accountUsageService);
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd, getWorkspaceMirror, localCompletionAlarm);
 
 // ─── Phase 2 — Anthropic 5h/7d usage meter ──────────────────────────────────

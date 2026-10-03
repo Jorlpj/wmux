@@ -1361,6 +1361,8 @@ const electronAPI = {
   tokenUsage: {
     readQuota: (request?: QuotaReadRequest) =>
       ipcRenderer.invoke(IPC.TOKEN_QUOTA_READ, request) as Promise<QuotaReadResult>,
+    readAccountQuotas: (request?: import('../shared/tokenUsage/accountQuotaTypes').AccountQuotasRequest) =>
+      ipcRenderer.invoke(IPC.TOKEN_QUOTA_ACCOUNTS, request) as Promise<import('../shared/tokenUsage/accountQuotaTypes').AccountQuotasResult>,
     agySensorStatus: () => ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_STATUS) as Promise<AgySensorStatus>,
     installAgySensor: () =>
       ipcRenderer.invoke(IPC.TOKEN_QUOTA_SENSOR_INSTALL) as Promise<AgySensorInstallResult>,
