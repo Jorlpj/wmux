@@ -240,6 +240,19 @@ export const IPC = {
   //                   mounts — the same hydrate-then-subscribe shape the other
   //                   main-authoritative deck state uses.
   DECK_BRAIN_PTY_LIST: 'deck:brainpty:list',
+  //   DECK_FANOUT_CALLER (send) main → renderer: a fan-out worker's turn
+  //                   ended while its owner workspace has no brain. Carries
+  //                   the task pointer and the requester's pane/surface ids
+  //                   only (no PTY id, no worker text); the renderer types one
+  //                   fixed line into that pane if it is still there and idle.
+  DECK_FANOUT_CALLER: 'deck:fanout-caller',
+  //   DECK_FANOUT_CALLER_SESSION (invoke) renderer → main: the verified agent
+  //                   incarnation in a PTY, so a pointer is bound to the
+  //                   caller's session. Null when unverified or not daemon-backed.
+  DECK_FANOUT_CALLER_SESSION: 'deck:fanout-caller:session',
+  //   DECK_FANOUT_CALLER_SUBMIT (invoke) renderer → main: write the fixed
+  //                   nudge line through the delivery gate and the daemon.
+  DECK_FANOUT_CALLER_SUBMIT: 'deck:fanout-caller:submit',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.
