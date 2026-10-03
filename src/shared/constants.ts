@@ -381,6 +381,10 @@ export const IPC = {
   AGY_ACCOUNT_SET_AUTO_ROTATE: 'agy-account:set-auto-rotate',
   AGY_ACCOUNT_CLEAR_COOLDOWN: 'agy-account:clear-cooldown',
   AGY_ACCOUNT_CHANGED: 'agy-account:changed',
+  // Quota-driven account choice for Claude and Codex launches (per vendor
+  // switch + quota rows). agy has its own AGY_ACCOUNT_* channels above.
+  ACCOUNT_ROTATION_GET: 'account:rotation:get',
+  ACCOUNT_ROTATION_SET: 'account:rotation:set',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

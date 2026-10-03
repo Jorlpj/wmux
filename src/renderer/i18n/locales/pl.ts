@@ -1081,6 +1081,14 @@ export const pl = {
   'accounts.loginAgain': 'Zaloguj ponownie',
   'accounts.loginAddFailed': 'Nie udało się zapisać „{name}”: {error}',
   'accounts.loginTabFailed': 'Nie udało się tu otworzyć karty logowania. Skopiuj polecenie i uruchom je w dowolnym terminalu.',
+  // Settings — Accounts — quota-driven account choice for Claude/Codex launches
+  'accounts.rotateClaude': "Przełączaj konta Claude według limitu",
+  'accounts.rotateCodex': "Przełączaj konta Codex według limitu",
+  'accounts.rotateDesc': "Gdy konto przypisane do obszaru roboczego wyczerpie limit, nowy panel Claude lub Codex w tym obszarze startuje na zarejestrowanym koncie z największym pozostałym limitem; samo przypisanie się nie zmienia. Gdy wszystkie konta są wyczerpane, agent nie startuje, dopóki któreś się nie zresetuje. Działające panele pozostają bez zmian. Limit Claude jest odczytywany z punktu końcowego użycia (bez zapytania do modelu), limit Codex z limitów zapisanych w plikach sesji każdego konta.",
+  'accounts.quotaOut': "Brak limitu",
+  'accounts.quotaOutUntil': "Ponownie dostępne o {time}",
+  'accounts.quotaUnknown': "limit jeszcze niezmierzony",
+  'accounts.quotaLeft': "pozostało {pct}",
   // Settings — Accounts — Antigravity (agy): one machine-wide sign-in, swapped by quota
   'agyAccounts.title': "Konta Antigravity (agy)",
   'agyAccounts.intro': "Dodaj kilka kont agy, a wmux użyje tego, które ma jeszcze limit.",
