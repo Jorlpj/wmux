@@ -431,7 +431,6 @@ export const zh = {
   'agyAccounts.quotaTitle': "此账号上一次 agy 会话记录的剩余 Gemini 配额",
   'agyAccounts.quota5h': "5 小时 {pct}",
   'agyAccounts.quotaWeekly': "每周 {pct}",
-  'agyAccounts.clearCooldown': "重试",
   'agyAccounts.useNow': "立即使用",
   'agyAccounts.removeTitle': "从 wmux 移除此 agy 账号",
   'agyAccounts.labelPlaceholder': "标签（可选）",

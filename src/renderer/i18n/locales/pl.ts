@@ -1107,7 +1107,6 @@ export const pl = {
   'agyAccounts.quotaTitle': "Pozostały limit Gemini z ostatniej sesji agy na tym koncie",
   'agyAccounts.quota5h': "5 godz. {pct}",
   'agyAccounts.quotaWeekly': "tydzień {pct}",
-  'agyAccounts.clearCooldown': "Spróbuj ponownie",
   'agyAccounts.useNow': "Użyj teraz",
   'agyAccounts.removeTitle': "Usuń to konto agy z wmux",
   'agyAccounts.labelPlaceholder': "Etykieta (opcjonalnie)",

@@ -1121,7 +1121,6 @@ export const en = {
   'agyAccounts.quotaTitle': "Gemini quota left, from the last agy session on this account",
   'agyAccounts.quota5h': "5h {pct}",
   'agyAccounts.quotaWeekly': "week {pct}",
-  'agyAccounts.clearCooldown': "Try again",
   'agyAccounts.useNow': "Use now",
   'agyAccounts.removeTitle': "Remove this agy account from wmux",
   'agyAccounts.labelPlaceholder': "Label (optional)",

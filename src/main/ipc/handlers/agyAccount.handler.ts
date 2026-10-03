@@ -33,7 +33,6 @@ export function registerAgyAccountHandlers(getWindow: () => BrowserWindow | null
     IPC.AGY_ACCOUNT_RENAME,
     IPC.AGY_ACCOUNT_REMOVE,
     IPC.AGY_ACCOUNT_SET_AUTO_ROTATE,
-    IPC.AGY_ACCOUNT_CLEAR_COOLDOWN,
   ];
   for (const c of channels) ipcMain.removeHandler(c);
   const service = getAgyAccountService();
@@ -77,11 +76,6 @@ export function registerAgyAccountHandlers(getWindow: () => BrowserWindow | null
   ipcMain.handle(IPC.AGY_ACCOUNT_SET_AUTO_ROTATE, wrapHandler(IPC.AGY_ACCOUNT_SET_AUTO_ROTATE,
     async (_e, args: { on?: unknown }) => {
       await service.setAutoRotate(args?.on === true);
-      return { ok: true };
-    }));
-  ipcMain.handle(IPC.AGY_ACCOUNT_CLEAR_COOLDOWN, wrapHandler(IPC.AGY_ACCOUNT_CLEAR_COOLDOWN,
-    async (_e, args: { id?: unknown }) => {
-      await service.clearCooldown(assertId(args?.id));
       return { ok: true };
     }));
 
