@@ -224,6 +224,7 @@ export const pl = {
   'sidebar.tasks.closeFinished': 'Zamknij zakończone zadania ({count})',
   'sidebar.tasks.closeFinishedConfirm': 'Zamknąć zakończone zadania ({count})?',
   'sidebar.tasks.closeFinishedDetail': 'Usuwa ich worktree i przestrzenie robocze. Zadanie z niezatwierdzonymi lub niewypchniętymi zmianami zostaje, z podaniem powodu.',
+  'sidebar.tasks.closeFinishedPanes': "Zostanie zamkniętych {count} paneli uruchomionych w tych zadaniach, także jeśli przeszły do innego folderu.",
   'sidebar.tasks.closeFinishedYes': 'Zamknij zadania',
   'sidebar.tasks.closeFinishedDone': 'Zamknięto zakończone zadania: {count}',
   'sidebar.tasks.noRecord': 'zostawione — brak rekordu zadania, którym można je zamknąć',

@@ -164,6 +164,8 @@ export const IPC = {
   TASK_CREATE_PR: 'task:create-pr',
   WORKTASK_SCAN: 'worktask:scan',
   WORKTASK_REFIRE: 'worktask:refire',
+  // Read-only: how many panes were started inside the given task worktrees (close confirm).
+  WORKTASK_COUNT_PANES: 'worktask:count-panes',
   // Phone worktrees (no task) in the cleanup list: remove by path, then
   // optionally delete their phone/<slug> branch.
   WORKTASK_REMOVE_PHONE: 'worktask:remove-phone',

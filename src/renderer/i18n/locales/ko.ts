@@ -211,6 +211,7 @@ export const ko = {
   'sidebar.tasks.closeFinished': '끝난 태스크 닫기 ({count})',
   'sidebar.tasks.closeFinishedConfirm': '끝난 태스크 {count}개를 닫을까요?',
   'sidebar.tasks.closeFinishedDetail': 'worktree와 워크스페이스를 지웁니다. 커밋하지 않았거나 푸시하지 않은 작업이 있는 태스크는 이유와 함께 남깁니다.',
+  'sidebar.tasks.closeFinishedPanes': "이 태스크에서 시작된 패널 {count}개가 닫힙니다. 다른 폴더로 이동한 패널도 포함됩니다.",
   'sidebar.tasks.closeFinishedYes': '태스크 닫기',
   'sidebar.tasks.closeFinishedDone': '끝난 태스크 {count}개를 닫았습니다',
   'sidebar.tasks.noRecord': '남김 — 닫을 태스크 기록이 없습니다',

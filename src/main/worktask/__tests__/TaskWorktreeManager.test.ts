@@ -309,8 +309,24 @@ describe('removeWorktree — beforeRemove runs only once removal is decided', ()
   it('keeps the worktree when the panes could not be stopped', async () => {
     const { res, order } = await run('', async () => { throw new Error('daemon offline'); });
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toMatch(/could not stop the panes/);
+    if (!res.ok) {
+      expect(res.error).toMatch(/could not stop the panes/);
+      expect(res.preserved).toBe(true);
+    }
     expect(order).toEqual(['stop']);
+  });
+});
+
+describe('removeWorktree — a failed removal keeps the worktree', () => {
+  it('reports preserved when git worktree remove fails after the panes were stopped', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = makeGitFake((args) => {
+      if (args[0] === 'worktree' && args[1] === 'remove') throw new Error('Permission denied');
+      return { stdout: '' };
+    });
+    const mgr = new TaskWorktreeManager({ runGit: git });
+    const res = await mgr.removeWorktree('/repo', 'hash1', '/wt/some', async () => undefined);
+    expect(res).toMatchObject({ ok: false, preserved: true });
   });
 });
 

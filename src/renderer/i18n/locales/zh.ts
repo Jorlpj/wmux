@@ -58,6 +58,7 @@ export const zh = {
   'sidebar.tasks.closeFinished': '关闭已完成的任务 ({count})',
   'sidebar.tasks.closeFinishedConfirm': '关闭 {count} 个已完成的任务？',
   'sidebar.tasks.closeFinishedDetail': '移除它们的工作树和工作区。有未提交或未推送工作的任务会保留，并说明原因。',
+  'sidebar.tasks.closeFinishedPanes': "将关闭在这些任务中启动的 {count} 个窗格，即使它们已切换到其他文件夹。",
   'sidebar.tasks.closeFinishedYes': '关闭任务',
   'sidebar.tasks.closeFinishedDone': '已关闭 {count} 个已完成的任务',
   'sidebar.tasks.noRecord': '已保留 — 没有可用于关闭的任务记录',

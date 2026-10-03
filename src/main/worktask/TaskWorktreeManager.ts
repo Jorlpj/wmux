@@ -511,14 +511,22 @@ export class TaskWorktreeManager {
         try {
           await beforeRemove(safePath);
         } catch (err) {
-          return { ok: false, error: `removeWorktree: could not stop the panes inside the worktree: ${(err as Error).message}` };
+          return {
+            ok: false,
+            error: `removeWorktree: could not stop the panes started in the worktree, so it was kept: ${(err as Error).message}`,
+            preserved: true,
+          };
         }
       }
 
       try {
         await this.runGit(['worktree', 'remove', safePath], repoRoot);
       } catch (err) {
-        return { ok: false, error: `removeWorktree: git worktree remove failed: ${(err as Error).message}` };
+        // A process that outlived its pane can still hold files: keep the record so nothing is lost silently.
+        return { ok: false, error: `removeWorktree: git worktree remove failed: ${(err as Error).message}`, preserved: true };
+      }
+      if (fs.existsSync(safePath)) {
+        return { ok: false, error: 'removeWorktree: files were left behind in the worktree folder', preserved: true };
       }
       return { ok: true };
     });

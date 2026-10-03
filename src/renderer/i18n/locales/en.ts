@@ -216,6 +216,7 @@ export const en = {
   'sidebar.tasks.closeFinished': 'Close finished tasks ({count})',
   'sidebar.tasks.closeFinishedConfirm': 'Close {count} finished tasks?',
   'sidebar.tasks.closeFinishedDetail': 'Removes their worktrees and workspaces. A task with uncommitted or unpushed work is kept, with the reason.',
+  'sidebar.tasks.closeFinishedPanes': "{count} pane(s) started in these tasks will be closed, even if they moved to another folder.",
   'sidebar.tasks.closeFinishedYes': 'Close tasks',
   'sidebar.tasks.closeFinishedDone': 'Closed {count} finished tasks',
   'sidebar.tasks.noRecord': 'kept — no task record to close it with',
