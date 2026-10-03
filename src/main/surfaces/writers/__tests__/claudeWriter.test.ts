@@ -1657,6 +1657,27 @@ describe('claudeWriter hook identity', () => {
     expect(after.hooks.Stop[0].hooks).toEqual([wmuxHook]);
   });
 
+  it('keeps each unnamed hook restorable after the other one is removed', async () => {
+    const deps = makeDeps(home);
+    const a = { type: 'command', command: 'node a.js' };
+    const b = { type: 'command', command: 'node b.js' };
+    fs.writeFileSync(settingsPath, JSON.stringify({ hooks: { Stop: [{ hooks: [a, b] }] } }), 'utf8');
+    const before = await listHooks(deps);
+    const [idA, idB] = before.map((h) => h.id);
+    expect(idA).not.toBe(idB);
+
+    expect((await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: idA, enabled: false }] }, { deps })).ok).toBe(true);
+    const afterA = await listHooks(deps);
+    // B keeps its id; A is listed (off) under its own id.
+    expect(afterA.find((h) => h.id === idB)?.enabled).toBe(true);
+    expect(afterA.find((h) => h.id === idA)?.enabled).toBe(false);
+
+    expect((await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: idB, enabled: false }] }, { deps })).ok).toBe(true);
+    expect((await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: idA, enabled: true }] }, { deps })).ok).toBe(true);
+    const restored = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    expect(restored.hooks.Stop[0].hooks).toEqual([a]);
+  });
+
   it('refuses when two identical handlers match, and leaves the file untouched', async () => {
     const deps = makeDeps(home);
     const dup = { type: 'command', command: 'node my-stop.js' };

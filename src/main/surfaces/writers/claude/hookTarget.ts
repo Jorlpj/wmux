@@ -128,7 +128,20 @@ export function applyHookChangesToRoot(
       matches.push(found[0]);
     }
 
-    // Persist removed hooks in store before modifying config
+    // Persist removed hooks in store before modifying config. An id that already holds a different
+    // hook must not be overwritten: that would lose the first hook's saved definition.
+    for (const match of matches) {
+      const existing = store.removedHooks.get('claude', match.change.item.id);
+      if (existing) {
+        const def = existing.definition as Record<string, unknown>;
+        const stored = def.handler && typeof def.handler === 'object'
+          ? hookFingerprint(String(def.event ?? ''), def.groupMeta as Record<string, unknown> | undefined, def.handler as Record<string, unknown>)
+          : null;
+        if (stored !== hookFingerprint(match.event, match.groupMeta, match.handler)) {
+          throw new Error('More than one hook matches; edit this hook in the settings file by hand.');
+        }
+      }
+    }
     for (const match of matches) {
       const definition: ClaudeRemovedHookDefinition = {
         event: match.event,

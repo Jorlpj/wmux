@@ -3,6 +3,7 @@ import type { HookCostHint, ProviderInventory, SurfaceItem, SurfaceSource } from
 import { SurfacesStore } from '../safeWrite';
 import {
   hookFingerprint,
+  hookItemId,
   normalizePath,
   parseSkillFrontmatter,
   queryCliVersion,
@@ -254,8 +255,9 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
     const isProject = deps.projectDir ? normalizePath(originPath).startsWith(normalizePath(deps.projectDir)) : false;
     const source: SurfaceSource = isWmux ? 'wmux' : isManaged ? 'managed' : isProject ? 'project' : 'user';
 
-    addItem(
-      makeItem({
+    const fingerprint = hookFingerprint(event, groupMeta, h);
+    addItem({
+      ...makeItem({
         provider: 'claude',
         kind: 'hook',
         name: hookName,
@@ -266,11 +268,12 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
         readOnlyReason: isManaged ? 'Managed hooks cannot be toggled' : null,
         hookEvent: event,
         hookCost,
-        hookFingerprint: hookFingerprint(event, groupMeta, h),
+        hookFingerprint: fingerprint,
         originPath,
         wmuxRequired: isWmux,
       }),
-    );
+      id: hookItemId(hookName, originPath, fingerprint),
+    });
   }
 
   // 1b. Load removed hooks from surfaces.json store read-only
@@ -413,6 +416,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
         readOnlyReason,
         hookEvent: event,
         hookCost,
+        hookFingerprint: hookFingerprint(event, groupMeta, cleanHandler),
         descriptionChars: null,
         originPath: originPathStr,
         wmuxRequired: isWmux,

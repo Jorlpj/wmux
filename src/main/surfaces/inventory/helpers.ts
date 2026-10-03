@@ -158,6 +158,19 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+/**
+ * Item id of one Claude hook: its name plus a hash of the file it lives in and its fingerprint. Ids
+ * built from the name and an order suffix moved to another hook when one was removed, which hid the
+ * removed hook's saved definition and let a later disable overwrite it.
+ */
+export function hookItemId(name: string, originPath: string | null, fingerprint: string): string {
+  const key = createHash('sha256')
+    .update(`${originPath ? normalizePath(originPath) : ''}|${fingerprint}`)
+    .digest('hex')
+    .slice(0, 12);
+  return `${['claude', 'hook', '', name].map(encodeURIComponent).join(':')}#${key}`;
+}
+
 /** Identity of one hook handler: its event, its matcher group (without `hooks`) and the handler itself. */
 export function hookFingerprint(
   event: string,
