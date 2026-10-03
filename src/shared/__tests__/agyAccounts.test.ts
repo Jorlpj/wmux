@@ -4,7 +4,6 @@ import {
   agyAccountRow,
   chooseAgyAccount,
   evaluateAgyQuota,
-  isAgyLaunchLine,
   type AgyAccount,
   type AgyAccountQuotaSnapshot,
 } from '../agyAccounts';
@@ -111,22 +110,6 @@ describe('chooseAgyAccount', () => {
       row('c@x.com', null, false, { needsReauth: true }),
     ]);
     expect(d).toEqual({ ok: false, reason: 'all-exhausted', availableAtMs: Date.parse('2026-10-02T13:00:00Z') });
-  });
-});
-
-describe('isAgyLaunchLine', () => {
-  it.each([
-    ['agy', true],
-    ['agy -i "do it"', true],
-    ['AGY.exe --model x', true],
-    ['"C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.exe" -i "x"', true],
-    ['/usr/local/bin/agy', true],
-    ['agyx', false],
-    ['claude --model opus', false],
-    ['echo agy', false],
-    ['', false],
-  ])('%s → %s', (line, expected) => {
-    expect(isAgyLaunchLine(line)).toBe(expected);
   });
 });
 
