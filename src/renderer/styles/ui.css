@@ -510,6 +510,8 @@
 .wmux-chatv2-empty { justify-content: flex-end; min-height: 100%; gap: 6px; padding-bottom: 18px; }
 .wmux-chatv2-empty strong { font-size: 18px; font-weight: 500; letter-spacing: -.01em; }
 .wmux-chatv2-empty p { color: var(--text-sub); line-height: 1.6; }
+.wmux-chatv2-runs-in { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
+.wmux-chatv2-cwd { max-width: 18em; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
 .wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .wmux-chatv2-assistant, .wmux-chatv2-plan { line-height: 1.65; overflow-wrap: anywhere; }
 .wmux-chatv2-reasoning summary, .wmux-chatv2-tool summary, .wmux-chatv2-subagent summary { cursor: pointer; list-style: none; }
@@ -555,6 +557,7 @@
 .wmux-chatv2-link { color: var(--text-sub); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
 .wmux-chatv2-link:hover { color: var(--accent-blue); }
 .wmux-chatv2-earlier { align-self: center; margin-bottom: 6px; }
+.wmux-chatv2-body-more { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
 .wmux-chatv2-dock { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 16px 12px; }
 .wmux-chatv2-composer { display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-mantle); transition: border-color 150ms; }
 .wmux-chatv2-composer:focus-within { border-color: var(--accent-blue); }

@@ -33,6 +33,7 @@ import { CHAT_IMAGE_EXTENSIONS, CHAT_IMAGE_MAX_BYTES } from '../../../shared/tra
 import type { DecisionForm, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from '../../approvals/types';
 import { ClaudeDriver } from './claude/claudeDriver';
 import { CLAUDE_SETTING_SOURCES, CLAUDE_SETTING_SOURCES_PATTERN } from './claude/claudeProtocol';
+import { driverCwd } from './cwd';
 import { buildDriverEnv, DriverEnvError } from './env';
 import { boundEvent, EventBatcher } from './eventBatcher';
 import { claimChatV2Pane, releaseChatV2Pane } from './paneClaims';
@@ -368,7 +369,14 @@ class Host implements ChatV2Host {
 
   private readonly handlers: { [M in ChatV2Method]: (params: ChatV2ParamsByMethod[M], clientId: string) => Promise<Result<M>> } = {
     create: (p) => this.create(p),
-    bindingForPane: async (p) => ({ ok: true, binding: this.bindingForPane(p.paneId) }),
+    bindingForPane: async (p) => {
+      const binding = this.bindingForPane(p.paneId);
+      if (binding) return { ok: true, binding };
+      // No chat yet: say where a new one would run.
+      const pane = this.deps.sessionManager.getSession(p.paneId);
+      const cwd = pane ? await (this.deps.driverCwd ?? driverCwd)(pane.meta) : undefined;
+      return { ok: true, binding: null, ...(cwd ? { cwd } : {}) };
+    },
     snapshot: async (p) => this.snapshot(p),
     history: async (p) => this.history(p),
     subscribe: async (p, clientId) => {
@@ -400,7 +408,15 @@ class Host implements ChatV2Host {
     const pane = this.deps.sessionManager.getSession(p.paneId);
     if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
     if (this.byPane.has(p.paneId)) return chatV2Error('already-exists', 'This pane already has a chat.');
-    const cwd = pane.meta.spawnCwd;
+    const meta = pane.meta;
+    const cwd = await (this.deps.driverCwd ?? driverCwd)(meta);
+    // Checked again after the await: the pane may have closed (or been replaced
+    // under the same id, so compare the session itself), or another create won.
+    const again = this.deps.sessionManager.getSession(p.paneId);
+    if (!again || again !== pane || again.meta.incarnationId !== meta.incarnationId) {
+      return chatV2Error('pane-not-found', 'That pane is gone.');
+    }
+    if (this.byPane.has(p.paneId)) return chatV2Error('already-exists', 'This pane already has a chat.');
     if (!cwd) return chatV2Error('pane-not-found', 'The pane has no known working directory.');
     // The RPC layer validated it; the argv rule is checked again where it is used.
     if (p.model !== undefined && !CHATV2_MODEL.test(p.model)) return chatV2Error('invalid-params', 'Invalid model.');
@@ -423,7 +439,7 @@ class Host implements ChatV2Host {
       savedAt: this.deps.now(),
     };
     const live = this.newLive(record);
-    // Reserved before the first await, so a second create for the pane is refused.
+    // Reserved before the driver starts, so a second create for the pane is refused.
     this.byPane.set(p.paneId, live);
     const started = await this.startDriver(live);
     const saved = started.ok && await this.persistNow(live);

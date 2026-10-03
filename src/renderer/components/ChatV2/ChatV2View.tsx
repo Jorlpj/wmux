@@ -1,20 +1,49 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import type { ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer, setDraft } from './Composer';
+import { Composer, setDraft, shortDir } from './Composer';
 import { FindBar } from './FindBar';
 import { sessionRows, type RowCache } from './rows';
 import { S } from './strings';
 import { TranscriptRowView, type TranscriptActions } from './Transcript';
 import { useChatV2 } from './useChatV2';
+import { getChatV2Bridge } from './bridge';
 
 const NEAR_BOTTOM_PX = 48;
+
+/**
+ * Where a chat created now would run, as the daemon decides it. Asked again
+ * whenever the pane reports a new directory (`hint`), which is only a cue.
+ */
+function RunsIn({ paneId, hint }: { paneId: string; hint?: string }) {
+  const [cwd, setCwd] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setCwd(null);
+    void getChatV2Bridge()?.call('bindingForPane', { paneId }).then(
+      (result) => { if (!cancelled && result.ok && !result.binding && result.cwd) setCwd(result.cwd); },
+      () => undefined,
+    );
+    return () => { cancelled = true; };
+  }, [paneId, hint]);
+  return (
+    <p className="wmux-chatv2-runs-in" data-chatv2-runs-in title={cwd ?? undefined}>
+      {cwd ? S.runsIn(shortDir(cwd)) : S.runsInUnknown}
+    </p>
+  );
+}
 
 /**
  * Chat v2 for one pane. Never creates a PTY: the pane's shell PTY is the
  * anchor (`paneId`), and everything here goes through the chat-v2 bridge.
  */
-export default function ChatV2View({ paneId, active, onTerminal }: { paneId: string; active: boolean; onTerminal: () => void }) {
+export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
+  paneId: string;
+  active: boolean;
+  onTerminal: () => void;
+  /** The directory the pane last reported; a change asks the daemon again where a chat would run. */
+  cwd?: string;
+}) {
   const t = useT();
   const { state, controller, retry } = useChatV2(paneId, active);
   const view = state.view;
@@ -32,7 +61,7 @@ export default function ChatV2View({ paneId, active, onTerminal }: { paneId: str
   const rows = useMemo(() => (view ? sessionRows(view.session, rowCache.current) : []), [view]);
   const actions = useMemo<TranscriptActions>(() => ({
     answer: (requestId, decision, answers) => controller?.answer(requestId, decision, answers) ?? Promise.resolve(false),
-    body: (blockId, field) => controller?.body(blockId, field) ?? Promise.resolve(null),
+    body: (blockId, field, offset) => controller?.body(blockId, field, offset) ?? Promise.resolve(null),
   }), [controller]);
 
   // Stay at the bottom while the reader is there.
@@ -84,6 +113,7 @@ export default function ChatV2View({ paneId, active, onTerminal }: { paneId: str
           <div className="wmux-chatv2-column wmux-chatv2-empty">
             <strong>{S.newChat}</strong>
             <p>{S.newChatHint}</p>
+            <RunsIn paneId={paneId} hint={cwd} />
           </div>
         </div>
         <div className="wmux-chatv2-dock">
@@ -159,7 +189,7 @@ export default function ChatV2View({ paneId, active, onTerminal }: { paneId: str
             disabled={!binding.capabilities.send || binding.status === 'failed'}
             running={running}
             canStop={binding.capabilities.interrupt}
-            chips={{ model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, editable: false }}
+            chips={{ model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, cwd: view.session.cwd, editable: false }}
             onSend={(text, attachments) => controller.send(text, attachments)}
             onStop={() => void controller.interrupt()}
             extra={canHandOff ? (
