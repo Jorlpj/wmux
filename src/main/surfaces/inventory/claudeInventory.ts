@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { HookCostHint, ProviderInventory, SurfaceItem, SurfaceSource } from '../../../shared/tokenUsage/surfaceTypes';
 import { SurfacesStore } from '../safeWrite';
 import {
+  hookFingerprint,
   normalizePath,
   parseSkillFrontmatter,
   queryCliVersion,
@@ -210,7 +211,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
               if (!item || typeof item !== 'object') continue;
               const h = item as Record<string, unknown>;
               liveHooks.push({ event, handler: h, groupMeta, originPath: sp });
-              addLiveHookItem(event, h, sp);
+              addLiveHookItem(event, h, sp, groupMeta);
             }
           } else {
             const h = groupOrHandler;
@@ -222,7 +223,12 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
     }
   }
 
-  function addLiveHookItem(event: string, h: Record<string, unknown>, originPath: string): void {
+  function addLiveHookItem(
+    event: string,
+    h: Record<string, unknown>,
+    originPath: string,
+    groupMeta?: Record<string, unknown>,
+  ): void {
     const type = typeof h.type === 'string' ? h.type : 'command';
     let hookCost: HookCostHint = 'none';
     if (type === 'prompt' || type === 'agent') {
@@ -252,6 +258,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
         readOnlyReason: isManaged ? 'Managed hooks cannot be toggled' : null,
         hookEvent: event,
         hookCost,
+        hookFingerprint: hookFingerprint(event, groupMeta, h),
         originPath,
         wmuxRequired: isWmux,
       }),

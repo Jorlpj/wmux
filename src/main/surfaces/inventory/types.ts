@@ -76,6 +76,7 @@ export function makeItem(params: {
   readOnlyReason?: string | null;
   hookEvent?: string | null;
   hookCost?: HookCostHint | null;
+  hookFingerprint?: string;
   descriptionChars?: number | null;
   originPath?: string | null;
   wmuxRequired?: boolean;
@@ -96,6 +97,7 @@ export function makeItem(params: {
     readOnlyReason: params.readOnlyReason ?? null,
     hookEvent: params.hookEvent ?? null,
     hookCost: params.hookCost ?? null,
+    ...(params.hookFingerprint !== undefined ? { hookFingerprint: params.hookFingerprint } : {}),
     descriptionChars: params.descriptionChars ?? null,
     originPath: params.originPath ?? null,
     wmuxRequired: params.wmuxRequired ?? false,

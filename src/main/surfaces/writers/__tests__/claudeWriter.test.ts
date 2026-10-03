@@ -1613,3 +1613,57 @@ describe('claudeWriter', () => {
     expect(storeAfter.removedHooks.get('claude', hookId)).toBeUndefined();
   });
 });
+
+describe('claudeWriter hook identity', () => {
+  let home: string;
+  let settingsPath: string;
+
+  beforeEach(() => {
+    home = makeTempDir('claude-writer-hookid-');
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    settingsPath = path.join(home, '.claude', 'settings.json');
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  });
+
+  async function listHooks(deps: WriterDeps): Promise<SurfaceItem[]> {
+    const inv = await readInventory('claude', {
+      homeDir: deps.homeDir,
+      run: deps.run,
+      now: deps.now,
+      surfacesStorePath: deps.surfacesStorePath,
+    });
+    return inv.items.filter((i) => i.kind === 'hook');
+  }
+
+  it('disables the unnamed hook that was picked, not the first one with the same generated name', async () => {
+    const deps = makeDeps(home);
+    const wmuxHook = { type: 'command', command: 'node C:/Users/x/.wmux/hooks/stop.js' };
+    const userHook = { type: 'command', command: 'node my-stop.js' };
+    fs.writeFileSync(settingsPath, JSON.stringify({ hooks: { Stop: [{ hooks: [wmuxHook, userHook] }] } }), 'utf8');
+
+    const hooks = await listHooks(deps);
+    expect(hooks.map((h) => h.name)).toEqual(['Stop-command', 'Stop-command']);
+    const target = hooks.find((h) => !h.wmuxRequired)!;
+
+    const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: target.id, enabled: false }] }, { deps });
+    expect(res.ok).toBe(true);
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    expect(after.hooks.Stop[0].hooks).toEqual([wmuxHook]);
+  });
+
+  it('refuses when two identical handlers match, and leaves the file untouched', async () => {
+    const deps = makeDeps(home);
+    const dup = { type: 'command', command: 'node my-stop.js' };
+    const original = JSON.stringify({ hooks: { Stop: [{ hooks: [dup] }, { hooks: [dup] }] } });
+    fs.writeFileSync(settingsPath, original, 'utf8');
+
+    const [first] = await listHooks(deps);
+    const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: first.id, enabled: false }] }, { deps });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/More than one hook matches/);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(original);
+  });
+});

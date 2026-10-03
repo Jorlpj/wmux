@@ -235,10 +235,13 @@ export function createClaudeWriter(): SurfaceWriter {
 
         const isMissingStoreDef =
           err instanceof Error && err.message.includes('definition not found in store');
+        const isAmbiguousHook = err instanceof Error && err.message.startsWith('More than one hook matches');
         const safeError = rollbackFailed
           ? 'Some files may have changed; check your Claude settings.'
           : isMissingStoreDef
             ? 'Cannot enable hook: definition not found in store'
+            : isAmbiguousHook
+              ? (err as Error).message
             : err instanceof ConfigChangedError
               ? 'The configuration changed while editing; reload and try again.'
               : 'Applying the change failed; no file was left half-written.';

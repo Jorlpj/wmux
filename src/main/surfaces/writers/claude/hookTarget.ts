@@ -1,4 +1,5 @@
 import type { SurfaceItem } from '../../../../shared/tokenUsage/surfaceTypes';
+import { hookFingerprint } from '../../inventory/helpers';
 import { SurfacesStore } from '../../safeWrite';
 import type { ResolvedChange } from '../types';
 import type { ClaudeHookHandler, ClaudeMatcherGroup, ClaudeRemovedHookDefinition } from './types';
@@ -36,7 +37,14 @@ function matcherGroupsEqual(grp: Record<string, unknown>, meta: Record<string, u
   return deepEqual(grpMeta, meta);
 }
 
-function handlerMatchesItem(h: ClaudeHookHandler, item: SurfaceItem, event: string): boolean {
+function handlerMatchesItem(
+  h: ClaudeHookHandler,
+  item: SurfaceItem,
+  event: string,
+  groupMeta: Record<string, unknown> | undefined,
+): boolean {
+  // Unnamed handlers all share the name `<event>-<type>`, so a name alone can point at the wrong one.
+  if (item.hookFingerprint) return hookFingerprint(event, groupMeta, h) === item.hookFingerprint;
   const hType = typeof h.type === 'string' ? h.type : 'command';
   const hName = (typeof h.name === 'string' && h.name) || `${event}-${hType}`;
   return hName === item.name;
@@ -75,19 +83,19 @@ export function applyHookChangesToRoot(
       }
 
       const eventList = hooksObj[event] as unknown[];
-      let found = false;
+      const found: HookDisableMatch[] = [];
 
       for (let gIdx = 0; gIdx < eventList.length; gIdx++) {
         const groupOrHandler = eventList[gIdx] as Record<string, unknown>;
         if (groupOrHandler && Array.isArray(groupOrHandler.hooks)) {
+          const groupMeta: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(groupOrHandler)) {
+            if (k !== 'hooks') groupMeta[k] = v;
+          }
           const hooksArray = groupOrHandler.hooks as ClaudeHookHandler[];
           for (let hIdx = 0; hIdx < hooksArray.length; hIdx++) {
-            if (handlerMatchesItem(hooksArray[hIdx], change.item, event)) {
-              const groupMeta: Record<string, unknown> = {};
-              for (const [k, v] of Object.entries(groupOrHandler)) {
-                if (k !== 'hooks') groupMeta[k] = v;
-              }
-              matches.push({
+            if (handlerMatchesItem(hooksArray[hIdx], change.item, event, groupMeta)) {
+              found.push({
                 change,
                 event,
                 groupIdx: gIdx,
@@ -95,28 +103,29 @@ export function applyHookChangesToRoot(
                 handler: hooksArray[hIdx],
                 groupMeta,
               });
-              found = true;
-              break;
             }
           }
         } else if (groupOrHandler && typeof groupOrHandler === 'object') {
-          if (handlerMatchesItem(groupOrHandler as ClaudeHookHandler, change.item, event)) {
-            matches.push({
+          if (handlerMatchesItem(groupOrHandler as ClaudeHookHandler, change.item, event, undefined)) {
+            found.push({
               change,
               event,
               groupIdx: gIdx,
               handlerIdx: null,
               handler: groupOrHandler as ClaudeHookHandler,
             });
-            found = true;
           }
         }
-        if (found) break;
       }
 
-      if (!found) {
+      if (found.length === 0) {
         throw new Error('Hook not found in configuration');
       }
+      if (found.length > 1) {
+        // Removing the first of several matches could remove a hook the user (or wmux) still needs.
+        throw new Error('More than one hook matches; edit this hook in the settings file by hand.');
+      }
+      matches.push(found[0]);
     }
 
     // Persist removed hooks in store before modifying config
