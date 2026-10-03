@@ -8,14 +8,61 @@ import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
 import Input from '../ui/Input';
-import { SettingsSection } from './SettingsLayout';
 import { openTerminalTab } from '../../utils/accountLogin';
 
-type Snapshot = AgyAccountsSnapshot & { login: AgyLoginState };
+// Antigravity (agy) pieces of Settings → Accounts. agy keeps ONE sign-in for the
+// whole machine, so its accounts are not bound per workspace like Claude/Codex:
+// wmux keeps a vault copy of each and swaps the active one, on demand ("Use
+// now") or before an agy launch when the switch is on. AccountsSection renders
+// these next to the Claude and Codex rows, in the same container.
 
-/** Snapshots carry the quota fractions the sensor last saw for each account;
- *  re-list on this cadence so a cooldown that ends shows up without a push. */
+type Snapshot = AgyAccountsSnapshot & { login: AgyLoginState };
+type AgyApi = NonNullable<NonNullable<typeof window.electronAPI>['agyAccounts']>;
+
+/** Snapshots carry the quota fractions the sensor last saw for each account. */
 const POLL_MS = 15_000;
+
+export interface AgyAccounts {
+  api: AgyApi;
+  snap: Snapshot;
+  run: (p: Promise<unknown>) => void;
+  signIn: () => void;
+}
+
+/** Live agy registry; null when the preload has no agy API or it has not loaded yet. */
+export function useAgyAccounts(): AgyAccounts | null {
+  const t = useT();
+  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const api = window.electronAPI?.agyAccounts;
+
+  const reload = useCallback(() => {
+    if (!api) return;
+    void api.list().then(setSnap).catch(() => { /* useIpc surfaces the error */ });
+  }, [api]);
+
+  useEffect(() => {
+    reload();
+    const off = api?.onChanged(reload);
+    const timer = setInterval(reload, POLL_MS);
+    return () => { off?.(); clearInterval(timer); };
+  }, [api, reload]);
+
+  if (!api || !snap) return null;
+  const run = (p: Promise<unknown>) => { void p.then(reload).catch((err: unknown) => {
+    useStore.getState().pushToast({ level: 'error', message: err instanceof Error ? err.message : String(err) });
+    reload();
+  }); };
+  const signIn = () => {
+    run(api.beginLogin().then(async () => {
+      const tab = await openTerminalTab({ initialCommand: 'agy', title: t('agyAccounts.loginTabTitle') });
+      if (!tab) {
+        await api.cancelLogin();
+        useStore.getState().pushToast({ level: 'error', message: t('agyAccounts.loginTabFailed') });
+      }
+    }));
+  };
+  return { api, snap, run, signIn };
+}
 
 function pct(fraction: number | undefined): string | null {
   return typeof fraction === 'number' && Number.isFinite(fraction) ? `${Math.round(fraction * 100)}%` : null;
@@ -53,58 +100,30 @@ function StateBadge({ row }: { row: AgyAccountRow }): React.ReactElement {
   return <Badge className="shrink-0">{t('agyAccounts.ready')}</Badge>;
 }
 
-/**
- * Settings → Accounts → Antigravity (agy). agy keeps ONE sign-in for the whole
- * machine, so these accounts are not bound per workspace like Claude/Codex:
- * wmux keeps a vault copy of each and swaps the active one — on demand here,
- * and automatically before each agy launch when the active account is out of
- * quota.
- */
-export function AgyAccountsSection(): React.ReactElement | null {
+/** The agy "Switch accounts by quota" row, next to the Claude and Codex ones. */
+export function AgyRotationRow({ agy }: { agy: AgyAccounts }): React.ReactElement | null {
   const t = useT();
-  const [snap, setSnap] = useState<Snapshot | null>(null);
+  if (!agy.snap.supported) return null;
+  return (
+    <div className="ui-row" data-rotation-vendor="agy">
+      <Checkbox
+        checked={agy.snap.autoRotate}
+        onCheckedChange={(on) => agy.run(agy.api.setAutoRotate(on))}
+        aria-label={t('agyAccounts.autoRotate')}
+      />
+      <span className="flex-1 text-[13px] text-[var(--text-main)]">{t('agyAccounts.autoRotate')}</span>
+    </div>
+  );
+}
+
+/** One row per agy account, plus the sign-in in progress. */
+export function AgyAccountRows({ agy }: { agy: AgyAccounts }): React.ReactElement | null {
+  const t = useT();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState('');
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
-  const api = window.electronAPI?.agyAccounts;
-
-  const reload = useCallback(() => {
-    if (!api) return;
-    void api.list().then(setSnap).catch(() => { /* useIpc surfaces the error */ });
-  }, [api]);
-
-  useEffect(() => {
-    reload();
-    const off = api?.onChanged(reload);
-    const timer = setInterval(reload, POLL_MS);
-    return () => { off?.(); clearInterval(timer); };
-  }, [api, reload]);
-
-  if (!api || !snap) return null;
-  if (!snap.supported) {
-    return (
-      <SettingsSection id="agyacct" title={t('agyAccounts.title')}>
-        <p className="settings-note">{t('agyAccounts.unsupported')}</p>
-      </SettingsSection>
-    );
-  }
-
-  const run = (p: Promise<unknown>) => { void p.then(reload).catch((err: unknown) => {
-    useStore.getState().pushToast({ level: 'error', message: err instanceof Error ? err.message : String(err) });
-    reload();
-  }); };
-
-  const activeRegistered = snap.activeEmail !== null && snap.accounts.some((a) => a.active);
-
-  const signInAnother = () => {
-    run(api.beginLogin().then(async () => {
-      const tab = await openTerminalTab({ initialCommand: 'agy', title: t('agyAccounts.loginTabTitle') });
-      if (!tab) {
-        await api.cancelLogin();
-        useStore.getState().pushToast({ level: 'error', message: t('agyAccounts.loginTabFailed') });
-      }
-    }));
-  };
+  const { api, snap, run } = agy;
+  if (!snap.supported) return null;
 
   const rename = (id: string) => {
     run(api.rename(id, editLabel));
@@ -112,21 +131,10 @@ export function AgyAccountsSection(): React.ReactElement | null {
   };
 
   return (
-    <SettingsSection id="agyacct" title={t('agyAccounts.title')} description={t('agyAccounts.intro')}>
-      <p className="settings-note">{t('agyAccounts.machineWideNote')}</p>
-      <div className="ui-row">
-        <Checkbox
-          checked={snap.autoRotate}
-          onCheckedChange={(on) => run(api.setAutoRotate(on))}
-          aria-label={t('agyAccounts.autoRotate')}
-        />
-        <span className="flex-1 text-[13px] text-[var(--text-main)]">{t('agyAccounts.autoRotate')}</span>
-      </div>
-      <p className="settings-note">{t('agyAccounts.autoRotateDesc')}</p>
-      <p className="settings-note">{t('agyAccounts.rotateTerms')}</p>
-      {snap.accounts.length === 0 && <p className="settings-note">{t('agyAccounts.empty')}</p>}
+    <>
       {snap.accounts.map((r) => (
         <div key={r.id} className="ui-row" data-agy-account-row={r.id}>
+          <Badge className="shrink-0">agy</Badge>
           {editingId === r.id ? (
             <Input
               className="settings-input flex-1"
@@ -173,6 +181,15 @@ export function AgyAccountsSection(): React.ReactElement | null {
           )}
         </div>
       ))}
+      {snap.activeEmail && !snap.accounts.some((a) => a.active) && !snap.login.pending && (
+        <div className="ui-row">
+          <Badge className="shrink-0">agy</Badge>
+          <span className="flex-1 text-[13px] text-[var(--text-sub)]">{t('agyAccounts.notRegistered')}</span>
+          <Button variant="secondary" size="md" className="shrink-0" onClick={() => run(api.addCurrent())}>
+            {t('agyAccounts.addCurrent', { email: snap.activeEmail })}
+          </Button>
+        </div>
+      )}
       {snap.login.restoreFailed && !snap.login.pending && (
         <div className="ui-row" role="alert">
           <span className="flex-1 text-[13px] text-[var(--text-sub)]">
@@ -180,23 +197,12 @@ export function AgyAccountsSection(): React.ReactElement | null {
           </span>
         </div>
       )}
-      {snap.login.pending ? (
+      {snap.login.pending && (
         <div className="ui-row">
           <span className="flex-1 text-[13px] text-[var(--text-sub)]">{t('agyAccounts.waitingForSignIn')}</span>
           <Button variant="ghost" size="md" onClick={() => run(api.cancelLogin())}>{t('common.cancel')}</Button>
         </div>
-      ) : (
-        <div className="settings-row flex gap-2" style={{ minHeight: 0 }}>
-          {snap.activeEmail && !activeRegistered && (
-            <Button variant="primary" size="md" onClick={() => run(api.addCurrent())}>
-              {t('agyAccounts.addCurrent', { email: snap.activeEmail })}
-            </Button>
-          )}
-          <Button variant={snap.accounts.length === 0 && !snap.activeEmail ? 'primary' : 'secondary'} size="md" onClick={signInAnother}>
-            {t('agyAccounts.signInAnother')}
-          </Button>
-        </div>
       )}
-    </SettingsSection>
+    </>
   );
 }
