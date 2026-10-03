@@ -228,13 +228,18 @@ export class AgyAccountService {
     if (this.login.pending) throw new AgyAccountError('busy', 'an agy sign-in is in progress');
     const account = this.file().accounts.find((a) => a.id === id);
     if (!account) throw new AgyAccountError('not-found', 'unknown agy account');
-    if (!this.vault().activate(account.email)) {
+    const result = this.vault().activate(account.email);
+    if (result === 'no-copy') {
       await this.mutate((file) => {
         const a = file.accounts.find((x) => x.id === id);
         if (a) a.needsReauth = true;
       });
       throw new AgyAccountError('swap-failed', 'this account has no saved sign-in; sign in to it again');
     }
+    if (result === 'live-not-saved') {
+      throw new AgyAccountError('swap-failed', 'the current agy sign-in could not be saved, so it was not replaced');
+    }
+    if (result !== 'ok') throw new AgyAccountError('swap-failed', 'could not switch the agy sign-in');
     this.emit();
   }
 
@@ -334,12 +339,19 @@ export class AgyAccountService {
     }
     const decision = chooseAgyAccount(snap.accounts);
     if (!decision.ok || !decision.switched || !decision.account) return decision;
-    if (!this.deps.vault.activate(decision.account.email)) {
+    const result = this.deps.vault.activate(decision.account.email);
+    if (result === 'no-copy') {
       await this.mutate((file) => {
         const a = file.accounts.find((x) => x.id === decision.account?.id);
         if (a) a.needsReauth = true;
       });
       return this.prepareLaunch();
+    }
+    if (result !== 'ok') {
+      // The live sign-in could not be saved (or the write failed): never replace it. agy starts on
+      // whatever it is signed in with, exactly as it would without wmux.
+      console.warn(`[agy-accounts] not switching agy for this launch (${result})`);
+      return { ok: true, account: null, switched: false };
     }
     console.log(`[agy-accounts] switched agy to account ${decision.account.id} for this launch`);
     this.emit();

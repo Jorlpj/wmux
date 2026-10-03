@@ -46,6 +46,11 @@ export function agyBlobEmail(blob: Buffer | null): string | null {
   }
 }
 
+/** Outcome of a swap: `no-copy` = the target has no saved sign-in;
+ *  `live-not-saved` = the current sign-in could not be copied, so it was not
+ *  replaced; `failed` = the vault write itself failed. */
+export type AgySwapResult = 'ok' | 'no-copy' | 'live-not-saved' | 'failed';
+
 export class AgyVault {
   constructor(private readonly backend: AgyVaultBackend) {}
 
@@ -68,20 +73,34 @@ export class AgyVault {
     return agyBlobEmail(this.backend.read(copyTarget(email))) === email;
   }
 
-  /** Make `email` the active agy account. The live sign-in is captured first,
-   *  so the account being replaced keeps its newest refresh token. */
-  activate(email: string): boolean {
-    const blob = this.backend.read(copyTarget(email));
-    if (agyBlobEmail(blob) !== email || !blob) return false;
-    this.captureActive();
-    if (!this.backend.write(AGY_ACTIVE_TARGET, AGY_ACTIVE_USER, blob)) return false;
-    return this.activeEmail() === email;
+  /** True when the live sign-in is safe to replace: nobody is signed in, or
+   *  its copy was just written and reads back byte for byte. A sign-in that
+   *  cannot be copied (no email in the blob, a blob over the vault limit, a
+   *  failed write) must not be overwritten or deleted. */
+  private secureActive(): boolean {
+    const live = this.backend.read(AGY_ACTIVE_TARGET);
+    if (!live) return true;
+    const email = this.captureActive();
+    if (!email || !this.hasCopy(email)) return false;
+    const copy = this.backend.read(copyTarget(email));
+    return copy !== null && copy.equals(live);
   }
 
-  /** Sign agy out (for adding another account). The live sign-in is captured
-   *  first so it is never lost. */
+  /** Make `email` the active agy account. The live sign-in is copied first,
+   *  so the account being replaced keeps its newest refresh token; when that
+   *  copy cannot be made, the swap is refused. */
+  activate(email: string): AgySwapResult {
+    const blob = this.backend.read(copyTarget(email));
+    if (agyBlobEmail(blob) !== email || !blob) return 'no-copy';
+    if (!this.secureActive()) return 'live-not-saved';
+    if (!this.backend.write(AGY_ACTIVE_TARGET, AGY_ACTIVE_USER, blob)) return 'failed';
+    return this.activeEmail() === email ? 'ok' : 'failed';
+  }
+
+  /** Sign agy out (for adding another account). Refused when the live sign-in
+   *  cannot be copied first, so it is never lost. */
   signOutActive(): boolean {
-    this.captureActive();
+    if (!this.secureActive()) return false;
     return this.backend.remove(AGY_ACTIVE_TARGET) || this.backend.read(AGY_ACTIVE_TARGET) === null;
   }
 

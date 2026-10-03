@@ -36,7 +36,7 @@ describe('agyVault', () => {
     b.write(copyTarget('b@x.com'), 'antigravity', blobFor('b@x.com'));
     // agy refreshed a's token in the live slot after the first capture.
     b.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', 'r2'));
-    expect(vault.activate('b@x.com')).toBe(true);
+    expect(vault.activate('b@x.com')).toBe('ok');
     expect(vault.activeEmail()).toBe('b@x.com');
     expect(JSON.parse(String(b.read(copyTarget('a@x.com')))).token.refresh_token).toBe('r2');
   });
@@ -44,7 +44,31 @@ describe('agyVault', () => {
   it('refuses to activate an account without a matching copy', () => {
     const b = new FakeBackend();
     b.write(copyTarget('b@x.com'), 'antigravity', blobFor('c@x.com'));
-    expect(new AgyVault(b).activate('b@x.com')).toBe(false);
+    expect(new AgyVault(b).activate('b@x.com')).toBe('no-copy');
+  });
+
+  it('never overwrites or deletes a live sign-in it could not copy', () => {
+    const unreadable = Buffer.from('{"token":{}}'); // no id_token: no email to file the copy under
+    const tooBig = blobFor('a@x.com', 'r'.repeat(3000)); // over the vault's blob limit
+    for (const live of [unreadable, tooBig]) {
+      const b = new FakeBackend();
+      b.write(AGY_ACTIVE_TARGET, 'antigravity', live);
+      b.write(copyTarget('b@x.com'), 'antigravity', blobFor('b@x.com'));
+      const vault = new AgyVault(b);
+      expect(vault.activate('b@x.com')).toBe('live-not-saved');
+      expect(vault.signOutActive()).toBe(false);
+      expect(b.read(AGY_ACTIVE_TARGET)?.equals(live)).toBe(true);
+    }
+  });
+
+  it('refuses when the copy write fails', () => {
+    const b = new FakeBackend();
+    b.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
+    b.write(copyTarget('b@x.com'), 'antigravity', blobFor('b@x.com'));
+    const realWrite = b.write.bind(b);
+    b.write = (target, user, blob) => (target === copyTarget('a@x.com') ? false : realWrite(target, user, blob));
+    expect(new AgyVault(b).activate('b@x.com')).toBe('live-not-saved');
+    expect(agyBlobEmail(b.read(AGY_ACTIVE_TARGET))).toBe('a@x.com');
   });
 });
 
@@ -85,6 +109,19 @@ describe('AgyAccountService', () => {
     const onDisk = fs.readFileSync(path.join(dataDir, 'agy-accounts.json'), 'utf8');
     expect(onDisk).not.toContain('refresh_token');
     expect(onDisk).not.toContain('id_token');
+  });
+
+  it('does not swap away from an unregistered sign-in it cannot copy, and blames no account', async () => {
+    const s = make();
+    await withAccounts(s, ['a@x.com', 'b@x.com']);
+    snapshots.set('a@x.com', quota(0.6));
+    snapshots.set('b@x.com', quota(0.6));
+    const unregistered = Buffer.from('{"token":{}}');
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', unregistered);
+
+    expect(await s.prepareLaunch()).toEqual({ ok: true, account: null, switched: false });
+    expect(backend.read(AGY_ACTIVE_TARGET)?.equals(unregistered)).toBe(true);
+    expect(s.snapshot().accounts.every((a) => a.state !== 'needs-reauth')).toBe(true);
   });
 
   it('lets a launch through unchanged with no accounts', async () => {
