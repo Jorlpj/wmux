@@ -107,7 +107,22 @@ function TaskGroupMenu({ ownerKey, finishedIds, nameOf, toReview = 0, groupName,
   const [menuAnchor, setMenuAnchor] = useState<CloseConfirmAnchor | null>(null);
   const [confirmAnchor, setConfirmAnchor] = useState<CloseConfirmAnchor | null>(null);
   const [closing, setClosing] = useState(false);
+  // Panes started in the listed tasks' worktrees: the close stops them.
+  const [paneCount, setPaneCount] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!confirmAnchor) return;
+    setPaneCount(0);
+    const st = useStore.getState();
+    const paths = confirmIds.flatMap((id) => {
+      const check = revalidateTaskForClose(st, id, ownerKey, (wsId) => selectWorkspaceAgentRoster(st, wsId).rows);
+      return check.ok && check.mission.worktreePath ? [check.mission.worktreePath] : [];
+    });
+    let live = true;
+    void window.electronAPI?.workTask?.countPanes?.(paths).then((n) => { if (live) setPaneCount(n); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [confirmAnchor, confirmIds, ownerKey]);
 
   useEffect(() => {
     if (!menuAnchor) return;
@@ -266,7 +281,9 @@ function TaskGroupMenu({ ownerKey, finishedIds, nameOf, toReview = 0, groupName,
           anchor={confirmAnchor}
           title={t('sidebar.tasks.closeFinishedConfirm', { count: confirmIds.length })}
           terminalCount={confirmIds.length}
-          detail={() => t('sidebar.tasks.closeFinishedDetail')}
+          detail={() => paneCount > 0
+            ? `${t('sidebar.tasks.closeFinishedDetail')} ${t('sidebar.tasks.closeFinishedPanes', { count: paneCount })}`
+            : t('sidebar.tasks.closeFinishedDetail')}
           items={confirmIds.map(nameOf)}
           cancelLabel={t('workspace.closeCancel')}
           confirmLabel={t('sidebar.tasks.closeFinishedYes')}

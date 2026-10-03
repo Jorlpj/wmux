@@ -1227,6 +1227,8 @@ const electronAPI = {
       >,
     // F2 — 재발사: prompt.md 실존 검사 후 원래 initialCommand를 정상 경로와 동일
     // sanitize로 재전송(맨 셸이 프롬프트를 실행하는 오배선 방지).
+    countPanes: (worktreePaths: string[]) =>
+      ipcRenderer.invoke(IPC.WORKTASK_COUNT_PANES, worktreePaths) as Promise<number>,
     refire: (params: { ptyId: string; worktreePath: string; initialCommand: string }) =>
       ipcRenderer.invoke(IPC.WORKTASK_REFIRE, params) as Promise<
         { ok: true } | { ok: false; error: string }
