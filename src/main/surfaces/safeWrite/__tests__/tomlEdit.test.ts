@@ -248,3 +248,38 @@ describe('editTomlKeys', () => {
     ).toThrow(TomlEditError);
   });
 });
+
+describe('editTomlKeys with multi-line values', () => {
+  const text = [
+    '[mcp_servers.wmux]',
+    'command = "node"',
+    'disabled_tools = [',
+    '  "a", # first',
+    '  "b]",',
+    ']',
+    'enabled = true',
+    '',
+  ].join('\n');
+
+  it('replaces the whole multi-line array', () => {
+    const out = editTomlKeys(text, [
+      { table: ['mcp_servers', 'wmux'], key: 'disabled_tools', op: 'set', value: ['a', 'b]', 'c'] },
+    ]);
+    expect(out).toBe(
+      ['[mcp_servers.wmux]', 'command = "node"', 'disabled_tools = ["a", "b]", "c"]', 'enabled = true', ''].join('\n'),
+    );
+  });
+
+  it('deletes the whole multi-line array', () => {
+    const out = editTomlKeys(text, [{ table: ['mcp_servers', 'wmux'], key: 'disabled_tools', op: 'delete' }]);
+    expect(out).toBe(['[mcp_servers.wmux]', 'command = "node"', 'enabled = true', ''].join('\n'));
+  });
+
+  it('does the same inside an array of tables', () => {
+    const arr = ['[[hooks]]', 'name = "x"', 'events = [', '  "Stop",', ']', ''].join('\n');
+    const out = editTomlKeys(arr, [
+      { arrayTable: ['hooks'], match: { name: 'x' }, key: 'events', op: 'set', value: ['Stop', 'Start'] },
+    ]);
+    expect(out).toBe(['[[hooks]]', 'name = "x"', 'events = ["Stop", "Start"]', ''].join('\n'));
+  });
+});

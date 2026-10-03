@@ -148,6 +148,41 @@ function parseKeyValueLine(line: string): {
   return { key, rawValue, inlineComment, indent };
 }
 
+/**
+ * Number of lines the value starting on `lines[keyLineIdx]` spans. A multi-line array or inline table
+ * (`disabled_tools = [
+  "a",
+]`) continues until its brackets balance; strings and comments are skipped.
+ */
+function valueLineSpan(lines: string[], keyLineIdx: number): number {
+  const first = lines[keyLineIdx];
+  let i = first.indexOf('=') + 1;
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  for (let row = keyLineIdx; row < lines.length; row++) {
+    const line = lines[row];
+    for (; i < line.length; i++) {
+      const ch = line[i];
+      if (quote) {
+        if (quote === '"' && ch === '\\') i++;
+        else if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '#') {
+        break;
+      } else if (ch === '[' || ch === '{') {
+        depth++;
+      } else if (ch === ']' || ch === '}') {
+        depth--;
+      }
+    }
+    if (depth <= 0) return row - keyLineIdx + 1;
+    quote = null;
+    i = 0;
+  }
+  return 1;
+}
+
 function parseTomlScalar(raw: string): unknown {
   const trimmed = raw.trim();
   if (trimmed === 'true') return true;
@@ -387,16 +422,17 @@ function applyTableEdit(lines: string[], edit: TomlTableEdit): string[] {
   }
 
   if (keyLineIdx !== -1) {
+    const span = valueLineSpan(lines, keyLineIdx);
     if (edit.op === 'delete') {
       const nextLines = [...lines];
-      nextLines.splice(keyLineIdx, 1);
+      nextLines.splice(keyLineIdx, span);
       return nextLines;
     }
     const existing = parseKeyValueLine(lines[keyLineIdx])!;
-    const commentPart = existing.inlineComment ? ` ${existing.inlineComment.trim()}` : '';
+    const commentPart = existing.inlineComment && span === 1 ? ` ${existing.inlineComment.trim()}` : '';
     const newLine = `${existing.indent}${formatKey(edit.key)} = ${formatTomlValue(edit.value!)}${commentPart}`;
     const nextLines = [...lines];
-    nextLines[keyLineIdx] = newLine;
+    nextLines.splice(keyLineIdx, span, newLine);
     return nextLines;
   }
 
@@ -470,16 +506,17 @@ function applyArrayTableEdit(lines: string[], edit: TomlArrayTableEdit): string[
     }
 
     if (keyLineIdx !== -1) {
+      const span = valueLineSpan(lines, keyLineIdx);
       if (edit.op === 'delete') {
         const nextLines = [...lines];
-        nextLines.splice(keyLineIdx, 1);
+        nextLines.splice(keyLineIdx, span);
         return nextLines;
       }
       const existing = parseKeyValueLine(lines[keyLineIdx])!;
-      const commentPart = existing.inlineComment ? ` ${existing.inlineComment.trim()}` : '';
+      const commentPart = existing.inlineComment && span === 1 ? ` ${existing.inlineComment.trim()}` : '';
       const newLine = `${existing.indent}${formatKey(edit.key)} = ${formatTomlValue(edit.value!)}${commentPart}`;
       const nextLines = [...lines];
-      nextLines[keyLineIdx] = newLine;
+      nextLines.splice(keyLineIdx, span, newLine);
       return nextLines;
     }
 
