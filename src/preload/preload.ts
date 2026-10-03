@@ -697,8 +697,6 @@ const electronAPI = {
     remove: (id: string) => ipcRenderer.invoke(IPC.AGY_ACCOUNT_REMOVE, { id }) as Promise<{ ok: boolean }>,
     setAutoRotate: (on: boolean) =>
       ipcRenderer.invoke(IPC.AGY_ACCOUNT_SET_AUTO_ROTATE, { on }) as Promise<{ ok: boolean }>,
-    clearCooldown: (id: string) =>
-      ipcRenderer.invoke(IPC.AGY_ACCOUNT_CLEAR_COOLDOWN, { id }) as Promise<{ ok: boolean }>,
     onChanged: (callback: () => void) => {
       const listener = (): void => callback();
       ipcRenderer.on(IPC.AGY_ACCOUNT_CHANGED, listener);
