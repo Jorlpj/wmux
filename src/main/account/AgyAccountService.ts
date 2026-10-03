@@ -15,7 +15,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import {
-  AGY_DEFAULT_COOLDOWN_MS,
   agyAccountRow,
   chooseAgyAccount,
   normalizeAgyEmail,
@@ -58,8 +57,6 @@ function sanitizeAccount(raw: unknown): AgyAccount | null {
     label: typeof o.label === 'string' ? o.label.slice(0, MAX_LABEL_CHARS) : '',
     addedAt: typeof o.addedAt === 'number' ? o.addedAt : 0,
     ...(o.needsReauth === true ? { needsReauth: true } : {}),
-    ...(typeof o.cooldownUntil === 'number' && Number.isFinite(o.cooldownUntil) ? { cooldownUntil: o.cooldownUntil } : {}),
-    ...(typeof o.cooldownSetAtMs === 'number' && Number.isFinite(o.cooldownSetAtMs) ? { cooldownSetAtMs: o.cooldownSetAtMs } : {}),
   };
 }
 
@@ -241,25 +238,6 @@ export class AgyAccountService {
     }
     if (result !== 'ok') throw new AgyAccountError('swap-failed', 'could not switch the agy sign-in');
     this.emit();
-  }
-
-  /** Record that the active account ran out (pane output said so). */
-  async markActiveExhausted(availableAtMs?: number): Promise<void> {
-    const email = this.deps.vault?.activeEmail();
-    if (!email) return;
-    if (!this.file().accounts.some((a) => a.email === email)) return;
-    const until = availableAtMs && availableAtMs > this.now() ? availableAtMs : this.now() + AGY_DEFAULT_COOLDOWN_MS;
-    await this.mutate((file) => {
-      const a = file.accounts.find((x) => x.email === email);
-      if (a) { a.cooldownUntil = until; a.cooldownSetAtMs = this.now(); }
-    });
-  }
-
-  async clearCooldown(id: string): Promise<void> {
-    await this.mutate((file) => {
-      const a = file.accounts.find((x) => x.id === id);
-      if (a) { delete a.cooldownUntil; delete a.cooldownSetAtMs; }
-    });
   }
 
   /**

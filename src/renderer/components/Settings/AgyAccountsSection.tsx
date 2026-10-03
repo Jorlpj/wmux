@@ -149,11 +149,6 @@ export function AgyAccountsSection(): React.ReactElement | null {
           )}
           <StateBadge row={r} />
           <QuotaBits row={r} />
-          {r.state === 'exhausted' && r.cooldownUntil && (
-            <Button variant="ghost" size="md" className="shrink-0" onClick={() => run(api.clearCooldown(r.id))}>
-              {t('agyAccounts.clearCooldown')}
-            </Button>
-          )}
           {!r.active && r.state !== 'needs-reauth' && (
             <Button variant="secondary" size="md" className="shrink-0" disabled={snap.login.pending} onClick={() => run(api.activate(r.id))}>
               {t('agyAccounts.useNow')}

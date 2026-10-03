@@ -5,7 +5,6 @@ import {
   chooseAgyAccount,
   evaluateAgyQuota,
   isAgyLaunchLine,
-  isAgyQuotaError,
   type AgyAccount,
   type AgyAccountQuotaSnapshot,
 } from '../agyAccounts';
@@ -63,15 +62,17 @@ describe('agyAccountRow', () => {
     expect(agyAccountRow(acct('b@x.com'), null, 'a@x.com', NOW).state).toBe('ready');
   });
 
-  it('puts reauth before cooldown before quota', () => {
-    expect(agyAccountRow(acct('a@x.com', { needsReauth: true, cooldownUntil: NOW + 1 }), null, null, NOW).state).toBe('needs-reauth');
-    const cooling = agyAccountRow(acct('a@x.com', { cooldownUntil: NOW + 1000 }), null, null, NOW);
-    expect(cooling.state).toBe('exhausted');
-    expect(cooling.availableAtMs).toBe(NOW + 1000);
+  it('puts reauth before quota', () => {
+    const out = { quota: { 'gemini-5h': { remaining_fraction: 0, reset_time: new Date(NOW + 1000).toISOString() } } };
+    expect(agyAccountRow(acct('a@x.com', { needsReauth: true }), out, null, NOW).state).toBe('needs-reauth');
+    const exhausted = agyAccountRow(acct('a@x.com'), out, null, NOW);
+    expect(exhausted.state).toBe('exhausted');
+    expect(exhausted.availableAtMs).toBe(NOW + 1000);
   });
 
-  it('lets an elapsed cooldown go', () => {
-    expect(agyAccountRow(acct('a@x.com', { cooldownUntil: NOW - 1 }), null, null, NOW).state).toBe('ready');
+  it('ignores a cooldown left in an older accounts file: only the sensor marks an account out', () => {
+    const legacy = { ...acct('a@x.com'), cooldownUntil: NOW + 1000 } as AgyAccount;
+    expect(agyAccountRow(legacy, null, null, NOW).state).toBe('ready');
   });
 });
 
@@ -129,34 +130,14 @@ describe('isAgyLaunchLine', () => {
   });
 });
 
-describe('isAgyQuotaError', () => {
-  it('matches error forms and not the model picker labels', () => {
-    expect(isAgyQuotaError('Error: RESOURCE_EXHAUSTED: quota')).toBe(true);
-    expect(isAgyQuotaError("You're out of quota for Gemini")).toBe(true);
-    expect(isAgyQuotaError('Quota exceeded for this model')).toBe(true);
-    expect(isAgyQuotaError('Quota available  Quota exhausted')).toBe(false);
-  });
-});
-
-describe('agy quota error detection in pane output', () => {
-  it('AgentDetector reports a quota error line as an agy quota event', async () => {
+describe('agy quota error in pane output', () => {
+  it('shows as the pane status only', async () => {
     const { AgentDetector } = await import('../../main/pty/AgentDetector');
-    const { isAgyQuotaExhaustedEvent } = await import('../agyAccounts');
     const det = new AgentDetector();
-    const events: Array<{ agent: string; message: string }> = [];
+    const events: Array<{ agent: string; status: string; message: string }> = [];
     det.onEvent((e) => events.push(e));
     det.feed('Antigravity CLI 1.2.14\r\n');
     det.feed('Error: RESOURCE_EXHAUSTED: you are out of quota for this model\r\n');
-    expect(events.some((e) => isAgyQuotaExhaustedEvent(e))).toBe(true);
-  });
-
-  it('ignores the same text before agy owns the pane', async () => {
-    const { AgentDetector } = await import('../../main/pty/AgentDetector');
-    const { isAgyQuotaExhaustedEvent } = await import('../agyAccounts');
-    const det = new AgentDetector();
-    const events: Array<{ agent: string; message: string }> = [];
-    det.onEvent((e) => events.push(e));
-    det.feed('RESOURCE_EXHAUSTED\r\n');
-    expect(events.some((e) => isAgyQuotaExhaustedEvent(e))).toBe(false);
+    expect(events.some((e) => e.agent === 'Antigravity CLI' && e.status === 'error' && e.message === 'Quota exhausted')).toBe(true);
   });
 });

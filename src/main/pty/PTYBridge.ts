@@ -31,8 +31,6 @@ import { eventBus } from '../events/EventBus';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { normalizeDetectorCue, type CompletionAlarm } from '../../shared/hooks/CompletionAlarm';
 import type { AgentStatus } from '../../shared/types';
-import { isAgyQuotaExhaustedEvent } from '../../shared/agyAccounts';
-import { getAgyAccountService } from '../account/AgyAccountService';
 
 // How long after an AgentDetector event to suppress the ActivityMonitor idle
 // fallback notification. Prevents double-firing when both signals agree
@@ -500,7 +498,6 @@ export class PTYBridge {
     // The 'waiting'/'complete' transition is the strong "task done" signal.
     const unsubAgent = agentDetector.onEvent((agentEvent) => {
       try {
-        if (isAgyQuotaExhaustedEvent(agentEvent)) void getAgyAccountService().markActiveExhausted().catch(() => undefined);
         const win = this.getWindow();
         const status = agentEvent.status as AgentStatus;
         const slug = agentDisplayToSlug(agentEvent.agent);

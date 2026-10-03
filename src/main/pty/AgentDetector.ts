@@ -374,9 +374,8 @@ const AGENT_PATTERNS: AgentPattern[] = [
       { regex: /^\s*esc\s*to\s*cancel/,                                        status: 'running',        message: 'Working' },
       { regex: /^\s*\?\s*for\s*shortcuts/,                                     status: 'waiting',        message: 'Ready for input' },
       // A request refused for quota. Error forms only: the model picker shows
-      // "Quota available" / "Quota exhausted" labels in normal use. The agy
-      // account service reads this message (AGY_QUOTA_EXHAUSTED_MESSAGE) to put
-      // the active account on cooldown so the next launch picks another one.
+      // "Quota available" / "Quota exhausted" labels in normal use. Pane status
+      // only: account choice reads the quota sensor, never pane text.
       { regex: /\bRESOURCE_EXHAUSTED\b|\bout\s+of\s+quota\b|\bquota\s+(?:has\s+been\s+)?exceeded\b|\bexhausted\s+your\s+(?:\w+\s+)?quota\b/i, status: 'error', message: 'Quota exhausted' },
     ],
   },

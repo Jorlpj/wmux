@@ -169,16 +169,6 @@ describe('AgyAccountService', () => {
     expect(s.snapshot().accounts.find((a) => a.email === 'a@x.com')?.state).toBe('needs-reauth');
   });
 
-  it('a cooldown from pane output blocks the account until cleared', async () => {
-    const s = make();
-    await withAccounts(s, ['a@x.com']);
-    await s.markActiveExhausted();
-    expect(s.snapshot().accounts[0].state).toBe('exhausted');
-    expect((await s.prepareLaunch()).ok).toBe(false);
-    await s.clearCooldown(s.snapshot().accounts[0].id);
-    expect((await s.prepareLaunch()).ok).toBe(true);
-  });
-
   it('sign-in flow: saves the live account, signs out, registers the new one', async () => {
     const s = make();
     await withAccounts(s, ['a@x.com']);
@@ -247,18 +237,6 @@ describe('AgyAccountService — self-healing signals', () => {
     clock = NOW;
   });
   afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
-
-  it('a newer sensor snapshot with quota lifts a cooldown set from pane text', async () => {
-    const s = make();
-    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
-    await s.addCurrent();
-    await s.markActiveExhausted();
-    expect(s.snapshot().accounts[0].state).toBe('exhausted');
-    snapshots.set('a@x.com', { quota: { 'gemini-5h': { remaining_fraction: 0.8, reset_time: LATER } }, quotaCapturedAtMs: NOW - 1 });
-    expect(s.snapshot().accounts[0].state).toBe('exhausted');
-    snapshots.set('a@x.com', { quota: { 'gemini-5h': { remaining_fraction: 0.8, reset_time: LATER } }, quotaCapturedAtMs: NOW + 1 });
-    expect(s.snapshot().accounts[0].state).toBe('active');
-  });
 
   it('sign-in ignores the previous account written back by a running session', async () => {
     const s = make();

@@ -36,12 +36,6 @@ export interface AgyAccount {
   addedAt: number;
   /** Set when agy rejected the stored credential; cleared by a fresh sign-in. */
   needsReauth?: boolean;
-  /** Epoch ms until which the account is treated as out of quota. */
-  cooldownUntil?: number;
-  /** When the cooldown was set. A sensor snapshot captured after this that
-   *  still shows quota lifts it (the pane-output signal can misfire on text
-   *  that merely mentions a quota error). */
-  cooldownSetAtMs?: number;
 }
 
 export type AgyAccountState = 'active' | 'ready' | 'exhausted' | 'needs-reauth';
@@ -130,19 +124,14 @@ export function agyAccountRow(
   activeEmail: string | null,
   now: number,
 ): AgyAccountRow {
+  // Only the sensor snapshot marks an account out of quota. Pane text is not used: output that merely
+  // mentions a quota error would otherwise lock a healthy account with nothing to lift it.
   const verdict = evaluateAgyQuota(snapshot, now);
-  const fresherSnapshotHasQuota = typeof account.cooldownSetAtMs === 'number'
-    && typeof snapshot?.quotaCapturedAtMs === 'number'
-    && snapshot.quotaCapturedAtMs > account.cooldownSetAtMs
-    && verdict.usable && verdict.remaining !== null;
-  const cooling = typeof account.cooldownUntil === 'number' && account.cooldownUntil > now && !fresherSnapshotHasQuota;
-  const availableAtMs = cooling
-    ? Math.max(account.cooldownUntil as number, verdict.availableAtMs ?? 0)
-    : verdict.availableAtMs;
+  const availableAtMs = verdict.availableAtMs;
   const active = activeEmail !== null && normalizeAgyEmail(account.email) === activeEmail;
   let state: AgyAccountState;
   if (account.needsReauth) state = 'needs-reauth';
-  else if (cooling || !verdict.usable) state = 'exhausted';
+  else if (!verdict.usable) state = 'exhausted';
   else state = active ? 'active' : 'ready';
   return { ...account, state, active, remaining: verdict.remaining, availableAtMs, quota: snapshot };
 }
@@ -169,25 +158,6 @@ export function chooseAgyAccount(rows: readonly AgyAccountRow[]): AgyLaunchDecis
   }
   const ranked = [...usable].sort((a, b) => (b.remaining ?? -1) - (a.remaining ?? -1));
   return { ok: true, account: ranked[0], switched: true };
-}
-
-/** Text agy prints when a request is refused for quota. Matched on pane output
- *  as a second signal next to the sensor snapshot. Kept narrow: agy's model
- *  picker shows "Quota available" / "Quota exhausted" labels in normal use,
- *  so only the error forms count. */
-const AGY_QUOTA_ERROR_RE = /\bRESOURCE_EXHAUSTED\b|\bout of quota\b|\bquota (?:has been )?exceeded\b|\bexhausted your (?:\w+ )?quota\b/i;
-
-/** AgentDetector's agy entry emits this message for a quota error line. */
-export const AGY_QUOTA_EXHAUSTED_MESSAGE = 'Quota exhausted';
-export const AGY_AGENT_NAME = 'Antigravity CLI';
-
-/** True for a detector event that reports an agy quota error. */
-export function isAgyQuotaExhaustedEvent(ev: { agent?: unknown; message?: unknown } | null | undefined): boolean {
-  return !!ev && ev.agent === AGY_AGENT_NAME && ev.message === AGY_QUOTA_EXHAUSTED_MESSAGE;
-}
-
-export function isAgyQuotaError(text: string): boolean {
-  return AGY_QUOTA_ERROR_RE.test(text);
 }
 
 /** First token of a typed launch line names agy (`agy`, `agy.exe`, a path to it). */
