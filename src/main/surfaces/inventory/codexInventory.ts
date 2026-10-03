@@ -373,6 +373,25 @@ export async function readCodexInventory(deps: InventoryDeps): Promise<ProviderI
 
     for (const [handlerIdx, [hookName, rawConf]] of Object.entries(entries).entries()) {
       if (!rawConf || typeof rawConf !== 'object') continue;
+      if (Array.isArray(rawConf)) {
+        // The grouped form (event -> groups[] -> hooks[]) has its own hooks.state keys, which the writer
+        // does not build: list it, but read-only, rather than offer a switch that always fails.
+        addItem(
+          makeItem({
+            provider: 'codex',
+            kind: 'hook',
+            name: hookName,
+            source: isProject ? 'project' : 'user',
+            enabled: null,
+            effect: 'removes',
+            toggleable: false,
+            readOnlyReason: 'Grouped hooks.json entries can only be edited in the file.',
+            hookEvent: hookName,
+            originPath: filePath,
+          }),
+        );
+        continue;
+      }
       const conf = rawConf as Record<string, unknown>;
       const event = typeof conf.event === 'string' ? conf.event : typeof conf.type === 'string' ? conf.type : null;
 

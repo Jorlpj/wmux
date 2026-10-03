@@ -950,3 +950,39 @@ trusted_hash = "prior-hash"
     ).rejects.toThrow('Failed to parse hooks file');
   });
 });
+
+describe('codexWriter review round 2', () => {
+  it('reports a change refused for its path instead of returning ok', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-refused-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-outside-'));
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), '[mcp_servers.a]\ncommand = "node"\n', 'utf8');
+    const item = (name: string, originPath: string) => ({
+      id: `codex:mcp-server::${name}`, provider: 'codex' as const, kind: 'mcp-server' as const, name, parent: null,
+      source: 'user' as const, enabled: true, effect: 'removes' as const, toggleable: true, readOnlyReason: null,
+      hookEvent: null, hookCost: null, descriptionChars: null, originPath, wmuxRequired: false,
+    });
+    const ok = item('a', path.join(home, '.codex', 'config.toml'));
+    const bad = item('b', path.join(outside, 'config.toml'));
+    const res = await createCodexWriter().apply({
+      deps: { homeDir: home, run: async () => 'codex 0.159.2', now: () => 0, surfacesStorePath: path.join(home, '.wmux', 'surfaces.json') },
+      inventory: { provider: 'codex', cliVersion: '0.159.2', versionSupported: true, writable: true, items: [ok, bad], warnings: [], scannedAtMs: 0 },
+      changes: [{ item: ok, enabled: false }, { item: bad, enabled: false }],
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/outside allowed directories/);
+  });
+
+  it('lists a grouped hooks.json read-only', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-grouped-'));
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), '', 'utf8');
+    fs.writeFileSync(path.join(home, '.codex', 'hooks.json'), JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node stop.js' }] }] },
+    }), 'utf8');
+    const inv = await readInventory('codex', { homeDir: home, run: async () => 'codex 0.159.2' });
+    const hook = inv.items.find((i) => i.kind === 'hook' && i.name === 'Stop');
+    expect(hook?.toggleable).toBe(false);
+    expect(hook?.readOnlyReason).toBeTruthy();
+  });
+});
