@@ -405,6 +405,14 @@ export const zh = {
   'accounts.loginAgain': '重新登录',
   'accounts.loginAddFailed': '无法保存“{name}”：{error}',
   'accounts.loginTabFailed': '无法在此打开登录标签页。请复制命令并在任意终端中运行。',
+  // Settings — Accounts — quota-driven account choice for Claude/Codex launches
+  'accounts.rotateClaude': "按配额切换 Claude 账号",
+  'accounts.rotateCodex': "按配额切换 Codex 账号",
+  'accounts.rotateDesc': "当工作区绑定的账号配额用完时，该工作区中新的 Claude 或 Codex 面板会以剩余配额最多的已注册账号启动；绑定本身不变。所有账号都用完时，在其中一个重置前不会启动智能体。已在运行的面板不受影响。Claude 配额读取自其用量接口（不发送模型请求），Codex 配额读取自每个账号会话文件中记录的限额。",
+  'accounts.quotaOut': "配额已用完",
+  'accounts.quotaOutUntil': "{time} 后可再次使用",
+  'accounts.quotaUnknown': "尚未测量配额",
+  'accounts.quotaLeft': "剩余 {pct}",
   // Settings — Accounts — Antigravity (agy): one machine-wide sign-in, swapped by quota
   'agyAccounts.title': "Antigravity (agy) 账号",
   'agyAccounts.intro': "添加多个 agy 账号，wmux 会使用仍有配额的那个。",
