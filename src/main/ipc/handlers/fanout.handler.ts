@@ -173,6 +173,8 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_GET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET);
+    ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET);
+    ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET);
     ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);
     ipcMain.removeHandler(IPC.FANOUT_PRESETS_SET);
   };
