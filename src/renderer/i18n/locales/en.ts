@@ -1130,6 +1130,7 @@ export const en = {
   'agyAccounts.signInAnother': "Sign in another account",
   'agyAccounts.loginTabTitle': "agy sign-in",
   'agyAccounts.loginTabFailed': "Couldn't open a tab for the agy sign-in. Open a workspace and try again.",
+  'agyAccounts.restoreFailed': "agy is signed out: {email} could not be signed back in. Sign in again.",
   'accounts.loginStatusFailed': "Couldn't check the current login for “{name}”, so a new login can't be detected safely. Try again.",
   'settings.shortcuts': 'Keyboard shortcuts',
   // #1152 — checkbox on each advertised row; unchecked = the built-in is
