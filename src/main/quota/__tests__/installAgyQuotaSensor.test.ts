@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as safeWrite from '../../surfaces/safeWrite';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -386,6 +387,26 @@ describe('installAgyQuotaSensor', () => {
     });
   });
 
+  describe('a save agy makes while installing', () => {
+    it('is not overwritten: the install stops and says so', () => {
+      const settingsPath = settingsFilePath();
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      const original = JSON.stringify({ statusLine: { type: 'command', command: 'my-status' } });
+      fs.writeFileSync(settingsPath, original, 'utf8');
+      const spy = vi.spyOn(safeWrite, 'applyConfigEdit').mockImplementation(() => {
+        throw new safeWrite.ConfigChangedError(settingsPath, 'modified');
+      });
+      try {
+        const outcome = installAgyQuotaSensor(tmpHome, { sourceScriptPath: mockSinkSource });
+        expect(outcome.ok).toBe(false);
+        expect(outcome.error).toMatch(/changed settings.json/);
+        expect(fs.readFileSync(settingsPath, 'utf8')).toBe(original);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   describe('Idempotence and rewriting agy-sink', () => {
     it('Case 3: Idempotent re-run on already-installed fresh sink is a no-op (no rewrite, no backup)', () => {
       const first = installAgyQuotaSensor(tmpHome, {
@@ -453,7 +474,7 @@ describe('installAgyQuotaSensor', () => {
       fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
       const origCmd = 'custom-bar --format=json';
       const origB64 = encodeChainedCommand(origCmd);
-      const oldCmd = `node C:\\old-dir\\quota-sink.js agy --chain-b64 ${origB64}`;
+      const oldCmd = `node C:\\old-home\\.wmux\\bin\\quota-sink.js agy --chain-b64 ${origB64}`;
       fs.writeFileSync(
         settingsPath,
         JSON.stringify({ statusLine: { type: 'command', command: oldCmd } }, null, 2),
@@ -602,9 +623,16 @@ describe('classifyAgyStatusLine & extractExistingCommand helper', () => {
   it('classifies agy-sink correctly', () => {
     expect(
       classifyAgyStatusLine({
-        statusLine: { command: 'node C:\\path\\quota-sink.js agy' },
+        statusLine: { command: 'node C:\\Users\\u\\.wmux\\bin\\quota-sink.js agy' },
       }),
     ).toBe('agy-sink');
+
+    // A user's own script that happens to be named quota-sink.js is not wmux's.
+    expect(
+      classifyAgyStatusLine({
+        statusLine: { command: 'node C:\\path\\quota-sink.js agy' },
+      }),
+    ).toBe('foreign');
 
     expect(
       classifyAgyStatusLine({
@@ -616,11 +644,11 @@ describe('classifyAgyStatusLine & extractExistingCommand helper', () => {
       classifyAgyStatusLine({
         statusLine: { command: 'node quota-sink.js', enabled: false },
       }),
-    ).toBe('agy-sink');
+    ).toBe('foreign');
 
     expect(
       classifyAgyStatusLine({
-        statusLine: 'node "C:\\path\\quota-sink.js"',
+        statusLine: 'node "C:\\Users\\u\\.wmux-dev\\bin\\quota-sink.js"',
       }),
     ).toBe('agy-sink');
   });

@@ -4,7 +4,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { writeJsonAtomic, copyFileAtomic } from '../../shared/settingsFile';
+import { copyFileAtomic } from '../../shared/settingsFile';
+import { applyConfigEdit, ConfigChangedError, snapshotFile, type FileSnapshot } from '../surfaces/safeWrite';
 
 export type AgyStatusLineKind = 'none' | 'agy-sink' | 'foreign';
 export type InstallAgyQuotaSensorAction = 'installed' | 'chained' | 'noop';
@@ -90,6 +91,15 @@ export function extractChainedB64(command: string): string | null {
  * - 'agy-sink': already configured to point to wmux's quota-sink.js.
  * - 'foreign': another command is configured.
  */
+/**
+ * Whether a statusLine command runs wmux's sink: the path wmux installs to, or a wmux data dir's
+ * `bin/quota-sink.js` from an earlier install. A user's own script named quota-sink.js is not ours.
+ */
+function isOurSink(command: string, sinkScriptPath?: string): boolean {
+  if (sinkScriptPath && command.includes(sinkScriptPath)) return true;
+  return /[\\/]\.wmux[^\\/\s]*[\\/]bin[\\/]quota-sink\.js/.test(command);
+}
+
 export function classifyAgyStatusLine(
   settings: Record<string, unknown>,
   sinkScriptPath?: string,
@@ -99,14 +109,12 @@ export function classifyAgyStatusLine(
   if (typeof sl === 'object' && !Array.isArray(sl)) {
     const cmd = (sl as Record<string, unknown>).command;
     if (typeof cmd !== 'string' || cmd.trim().length === 0) return 'none';
-    if (sinkScriptPath && cmd.includes(sinkScriptPath)) return 'agy-sink';
-    if (cmd.includes('quota-sink.js')) return 'agy-sink';
+    if (isOurSink(cmd, sinkScriptPath)) return 'agy-sink';
     return 'foreign';
   }
   if (typeof sl === 'string') {
     if (sl.trim().length === 0) return 'none';
-    if (sinkScriptPath && sl.includes(sinkScriptPath)) return 'agy-sink';
-    if (sl.includes('quota-sink.js')) return 'agy-sink';
+    if (isOurSink(sl, sinkScriptPath)) return 'agy-sink';
     return 'foreign';
   }
   return 'foreign';
@@ -180,8 +188,10 @@ export function installAgyQuotaSensor(
   }
 
   let settings: Record<string, unknown> = {};
-  if (fs.existsSync(settingsPath)) {
-    const raw = fs.readFileSync(settingsPath, 'utf8');
+  // One snapshot: the write below refuses if agy changed the file since this read.
+  const snap = snapshotFile(settingsPath);
+  if (snap.exists) {
+    const raw = snap.text ?? '';
     if (raw.trim().length > 0) {
       try {
         const parsed = JSON.parse(raw) as unknown;
@@ -232,16 +242,13 @@ export function installAgyQuotaSensor(
       };
     }
 
-    const backupPath = `${settingsPath}.bak-wmux-${Date.now()}`;
-    fs.copyFileSync(settingsPath, backupPath);
-
     const current = settings.statusLine;
-    settings.statusLine =
+    const written = writeStatusLine(settingsPath, snap,
       current && typeof current === 'object' && !Array.isArray(current)
         ? { ...(current as Record<string, unknown>), type: 'command', command: targetCommand }
-        : { type: 'command', command: targetCommand, enabled: true, stack_with_default: true };
-
-    writeJsonAtomic(settingsPath, settings);
+        : { type: 'command', command: targetCommand, enabled: true, stack_with_default: true });
+    if (!written.ok) return { ok: false, action: 'noop', settingsPath, error: written.error };
+    const backupPath = written.backupPath;
 
     return {
       ok: true,
@@ -268,19 +275,16 @@ export function installAgyQuotaSensor(
       };
     }
 
-    const backupPath = `${settingsPath}.bak-wmux-${Date.now()}`;
-    fs.copyFileSync(settingsPath, backupPath);
-
     const existingCmd = extractExistingCommand(original);
     const b64 = encodeChainedCommand(existingCmd);
     const chainedCommand = `${nodePath} ${sinkScriptPath} agy --chain-b64 ${b64}`;
 
     // Keep every field the user set (padding, stack_with_default, ...); only the command changes.
-    settings.statusLine = originalFields
+    const written = writeStatusLine(settingsPath, snap, originalFields
       ? { ...originalFields, type: 'command', command: chainedCommand }
-      : { type: 'command', command: chainedCommand, enabled: true, stack_with_default: true };
-
-    writeJsonAtomic(settingsPath, settings);
+      : { type: 'command', command: chainedCommand, enabled: true, stack_with_default: true });
+    if (!written.ok) return { ok: false, action: 'noop', settingsPath, error: written.error };
+    const backupPath = written.backupPath;
 
     return {
       ok: true,
@@ -293,14 +297,13 @@ export function installAgyQuotaSensor(
 
   // classification === 'none': fresh install
   const command = `${nodePath} ${sinkScriptPath} agy`;
-  settings.statusLine = {
+  const written = writeStatusLine(settingsPath, snap, {
     type: 'command',
     command,
     enabled: true,
     stack_with_default: true,
-  };
-
-  writeJsonAtomic(settingsPath, settings);
+  }, false);
+  if (!written.ok) return { ok: false, action: 'noop', settingsPath, error: written.error };
 
   return {
     ok: true,
@@ -308,4 +311,32 @@ export function installAgyQuotaSensor(
     settingsPath,
     commandWritten: command,
   };
+}
+
+/**
+ * Sets only `statusLine`, through the same conflict-checked, backed-up edit the surface writers use:
+ * an agy save between our read and this write is refused instead of overwritten.
+ */
+function writeStatusLine(
+  settingsPath: string,
+  snap: FileSnapshot,
+  statusLine: Record<string, unknown>,
+  backup = true,
+): { ok: true; backupPath?: string } | { ok: false; error: string } {
+  try {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const res = applyConfigEdit({
+      path: settingsPath,
+      kind: 'json',
+      edits: [{ op: 'set', path: ['statusLine'], value: statusLine }],
+      backup: backup && snap.exists,
+      snapshot: snap,
+    });
+    return { ok: true, backupPath: res.backupPath };
+  } catch (err) {
+    if (err instanceof ConfigChangedError) {
+      return { ok: false, error: 'agy changed settings.json while installing; try again.' };
+    }
+    return { ok: false, error: `Could not write settings.json: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }
