@@ -1350,6 +1350,8 @@ export const pl = {
   'settings.fanoutTrustAgyFolders': 'Automatycznie ufaj folderom zadań fan-out agy',
   'settings.fanoutTrustAgyFoldersDesc': 'Domyślnie wyłączone. Włączone: zanim zadanie fan-out agy wystartuje, wmux dopisuje jego folder do listy zaufanych agy (~/.gemini/antigravity-cli/settings.json), więc zadanie nie zatrzymuje się na ekranie zaufania agy. Wyłączone: wmux nic tam nie zapisuje, a agy pyta w każdym nowym folderze zadania.',
   'fanout.autoRunToast': 'Fan-out przyjęty bez zgody: zadania ({count}) w {repo}',
+  'checkout.foreignAgentToast': '{agent} uruchomiono w kopii roboczej należącej do zadania fan-out „{task}”. Dwóch agentów w jednym drzewie roboczym nadpisuje sobie zmiany. Kliknij, aby otworzyć obszar roboczy zadania.',
+  'checkout.continueHere': 'Kontynuuj tutaj',
   'fleet.approvals.recentAutoRuns': 'Ostatnie fan-outy bez nadzoru',
   'fleet.approvals.autoRunRow': 'Zadania ({count}) z {workspace} w {repo}',
   'settings.fanoutWorkers': 'Wykonawcy fan-out',

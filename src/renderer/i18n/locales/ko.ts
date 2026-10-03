@@ -866,6 +866,8 @@ export const ko = {
   'settings.fanoutTrustAgyFolders': 'agy fan-out 작업 폴더 자동 신뢰',
   'settings.fanoutTrustAgyFoldersDesc': '기본 꺼짐. 켜면 agy fan-out 작업이 시작되기 전에 wmux가 그 작업 폴더를 agy 자체 신뢰 목록(~/.gemini/antigravity-cli/settings.json)에 추가해, 작업이 agy 신뢰 화면에서 멈추지 않습니다. 끄면 wmux는 그 파일에 아무것도 쓰지 않고, agy가 새 작업 폴더마다 묻습니다.',
   'fanout.autoRunToast': '승인 없이 fan-out 수락: {repo}에서 태스크 {count}개',
+  'checkout.foreignAgentToast': '{agent}가 fan-out 태스크 “{task}” 소유의 체크아웃에서 시작됐습니다. 한 워킹 트리의 두 에이전트는 서로의 변경을 덮어씁니다. 클릭하면 태스크 워크스페이스로 이동합니다.',
+  'checkout.continueHere': '여기서 계속',
   'fleet.approvals.recentAutoRuns': '최근 무인 fan-out',
   'fleet.approvals.autoRunRow': '{workspace}에서 태스크 {count}개 · {repo}',
   'settings.fanoutWorkers': 'Fan-out 워커',

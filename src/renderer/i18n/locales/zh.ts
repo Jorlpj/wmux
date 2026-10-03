@@ -1390,6 +1390,8 @@ export const zh = {
   'settings.fanoutTrustAgyFolders': '自动信任 agy fan-out 任务文件夹',
   'settings.fanoutTrustAgyFoldersDesc': '默认关闭。开启后，在 agy fan-out 任务启动前，wmux 会把该任务文件夹加入 agy 自己的信任列表（~/.gemini/antigravity-cli/settings.json），任务不会停在 agy 的信任界面。关闭时，wmux 不会写入该文件，agy 会在每个新任务文件夹中询问。',
   'fanout.autoRunToast': '未经批准接受 fan-out：{repo} 中 {count} 个任务',
+  'checkout.foreignAgentToast': '{agent} 在 fan-out 任务“{task}”拥有的检出目录中启动。同一工作树中的两个代理会互相覆盖更改。点击打开该任务的工作区。',
+  'checkout.continueHere': '在此继续',
   'fleet.approvals.recentAutoRuns': '最近的无人值守 fan-out',
   'fleet.approvals.autoRunRow': '来自 {workspace} 的 {count} 个任务 · {repo}',
   'settings.fanoutWorkers': 'Fan-out 工作者',

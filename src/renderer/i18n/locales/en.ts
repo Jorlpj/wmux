@@ -1373,6 +1373,8 @@ export const en = {
   'settings.fanoutTrustAgyFolders': 'Trust agy fan-out task folders automatically',
   'settings.fanoutTrustAgyFoldersDesc': 'Off by default. On: before an agy fan-out task starts, wmux adds its task folder to agy\'s own trusted list (~/.gemini/antigravity-cli/settings.json), so the task does not stop on agy\'s trust screen. Off: wmux writes nothing there, and agy asks in every new task folder.',
   'fanout.autoRunToast': 'Fan-out accepted without approval: {count} tasks in {repo}',
+  'checkout.foreignAgentToast': '{agent} started in a checkout that fan-out task “{task}” owns. Two agents in one working tree overwrite each other\'s changes. Click to open the task\'s workspace.',
+  'checkout.continueHere': 'Continue here',
   'fleet.approvals.recentAutoRuns': 'Recent unattended fan-outs',
   'fleet.approvals.autoRunRow': '{count} tasks from {workspace} in {repo}',
   'settings.fanoutWorkers': 'Fan-out workers',
