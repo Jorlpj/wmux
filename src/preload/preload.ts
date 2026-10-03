@@ -632,6 +632,17 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.ACCOUNT_USAGE_UPDATE, listener); };
     },
   },
+  // Quota-driven account choice for Claude/Codex launches: per-vendor switch
+  // and each registered account's last quota reading (no secrets).
+  accountRotation: {
+    get: () =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ROTATION_GET) as Promise<{
+        settings: import('../main/account/AccountRotationService').RotationSettings;
+        rows: import('../main/account/AccountRotationService').RotationAccountRow[];
+      }>,
+    set: (vendor: 'claude' | 'codex', on: boolean) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ROTATION_SET, { vendor, on }) as Promise<{ ok: boolean }>,
+  },
   // agy (Antigravity CLI) accounts: one machine-wide sign-in, swapped by main.
   // Snapshots carry emails, labels and quota fractions only — never a credential.
   agyAccounts: {
