@@ -813,6 +813,48 @@ describe('CustomPanel UI', () => {
     });
   });
 
+  it('applies only what a successful preview showed', async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(CustomPanel));
+    });
+    const click = async (testId: string) => {
+      await act(async () => {
+        (container.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement).click();
+      });
+    };
+    const applyBtn = () => container.querySelector('[data-testid="token-custom-apply"]') as HTMLButtonElement;
+
+    // Preview A succeeds for my-skill: Apply is enabled.
+    await click('toggle-skill-my-skill');
+    await click('token-custom-preview');
+    expect(applyBtn().disabled).toBe(false);
+
+    // Staging another row after the preview disables Apply until it is previewed again.
+    await click('toggle-mcp-server-my-server');
+    expect(applyBtn().disabled).toBe(true);
+
+    // Preview B fails: preview A is gone and Apply stays disabled.
+    previewChangesMock.mockRejectedValueOnce(new Error('preview B failed'));
+    await click('token-custom-preview');
+    expect(container.textContent).toContain('preview B failed');
+    expect(applyBtn().disabled).toBe(true);
+    await click('token-custom-apply');
+    expect(applyChangesMock).not.toHaveBeenCalled();
+
+    // A successful preview of the current set enables Apply, and Apply sends that set.
+    await click('token-custom-preview');
+    expect(applyBtn().disabled).toBe(false);
+    await click('token-custom-apply');
+    expect(applyChangesMock).toHaveBeenCalledTimes(1);
+    const sent = applyChangesMock.mock.calls[0][0].changes.map((c: { itemId: string }) => c.itemId).sort();
+    expect(sent).toEqual(['claude:mcp-server::my-server', 'claude:skill::my-skill']);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it('slow preview after staging another row', async () => {
     const previewDeferred = createDeferred<any>();
     previewChangesMock.mockImplementation(() => previewDeferred.promise);
