@@ -43,6 +43,8 @@ import type { DaemonSessionManager } from '../../DaemonSessionManager';
 function makeDeps() {
   const bridge = new EventEmitter();
   const write = vi.fn();
+  // How many stream listeners the bridge had at each activation.
+  const activateListenerCounts: number[] = [];
   const managed = {
     // `cwd` and `spawnCwd` DIFFER on purpose: `cwd` is what the pane's own
     // process last claimed via OSC 7 (i.e. attacker-controlled), `spawnCwd` is
@@ -142,6 +144,12 @@ function makeDeps() {
         : undefined;
     },
     listLiveSessions: () => live,
+    // The manager's own unmute. Flips the flag like the real one so a second
+    // stream or input can be shown NOT to activate again.
+    activateDeferred: vi.fn((id: string) => {
+      activateListenerCounts.push(bridge.listenerCount('data'));
+      if (id === 's1') managed.deferred = false;
+    }),
     resizeSession: (id: string, cols: number, rows: number) => {
       resizeCalls.push({ id, cols, rows });
       if (resizeBox.throws) throw new Error(resizeBox.throws);
@@ -242,7 +250,7 @@ function makeDeps() {
   };
 
   return {
-    sessionManager, bridge, write, live, managed,
+    sessionManager, bridge, write, live, managed, activateListenerCounts,
     resizeCalls, resizeBox,
     lifecycle, lifecycleCalls, lifecycleBox,
     git, gitCalls, gitScript, gitGate, uploadsDir,
@@ -479,6 +487,7 @@ describe('WebTerminalServer', () => {
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
+  let activateListenerCounts: number[];
   let managed: {
     meta: Record<string, unknown>;
     deferred: boolean;
@@ -544,6 +553,7 @@ describe('WebTerminalServer', () => {
     gitScript = deps.gitScript;
     gitGate = deps.gitGate;
     managed = deps.managed;
+    activateListenerCounts = deps.activateListenerCounts;
     live = deps.live;
     uploadsDir = deps.uploadsDir;
     projectorMock = deps.projectorMock;
@@ -3913,6 +3923,76 @@ describe('WebTerminalServer', () => {
     }
   });
 
+  it('★ opening the stream of a recovering pane activates it once, at its saved size', async () => {
+    // A pane the daemon recovered after its own restart holds its output until
+    // a viewer attaches. The web client never resizes, so the stream itself is
+    // the attach; otherwise the pane stays silent forever.
+    const activate = (sessionManager as unknown as { activateDeferred: ReturnType<typeof vi.fn> }).activateDeferred;
+    const token = (await startRO()).token as string;
+    managed.deferred = true;
+    const rows = async () => (await (await fetch(`${base()}/api/sessions`, { headers: bearer(token) })).json()).sessions;
+    expect((await rows()).find((r: { id: string }) => r.id === 's1').deferred).toBe(true);
+
+    const ac = new AbortController();
+    try {
+      const sse = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, { signal: ac.signal });
+      expect(sse.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(activate).toHaveBeenCalledTimes(1);
+      expect(activate).toHaveBeenCalledWith('s1');
+      // Listening BEFORE the activation, so the held output it releases
+      // reaches this viewer.
+      expect(activateListenerCounts).toEqual([1]);
+      expect(resizeCalls).toEqual([]);
+      expect((await rows()).find((r: { id: string }) => r.id === 's1').deferred).toBe(false);
+
+      // An active pane is not activated again.
+      const again = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, { signal: ac.signal });
+      expect(again.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(activate).toHaveBeenCalledTimes(1);
+    } finally {
+      ac.abort();
+    }
+  });
+
+  it('★ typing into a recovering pane activates it; a read-only refusal does not', async () => {
+    const activate = (sessionManager as unknown as { activateDeferred: ReturnType<typeof vi.fn> }).activateDeferred;
+    managed.deferred = true;
+    let info = await startRO();
+    const refused = await fetch(`${base()}/api/input?session=s1`, {
+      method: 'POST', headers: bearer(info.token as string), body: 'nope',
+    });
+    expect(refused.status).toBe(403);
+    expect(activate).not.toHaveBeenCalled();
+    await server.stop();
+
+    info = await startRW();
+    const res = await fetch(`${base()}/api/input?session=s1`, {
+      method: 'POST', headers: bearer(info.token as string), body: 'echo after\r',
+    });
+    expect(res.status).toBe(204);
+    expect(activate).toHaveBeenCalledWith('s1');
+    expect(write).toHaveBeenCalledWith('echo after\r');
+    expect(managed.deferred).toBe(false);
+  });
+
+  it('★ a recovering pane takes a phone resize once its stream activated it', async () => {
+    const token = (await startRO()).token as string;
+    managed.deferred = true;
+    const ac = new AbortController();
+    try {
+      const sse = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, { signal: ac.signal });
+      expect(sse.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      const res = await postResize('s1', token, { cols: 65, rows: 50 });
+      expect(res.status).toBe(200);
+      expect(resizeCalls).toEqual([{ id: 's1', cols: 65, rows: 50 }]);
+    } finally {
+      ac.abort();
+    }
+  });
+
   it('★ refuses a pane that is still recovering', async () => {
     // The first resize of a deferred session is the desk's unmute handshake.
     // Taking it here starts capture at the phone's geometry and interleaves
@@ -5118,6 +5198,30 @@ describe('WebTerminalServer', () => {
         expect((await typeInto(info.token as string, '\x1b')).status).toBe(204);
         expect((await typeInto(info.token as string, '\x03')).status).toBe(204);
         expect(write.mock.calls).toEqual([['\x1b'], ['\x03']]);
+      });
+
+      it('a refused input leaves a recovering pane inactive', async () => {
+        const activate = (sessionManager as unknown as { activateDeferred: ReturnType<typeof vi.fn> }).activateDeferred;
+        const info = await startRW();
+        managed.deferred = true;
+        approvalRecords.push(tp());
+        expect((await typeInto(info.token as string, 'ls\r')).status).toBe(409);
+        const receipted = await typeInto(info.token as string, '1\r', {
+          'X-Wmux-Input-Request-ID': `${Date.now()}.${crypto.randomUUID()}`,
+          'X-Wmux-Pane-Incarnation': 'incarnation-1',
+        });
+        expect(receipted.status).toBe(409);
+        approvalRecords[0].state = 'resolved';
+        // A receipted Return whose precondition no longer holds is refused too.
+        const stale = await typeInto(info.token as string, '\r', {
+          'X-Wmux-Input-Request-ID': `${Date.now()}.${crypto.randomUUID()}`,
+          'X-Wmux-Pane-Incarnation': 'incarnation-1',
+          'X-Wmux-Input-After': 'not-the-current-revision',
+        });
+        expect(stale.status).toBe(409);
+        expect(activate).not.toHaveBeenCalled();
+        expect(write).not.toHaveBeenCalled();
+        expect(managed.deferred).toBe(true);
       });
 
       it('only a terminal_prompt on THIS pane blocks it', async () => {
