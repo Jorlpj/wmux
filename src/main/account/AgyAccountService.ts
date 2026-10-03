@@ -101,6 +101,9 @@ export class AgyAccountService {
   private writeChain: Promise<unknown> = Promise.resolve();
   private login: AgyLoginState = { pending: false, previousEmail: null, startedAt: null, lastResult: null };
   private loginTimer: { cancel: () => void } | null = null;
+  /** Refresh-token digest of the sign-in that was active when the login began. Kept out of the
+   *  login state the renderer sees. */
+  private previousRefreshDigest: string | null = null;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly deps: AgyAccountServiceDeps) {
@@ -250,6 +253,7 @@ export class AgyAccountService {
     const vault = this.vault();
     if (this.login.pending) return this.loginState();
     const previousEmail = vault.activeEmail();
+    this.previousRefreshDigest = vault.activeRefreshDigest();
     if (previousEmail && this.file().accounts.some((a) => a.email === previousEmail)) vault.captureActive();
     else if (previousEmail) await this.addCurrent();
     if (!vault.signOutActive()) throw new AgyAccountError('swap-failed', 'could not sign agy out');
@@ -272,9 +276,11 @@ export class AgyAccountService {
   async pollLogin(): Promise<void> {
     if (!this.login.pending) return;
     const email = this.deps.vault?.activeEmail() ?? null;
-    // An agy session left running refreshes its token and rewrites the slot
-    // with the account just signed out; that is not the new sign-in.
-    if (email && email === this.login.previousEmail) {
+    // An agy session left running refreshes its access token and rewrites the slot with the account just
+    // signed out; that is not the new sign-in. A real sign-in, even to the same account, has a new
+    // refresh token, so compare that rather than the email.
+    const digest = this.deps.vault?.activeRefreshDigest() ?? null;
+    if (email && email === this.login.previousEmail && digest === this.previousRefreshDigest) {
       this.deps.vault?.signOutActive();
     } else if (email) {
       this.login = { ...this.login, pending: false, lastResult: email };
