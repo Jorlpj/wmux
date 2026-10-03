@@ -3,7 +3,6 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
 import { externalRegistrationSkipReason } from '../../../shared/mcpTargets';
-import { getDefaultQuotaService } from './tokenUsageQuota.handler';
 
 /**
  * Serializable shape returned to the renderer. Mirrors {@link McpRegistrarStatus}
@@ -34,10 +33,7 @@ export interface McpRegisterTargetResult {
   success: boolean;
   error?: string;
   status: McpStatusPayload;
-  sensor?: { ok: boolean };
 }
-
-export type AgySensorInstaller = () => Promise<{ ok: boolean }>;
 
 function serialize(status: McpRegistrarStatus): McpStatusPayload {
   return {
@@ -69,10 +65,7 @@ function serialize(status: McpRegistrarStatus): McpStatusPayload {
 export function registerMcpHandlers(
   registrar: McpRegistrar,
   getAuthToken: () => string | null,
-  installAgySensor?: AgySensorInstaller,
 ): () => void {
-  const sensorInstaller = installAgySensor ?? (() => getDefaultQuotaService().installAgySensor());
-
   // wrapHandler is variadic and treats its first argument (the IpcMainInvokeEvent)
   // as transport plumbing; we can omit the parameter entirely on the inner
   // handler since none of these read renderer/sender info.
@@ -134,23 +127,15 @@ export function registerMcpHandlers(
         if (reregisterSkip) throw new Error(reregisterSkip);
 
         const normalizedId = targetId.trim();
+        // Registering agy only writes its MCP entry. The quota sensor can chain the user's statusLine,
+        // so it is installed only from the quota card's explicit Install button.
         const targetResult = await registrar.registerTarget(token, normalizedId);
-        let sensor: { ok: boolean } | undefined;
-        if (normalizedId === 'agy' && targetResult.success) {
-          try {
-            const sensorResult = await sensorInstaller();
-            sensor = { ok: Boolean(sensorResult?.ok) };
-          } catch {
-            sensor = { ok: false };
-          }
-        }
 
         return {
           id: targetResult.id,
           success: targetResult.success,
           ...(targetResult.error ? { error: targetResult.error } : {}),
           status: serialize(registrar.getStatus()),
-          ...(sensor !== undefined ? { sensor } : {}),
         };
       },
     ),

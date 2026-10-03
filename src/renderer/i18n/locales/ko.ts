@@ -802,7 +802,6 @@ export const ko = {
   // Settings — MCP targets (feat: register opt-in targets)
   'settings.mcpRegister': '등록',
   'settings.mcpTargetRegistered': '{name} 등록됨',
-  'settings.mcpSensorInstalled': '할당량 센서가 설치되었습니다',
   // Settings — Token usage (quotas, custom surface switches, saved profiles)
   'settings.tokenUsage.surfaceDefault': '표면: 기본값',
   'settings.tokenUsage.surfaceOff': '표면: {n}개 해제됨',
