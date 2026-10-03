@@ -84,7 +84,6 @@ export interface McpRegisterTargetResult {
   success: boolean;
   error?: string;
   status: McpStatusPayload;
-  sensor?: { ok: boolean };
 }
 
 const chat: ChatBridgeApi = {

@@ -1054,7 +1054,6 @@ export const en = {
   'settings.mcpUnavailable': 'MCP status unavailable. Restart wmux and try again.',
   'settings.mcpRegister': 'Register',
   'settings.mcpTargetRegistered': 'Registered {name}',
-  'settings.mcpSensorInstalled': 'Quota sensor installed',
   // Settings — multi-account registry (M1)
   'accounts.title': 'Accounts',
   'accounts.addAccount': '+ Add account',

@@ -103,12 +103,6 @@ export function McpStatusSection({ api }: { api?: ElectronMcpApi } = {}) {
               level: 'info',
               message: t('settings.mcpTargetRegistered', { name: displayName }),
             });
-            if (res.sensor?.ok) {
-              useStore.getState().pushToast?.({
-                level: 'info',
-                message: t('settings.mcpSensorInstalled'),
-              });
-            }
           } else if (res.error) {
             useStore.getState().pushToast?.({
               level: 'error',

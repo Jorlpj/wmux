@@ -1040,7 +1040,6 @@ export const pl = {
   'settings.mcpUnavailable': 'Status MCP niedostępny. Uruchom wmux ponownie i spróbuj jeszcze raz.',
   'settings.mcpRegister': 'Zarejestruj',
   'settings.mcpTargetRegistered': 'Zarejestrowano {name}',
-  'settings.mcpSensorInstalled': 'Zainstalowano czujnik limitów',
   // Settings — multi-account registry (M1)
   'accounts.title': 'Konta',
   'accounts.addAccount': '+ Dodaj konto',

@@ -364,7 +364,6 @@ export const zh = {
   'settings.mcpUnavailable': 'MCP 状态不可用。请重启 wmux 后重试。',
   'settings.mcpRegister': '注册',
   'settings.mcpTargetRegistered': '已注册 {name}',
-  'settings.mcpSensorInstalled': '已安装配额传感器',
   // Settings — multi-account registry (M1)
   'accounts.title': '账号',
   'accounts.addAccount': '+ 添加账号',
