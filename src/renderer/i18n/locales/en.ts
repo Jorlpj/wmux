@@ -1135,10 +1135,11 @@ export const en = {
   'accounts.rotateTerms': "You are responsible for following each provider's terms.",
   // Settings — Accounts — Antigravity (agy): one machine-wide sign-in, swapped by quota
   'agyAccounts.title': "Antigravity (agy) accounts",
-  'agyAccounts.intro': "Add several agy accounts and wmux uses the one that still has quota.",
+  'agyAccounts.intro': "Add the agy accounts you own, and wmux can choose between them by quota.",
   'agyAccounts.machineWideNote': "agy keeps one sign-in for the whole computer, so switching the account here also switches it for agy sessions started later outside wmux, and for the Antigravity IDE if it shares that sign-in. Sessions already running keep the account they started on.",
   'agyAccounts.autoRotate': "Switch accounts by quota",
-  'agyAccounts.autoRotateDesc': "Before wmux starts agy, it keeps the active account while it has quota and otherwise switches to the account with the most quota left. When every account is out, agy is not started until one resets. Turned off, wmux never switches but still will not start agy on an account that is out.",
+  'agyAccounts.autoRotateDesc': "Before wmux starts agy, it keeps the active account while it has quota and otherwise switches to the account with the most quota left. When every account is out, agy is not started until one resets. Turned off, wmux never switches but still will not start agy on an account that is out. An account you pick with Use now, or sign in to, is never switched away automatically.",
+  'agyAccounts.rotateTerms': "You are responsible for following each provider's terms. Google has acted against accounts that switch to get around Antigravity quotas.",
   'agyAccounts.empty': "No agy account added yet.",
   'agyAccounts.unsupported': "Several agy accounts need the Windows Credential Manager, so this is available on Windows only.",
   'agyAccounts.active': "Active",

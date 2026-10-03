@@ -123,6 +123,7 @@ export function AgyAccountsSection(): React.ReactElement | null {
         <span className="flex-1 text-[13px] text-[var(--text-main)]">{t('agyAccounts.autoRotate')}</span>
       </div>
       <p className="settings-note">{t('agyAccounts.autoRotateDesc')}</p>
+      <p className="settings-note">{t('agyAccounts.rotateTerms')}</p>
       {snap.accounts.length === 0 && <p className="settings-note">{t('agyAccounts.empty')}</p>}
       {snap.accounts.map((r) => (
         <div key={r.id} className="ui-row" data-agy-account-row={r.id}>

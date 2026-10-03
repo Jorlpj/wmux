@@ -445,10 +445,11 @@ export const zh = {
   'accounts.rotateTerms': "遵守各提供方的条款是你自己的责任。",
   // Settings — Accounts — Antigravity (agy): one machine-wide sign-in, swapped by quota
   'agyAccounts.title': "Antigravity (agy) 账号",
-  'agyAccounts.intro': "添加多个 agy 账号，wmux 会使用仍有配额的那个。",
+  'agyAccounts.intro': "添加你自己的 agy 账号，wmux 可以按配额在它们之间选择。",
   'agyAccounts.machineWideNote': "agy 在整台电脑上只保留一个登录，因此在这里切换账号也会切换之后在 wmux 外启动的 agy 会话，以及共享该登录的 Antigravity IDE。已在运行的会话保持启动时的账号。",
   'agyAccounts.autoRotate': "按配额切换账号",
-  'agyAccounts.autoRotateDesc': "wmux 启动 agy 前，若当前账号仍有配额则保持不变，否则切换到剩余配额最多的账号。所有账号都用完时，在其中一个重置前不会启动 agy。关闭后 wmux 不会切换账号，但仍不会在已用完的账号上启动 agy。",
+  'agyAccounts.autoRotateDesc': "wmux 启动 agy 前，若当前账号仍有配额则保持不变，否则切换到剩余配额最多的账号。所有账号都用完时，在其中一个重置前不会启动 agy。关闭后 wmux 不会切换账号，但仍不会在已用完的账号上启动 agy。 通过“立即使用”或登录选择的账号不会被自动切换。",
+  'agyAccounts.rotateTerms': "遵守各服务商的条款是你的责任。Google 曾对通过切换账号来规避 Antigravity 配额的账号采取措施。",
   'agyAccounts.empty': "尚未添加 agy 账号。",
   'agyAccounts.unsupported': "多个 agy 账号需要 Windows 凭据管理器，因此仅在 Windows 上可用。",
   'agyAccounts.active': "当前",
