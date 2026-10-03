@@ -159,12 +159,3 @@ export function chooseAgyAccount(rows: readonly AgyAccountRow[]): AgyLaunchDecis
   const ranked = [...usable].sort((a, b) => (b.remaining ?? -1) - (a.remaining ?? -1));
   return { ok: true, account: ranked[0], switched: true };
 }
-
-/** First token of a typed launch line names agy (`agy`, `agy.exe`, a path to it). */
-export function isAgyLaunchLine(command: string | undefined): boolean {
-  if (!command) return false;
-  const first = command.trim().match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/);
-  const token = first ? (first[1] ?? first[2] ?? first[3] ?? '') : '';
-  const stem = token.split(/[\\/]/).pop()?.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '') ?? '';
-  return stem === 'agy';
-}
