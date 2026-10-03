@@ -48,6 +48,8 @@ export interface SurfaceItem {
   descriptionChars: number | null;
   /** File the item was read from, for display and conflict checks. */
   originPath: string | null;
+  /** Claude: the settings file that holds this item's deny or override, when one exists. */
+  settingsPath?: string;
   /** True for wmux's own MCP server / hooks. */
   wmuxRequired: boolean;
 }

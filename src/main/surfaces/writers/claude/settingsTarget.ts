@@ -65,6 +65,10 @@ export function isValidSettingsPath(targetPath: string | undefined | null, deps:
 }
 
 export function resolveSettingsPath(item: SurfaceItem, deps: WriterDeps): string {
+  // The file that already holds this item's deny or override wins.
+  if (item.settingsPath && isValidSettingsPath(item.settingsPath, deps)) {
+    return path.resolve(item.settingsPath);
+  }
   if (item.originPath) {
     if (!isPathAllowed(item.originPath, deps)) {
       return path.resolve(item.originPath);
@@ -72,6 +76,10 @@ export function resolveSettingsPath(item: SurfaceItem, deps: WriterDeps): string
     if (isValidSettingsPath(item.originPath, deps)) {
       return path.resolve(item.originPath);
     }
+  }
+  // A project item is switched for this project only, never in the user-wide file.
+  if (item.source === 'project' && deps.projectDir) {
+    return path.join(deps.projectDir, '.claude', 'settings.local.json');
   }
   return path.join(deps.homeDir, '.claude', 'settings.json');
 }
@@ -107,6 +115,9 @@ export function buildSettingsEdits(
 
   for (const c of changes) {
     const { item, enabled } = c;
+    const rootBefore = JSON.stringify(root);
+    const editsBefore = fileEdits.length;
+    const affectedBefore = affectedItemIds.length;
 
     switch (item.kind) {
       case 'mcp-server': {
@@ -315,6 +326,13 @@ export function buildSettingsEdits(
         affectedItemIds.push(item.id);
         break;
       }
+    }
+
+    // An item whose case changed nothing in this file is not applied (its deny or override lives
+    // elsewhere, or was never set): report it as unapplied instead of claiming success.
+    if (item.kind !== 'hook' && JSON.stringify(root) === rootBefore) {
+      fileEdits.splice(editsBefore);
+      affectedItemIds.splice(affectedBefore);
     }
   }
 

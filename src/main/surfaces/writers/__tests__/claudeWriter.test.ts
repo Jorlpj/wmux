@@ -629,6 +629,8 @@ describe('claudeWriter', () => {
       hookCost: null,
       descriptionChars: null,
       originPath: claudeJsonPath,
+      // The inventory records which settings file holds the deny.
+      settingsPath,
       wmuxRequired: false,
     };
 
@@ -1351,6 +1353,7 @@ describe('claudeWriter', () => {
       hookCost: null,
       descriptionChars: null,
       originPath: claudeJsonPath,
+      settingsPath,
       wmuxRequired: false,
     };
 
@@ -1412,6 +1415,7 @@ describe('claudeWriter', () => {
       hookCost: null,
       descriptionChars: null,
       originPath: claudeJsonPath,
+      settingsPath,
       wmuxRequired: false,
     };
 
@@ -1689,5 +1693,67 @@ describe('claudeWriter hook identity', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/More than one hook matches/);
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(original);
+  });
+});
+
+describe('claudeWriter target settings file', () => {
+  let home: string;
+  let proj: string;
+
+  beforeEach(() => {
+    home = makeTempDir('claude-writer-target-home-');
+    proj = makeTempDir('claude-writer-target-proj-');
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(proj, '.claude', 'skills', 'proj-skill'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.claude', 'skills', 'proj-skill', 'SKILL.md'), '---\nname: proj-skill\ndescription: d\n---\n', 'utf8');
+  });
+
+  afterEach(() => {
+    for (const d of [home, proj]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
+  });
+
+  const inv = async (deps: WriterDeps) => readInventory('claude', {
+    homeDir: deps.homeDir, projectDir: deps.projectDir, run: deps.run, surfacesStorePath: deps.surfacesStorePath,
+  });
+
+  it('switches a project skill off in the project, not in the user-wide settings', async () => {
+    const deps = makeDeps(home, proj);
+    const skill = (await inv(deps)).items.find((i) => i.kind === 'skill' && i.name === 'proj-skill')!;
+    const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: skill.id, enabled: false }] }, { deps });
+    expect(res.ok).toBe(true);
+    expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(false);
+    const local = JSON.parse(fs.readFileSync(path.join(proj, '.claude', 'settings.local.json'), 'utf8'));
+    expect(local.skillOverrides['proj-skill']).toBe('off');
+  });
+
+  it('turns a skill back on in the file that holds its override', async () => {
+    const deps = makeDeps(home, proj);
+    const userSettings = path.join(home, '.claude', 'settings.json');
+    const localSettings = path.join(home, '.claude', 'settings.local.json');
+    fs.writeFileSync(userSettings, JSON.stringify({ theme: 'dark' }), 'utf8');
+    fs.writeFileSync(localSettings, JSON.stringify({ skillOverrides: { 'proj-skill': 'off' } }), 'utf8');
+    const skill = (await inv(deps)).items.find((i) => i.kind === 'skill' && i.name === 'proj-skill')!;
+    expect(skill.enabled).toBe(false);
+    const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: skill.id, enabled: true }] }, { deps });
+    expect(res.ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(localSettings, 'utf8')).skillOverrides).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(userSettings, 'utf8'))).toEqual({ theme: 'dark' });
+  });
+
+  it('does not report a change as applied when no file was edited for it', async () => {
+    const deps = makeDeps(home, proj);
+    const writer = createClaudeWriter();
+    const item: SurfaceItem = {
+      id: 'claude:mcp-tool:srv:t', provider: 'claude', kind: 'mcp-tool', name: 't', parent: 'srv', source: 'user',
+      enabled: false, effect: 'removes', toggleable: true, readOnlyReason: null, hookEvent: null, hookCost: null,
+      descriptionChars: null, originPath: path.join(home, '.claude.json'), wmuxRequired: false,
+    };
+    const res = await writer.apply({
+      deps,
+      inventory: { provider: 'claude', cliVersion: '1.0.5', versionSupported: true, writable: true, items: [item], warnings: [], scannedAtMs: 0 },
+      changes: [{ item, enabled: true }],
+    });
+    expect(res.ok).toBe(false);
+    expect(res.appliedItemIds).toEqual([]);
   });
 });

@@ -84,6 +84,10 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
   }
 
   const deniedMcpServers = new Set<string>();
+  // Which settings file holds each deny or override, so a change is written back to that file.
+  const deniedServerFile = new Map<string, string>();
+  const toolDenyFile = new Map<string, string>();
+  const skillOverrideFile = new Map<string, string>();
   const mcpToolDenies = new Map<string, Set<string>>(); // serverName -> Set<toolName>
   const skillOverrides = new Map<string, string>();
   let disableAllHooks = false;
@@ -105,6 +109,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
       for (const d of parsed.deniedMcpServers) {
         if (d && typeof d === 'object' && typeof (d as { serverName?: unknown }).serverName === 'string') {
           deniedMcpServers.add((d as { serverName: string }).serverName);
+          deniedServerFile.set((d as { serverName: string }).serverName, sp);
         }
       }
     }
@@ -126,6 +131,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
               mcpToolDenies.set(server, set);
             }
             set.add(tool);
+            toolDenyFile.set(`${server}/${tool}`, sp);
           } else {
             // Bare tool denial
             addItem(
@@ -170,6 +176,7 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
       for (const [k, v] of Object.entries(so)) {
         if (typeof v === 'string') {
           skillOverrides.set(k, v);
+          skillOverrideFile.set(k, sp);
         }
       }
     }
@@ -676,6 +683,14 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
         item.readOnlyReason = 'CLI version not supported (read-only)';
       }
     }
+  }
+
+  for (const item of items) {
+    const file = item.kind === 'mcp-server' ? deniedServerFile.get(item.name)
+      : item.kind === 'mcp-tool' ? toolDenyFile.get(`${item.parent}/${item.name}`)
+        : item.kind === 'skill' ? skillOverrideFile.get(item.name) ?? (item.originPath ? skillOverrideFile.get(path.basename(path.dirname(item.originPath))) : undefined)
+          : undefined;
+    if (file) item.settingsPath = file;
   }
 
   return {
