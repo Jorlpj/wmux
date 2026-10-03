@@ -168,6 +168,10 @@ import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { ChatSessionService } from './chat/ChatSessionService';
+import { createChatV2Host } from './chat/v2/host';
+import { registerChatV2Rpc } from './chat/v2/rpc';
+import type { ChatV2Host } from './chat/v2/types';
+import { CHATV2_DISPOSE_TIMEOUT_MS } from '../shared/chatv2/limits';
 import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
@@ -228,6 +232,8 @@ let chatSendReceipts: ChatSendReceiptStore | null | undefined;
 let chatCancelReceipts: ChatCancelReceiptStore | null | undefined;
 let chatQueue: ChatQueueStore | null | undefined;
 let chatSessions: ChatSessionService | null = null;
+// Chat v2: daemon-owned agent drivers bound to an anchor pane (src/shared/chatv2/ipc.ts).
+let chatV2Host: ChatV2Host | null = null;
 let terminalChat: TerminalChatService | null = null;
 /** OpenCode permissions/questions as native records (built with terminalChat). */
 let openCodeDecisions: ReturnType<typeof createOpenCodeDecisions> | null = null;
@@ -499,6 +505,8 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     answerNative: async (native, reply, sessionId) => {
       const adapters: Partial<Record<NativeDecisionRef['adapter'], (n: NativeDecisionRef, r: NativeDecisionReply) => Promise<NativeDecisionOutcome>>> = {
         codex: (n, r) => codexPaneRelays.answer(n, r.decision),
+        // Chat v2 driver requests are answered by the driver that holds them.
+        claude: (n, r) => chatV2Host?.answerNative(n, r, sessionId) ?? Promise.resolve('unavailable' as const),
         // OpenCode answers go back through the pane's own TUI plugin.
         ...(openCodeDecisions ? { opencode: (n: NativeDecisionRef, r: NativeDecisionReply) => openCodeDecisions!.answer(n, r, sessionId) } : {}),
       };
@@ -3569,6 +3577,44 @@ function registerRpcHandlers(
       });
     } catch { log('error', '[chat] invalid provider configuration; managed chat disabled'); }
   }
+  if (!chatV2Host) {
+    const host = createChatV2Host({
+      wmuxDir,
+      log: (level, message) => log(level, message),
+      now: () => Date.now(),
+      sessionManager,
+      approvals: () => approvalRegistry,
+      // Single writer: a tracked agent can miss a TUI that just started or a
+      // reused pid, so the anchor shell must also have no children at all.
+      paneFree: async (id) => {
+        const pane = sessionManager.getSession(id);
+        if (!pane) return false;
+        const pid = agentProcessTracker.pidFor(id);
+        if (pid !== undefined && await ProcessMonitor.isRunning(pid)) return false;
+        return (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env)).ok;
+      },
+      writeToPane: (id, data) => {
+        const pane = sessionManager.getSession(id);
+        if (!pane) return false;
+        pane.ptyProcess.write(data);
+        pane.bridge.noteInput(data);
+        return true;
+      },
+      sendTo: (clientId, event) => pipeServer.sendTo(clientId, event),
+      processIdentity: async (pid) => {
+        const [startTime, commandLine] = await Promise.all([
+          getProcessStartTime(pid),
+          agentProcessTracker.commandLineOf(pid),
+        ]);
+        return startTime && commandLine ? { startTime, commandLine } : null;
+      },
+      killTree: (pid) => killProcessTree(pid),
+    });
+    chatV2Host = host;
+    pipeServer.onClientClose((clientId) => host.clientGone(clientId));
+    void host.start().catch((err) => log('error', `[chatv2] start failed: ${String(err)}`));
+  }
+  registerChatV2Rpc((method, handler) => pipeServer.onRpc(method, handler), chatV2Host, firstPartyOnly);
   pipeServer.onRpc('daemon.chat.providers', async (_params, ctx) =>
     firstPartyOnly(ctx.clientId, 'chat.providers') ? chatSessions?.listProviders() ?? [] : []);
   for (const action of ['start', 'reconnect', 'cancel', 'respond', 'close'] as const) {
@@ -6332,6 +6378,14 @@ async function shutdown(
   // response gets a 'defer', and the bridge falls back to the local permission
   // flow instead of dying with a broken pipe.
   gateBroker?.cancelAll('daemon-restart');
+  // Chat v2 drivers are agent processes the daemon owns: tree-kill them, but
+  // never let them hold the shutdown past their own budget.
+  if (chatV2Host) {
+    await Promise.race([
+      chatV2Host.dispose().catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, CHATV2_DISPOSE_TIMEOUT_MS).unref()),
+    ]);
+  }
   // Close every transcript fs.watch and poll timer. All of them are unref'd so
   // none held the process open; this just avoids a read firing mid-shutdown.
   chatSessions?.dispose();
