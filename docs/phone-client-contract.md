@@ -3907,6 +3907,68 @@ seen only on the rendered screen shows on the next `/turns` read (and as
 `blockedBy:"terminal"` on a refused send); a send refused that way emits
 nothing itself.
 
+### Chat v2 records (driver-owned conversations)
+
+A pane can hold a chat-v2 conversation: the daemon runs the agent itself
+through its structured protocol, and the pane's shell stays idle as its anchor
+(see `docs/managed-chat.md`). On the phone such a pane is **read + approve
+only**, and every rule above for a `managed` binding applies:
+
+- `/turns` answers `chat.binding:"managed"`, with the same keys as any managed
+  record plus `capabilities.streaming:false`. `managed.provider` is
+  `{id:"claude", name:"Claude Code"}`; `managed.phase` is `connecting`,
+  `ready`, `running`, `blocked` or `disconnected` (an open set).
+- `historyEpoch` is `c2:<chatSessionId>:<epoch>`; compare it, never parse it.
+  It changes when the daemon reloads the record (a restart): replace your rows.
+  `agentSessionId` is the agent's own conversation id once known, the
+  record's id before that, so it can change once right after the first turn
+  starts; that reads as a conversation change.
+- Every read is a full bounded page (`mode:"snapshot"`, `reset:true` when you
+  sent a cursor, `hasMore:false`; `dir=back` answers an empty `older` page).
+  `truncatedHead:true` means older rows exist that the phone cannot page to,
+  and `chat.historyTruncated` is `true` on the same read. Tool bodies always
+  carry `n` and `bytes`; they are inline heads of at most 4 KiB with
+  `truncated:true` when cut; these rows have no `srcOffset`, so `/turns/block` cannot open them.
+  When the daemon itself cut a body, `bytes` counts only the part it kept (a
+  lower bound).
+- A pending tool permission or question is `chat.blocked`
+  `{by:"approval", approvalId}`, and its opening and closing are
+  `chat.blocked` / `chat.unblocked` events (`agent:"claude"`) under the same
+  rules as above. Answer it through `/api/approvals` exactly as
+  any other native decision (`POST /api/approvals/<id>` for the v1 Yes/No
+  projection, `POST /api/approvals/<id>/answer` with `decision-v2`). The first
+  answer from any device or the desktop wins. The record's `sessionId` is the
+  pane id, and it arrives on `/api/approvals` and the `approval` SSE event like
+  any other. A `meta` row `Waiting for approval: …` marks it in the
+  conversation; once settled the row with the **same `id`** reads `Allowed`,
+  `Denied` or `Approval cancelled`.
+- `POST …/chat/messages` answers `409 {error:"managed-read-only"}`
+  (`effect:"none"`), and `POST …/chat/launch` answers
+  `409 {error:"launch-not-ready", reason:"agent-running"}`: the pane already
+  has a writer. A launch from the phone never creates such a record. A launch
+  still in flight when the desktop starts a chat-v2 conversation in the pane is
+  refused the same way, before anything is typed.
+- `chat.agentStatus` is `running` while a turn runs and `awaiting_input` while
+  it waits on an approval or a question, as a terminal binding reads at a
+  permission prompt; `idle` between turns.
+- `POST …/chat/cancel` interrupts the running turn. As on a terminal binding,
+  `capabilities.cancel` is shown only to a caller that sent `chat-cancel`, and
+  `chat.turn` (`id` = the turn's user row id, the `turnId` a cancel may name)
+  to one that sent `chat-cancel` or `chat-queue`. Answers follow the cancel table:
+  202 `interrupt-requested` with `cancel` progress, 409 `turn-not-running`
+  `{turn}`, `session-changed`, `turn-already-interrupted`, `cancel-id-conflict`,
+  `cancel-cooldown` (the same id is still in flight), 507
+  `message-history-full`, 500 `cancel-failed` (`effect:"uncertain"`). The
+  receipt (`GET …/chat/cancel/<clientCancelId>`) and SSE `chat.cancel` follow
+  the cancel outcome rules; `ended` comes with `evidence:"native"` (the
+  conversation recorded how the turn ended). These receipts live in memory for
+  the id's 24 h lifetime: after a daemon restart a receipt reads `none`.
+- A `transcript.nudge` fires when the conversation changes.
+- When the conversation is handed to the terminal from the desktop, the pane
+  reads as an ordinary terminal binding again (the agent's TUI resumed the
+  same conversation): the binding and `historyEpoch` change, so replace your
+  rows.
+
 ---
 
 ## Proposed: contract v-next (partly served)

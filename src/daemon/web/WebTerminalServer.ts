@@ -135,8 +135,14 @@ import { cancelEventBody, cancelReceiptResponse } from './chatCancelOutcome';
 import type { CodexAccountStatus } from '../../shared/phoneCodexAccountStatus';
 import type { ChatCancelEvent } from '../chat/chatCancelObserver';
 import {
+  ChatV2Cancels,
   buildChatObject,
+  buildChatV2Object,
   cancelResponse,
+  chatV2Identity,
+  chatV2LaunchResponse,
+  chatV2Page,
+  chatV2SendResponse,
   dequeueResponse,
   hasConversation,
   launchResponse,
@@ -146,8 +152,10 @@ import {
   resolutionAgentSessionId,
   resolutionEpoch,
   sendResponse,
+  type ChatV2PhoneHost,
   type WireResponse,
 } from './chatWire';
+import type { ChatV2Binding } from '../../shared/chatv2/ipc';
 import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
 // Type only — the channel service implementation stays out of this module.
 // The web server is a STATELESS consumer of its phone projection (§9): it
@@ -706,6 +714,14 @@ interface WebTerminalServerDeps {
    * `chat-unavailable` and `/api/config` does not advertise them.
    */
   chat?: () => ChatBridge | null;
+  /**
+   * The chat-v2 host (src/daemon/chat/v2). Lazy like `chat`: the daemon builds
+   * it after the server. A pane with a live v2 record (any status but
+   * `handed-off`) is served from it ahead of the bridge: `/turns` reads as a
+   * `managed` binding, send answers `409 managed-read-only`, launch is refused
+   * and cancel interrupts the driver. Absent → those routes are unchanged.
+   */
+  chatV2?: () => ChatV2PhoneHost | null;
   /**
    * #783 — the gated-tools list from daemon config, so `/api/config` can expose
    * it and the phone can explain "why is this call waiting?". A getter (not a
@@ -1286,6 +1302,11 @@ export class WebTerminalServer {
   private readonly transcriptWatchers = new Map<string, Set<string>>();
   /** Per-pane coalescing timers for the non-recording transcript nudge. */
   private readonly transcriptNudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Cancels of chat-v2 turns, with their receipts and outcome (the bridge's store covers terminal bindings only). */
+  private readonly chatV2Cancels = new ChatV2Cancels({ now: () => this.now(), emit: (event) => this.emitChatCancel(event) });
+  /** The chat-v2 host whose pushes nudge phone watchers, subscribed on first use. */
+  private chatV2PushHost: ChatV2PhoneHost | null = null;
+  private chatV2PushOff: (() => void) | null = null;
   /** Per-pane coalescing timers for the non-recording liveness event. */
   private readonly livenessTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /**
@@ -1826,6 +1847,10 @@ export class WebTerminalServer {
     // opened ends here rather than polling the plugin until the next start.
     if (this.chatWatchSweep) clearInterval(this.chatWatchSweep);
     this.chatWatchSweep = null;
+    this.chatV2PushOff?.();
+    this.chatV2PushOff = null;
+    this.chatV2PushHost = null;
+    this.chatV2Cancels.dispose();
     const chat = this.deps.chat?.() ?? null;
     for (const id of this.chatWatchReads.keys()) {
       try {
@@ -4033,6 +4058,13 @@ export class WebTerminalServer {
       this.json(res, 404, { error: 'session not found' });
       return;
     }
+    // A chat-v2 record owns the pane: read it from the host, ahead of the bridge.
+    const v2 = this.chatV2For(sessionId);
+    if (v2) {
+      this.noteTranscriptWatcher(sessionId, principal);
+      this.handleChatV2Turns(req, res, sessionId, v2.binding, v2.host);
+      return;
+    }
     // Native chat (contract §5): the same three-way dispatch the desktop uses.
     // Without the bridge the route stays byte-for-byte what it was.
     const chat = this.deps.chat?.() ?? null;
@@ -4130,7 +4162,7 @@ export class WebTerminalServer {
     if (!body) return;
     const blocked = await this.readChatBlocked(chat, sessionId, resolution);
     if (res.destroyed || res.writableEnded) return;
-    this.noteChatBlocked(sessionId, resolution, blocked);
+    this.noteChatBlocked(sessionId, resolution.status.terminal?.agent, blocked);
     const caps = clientCaps(req);
     // A file binding's episode is daemon-tracked; an OpenCode one comes from
     // its plugin's read. Only a caller that declared a cap that uses it is shown one.
@@ -4144,6 +4176,89 @@ export class WebTerminalServer {
       { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}),
         accountStatus: this.opts?.allowTranscript === true && process.platform !== 'win32' &&
           this.deps.codexAccountStatus?.accountHome(sessionId) !== undefined }) });
+  }
+
+  /**
+   * The pane's live chat-v2 record and its host, or null. A `handed-off` record
+   * is skipped: its conversation now runs in the pane's TUI, which the bridge
+   * reads as a terminal binding. The first call subscribes to the host's pushes
+   * so a change nudges the pane's phone watchers.
+   */
+  private chatV2For(sessionId: string): { host: ChatV2PhoneHost; binding: ChatV2Binding } | null {
+    const host = this.deps.chatV2?.() ?? null;
+    if (!host) return null;
+    if (this.chatV2PushHost !== host) {
+      this.chatV2PushOff?.();
+      this.chatV2PushHost = host;
+      this.chatV2PushOff = host.onPush((push) => {
+        if (this.chatV2PushHost !== host) return;
+        this.chatV2Cancels.observe(push.paneId, host);
+        this.emitTranscriptNudge(push.paneId);
+      });
+    }
+    const binding = host.bindingForPane(sessionId);
+    return binding && binding.status !== 'handed-off' ? { host, binding } : null;
+  }
+
+  /**
+   * A pending decision of this record's driver, answerable through
+   * `/api/approvals`: the pane's, made in this load of this conversation
+   * (`threadId` = chatSessionId, `relayId` = epoch).
+   */
+  private chatV2Blocked(sessionId: string, binding: ChatV2Binding): ChatBlocked | undefined {
+    if (this.isBrainApproval(sessionId)) return undefined;
+    const pending = this.deps.approvals?.list().pending
+      .find((record) => record.sessionId === sessionId && record.native?.adapter === 'claude'
+        && record.native.threadId === binding.chatSessionId && record.native.relayId === binding.epoch);
+    return pending ? { by: 'approval', approvalId: pending.id } : undefined;
+  }
+
+  /**
+   * `/turns` for a chat-v2 record. Like a managed record it is a full bounded
+   * page on every read with no back paging, under a `managed` cursor bound to
+   * the record's identity and `c2:` epoch, so a new epoch (a daemon restart)
+   * resets the phone's rows.
+   */
+  private handleChatV2Turns(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+    binding: ChatV2Binding,
+    host: ChatV2PhoneHost,
+  ): void {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const dir = (url.searchParams.get('dir') ?? 'forward') === 'back' ? 'back' : 'forward';
+    const rawCursor = url.searchParams.get('cursor');
+    const carried = !!rawCursor;
+    const session = host.sessionForPane(sessionId);
+    const identity = chatV2Identity(binding);
+    const blocked = this.chatV2Blocked(sessionId, binding);
+    // The first observation is recorded without an event, as on the bridge path.
+    this.noteChatBlocked(sessionId, binding.agent, blocked);
+    const page = session ? chatV2Page(session) : null;
+    const caps = clientCaps(req);
+    const chat = buildChatV2Object(binding, session, blocked,
+      { chatCancel: caps.chatCancel === true, chatQueue: caps.chatQueue === true, historyTruncated: page?.truncatedHead === true });
+    if (!session || !page) {
+      this.json(res, 200, { available: false, reason: 'unreadable', ...(carried ? { reset: true, events: [] } : {}), chat });
+      return;
+    }
+    const current = { src: 'managed' as const, agentSessionId: identity.agentSessionId, epoch: identity.historyEpoch };
+    const cursor = encodeChatCursor({ v: 2, src: 'managed', a: identity.agentSessionId, e: identity.historyEpoch, head: 0 });
+    if (carried && dir === 'back' && cursorMatches(decodeChatCursor(rawCursor), current)) {
+      this.json(res, 200, { available: true, mode: 'older', reset: false, events: [], cursor, hasMore: false, chat });
+      return;
+    }
+    this.json(res, 200, {
+      available: true,
+      mode: 'snapshot',
+      ...(carried ? { reset: true } : {}),
+      events: page.events,
+      cursor,
+      hasMore: false,
+      ...(page.truncatedHead ? { truncatedHead: true } : {}),
+      chat,
+    });
   }
 
   /**
@@ -4287,7 +4402,7 @@ export class WebTerminalServer {
    * pane's `/turns` watchers. The FIRST observation of a pane is recorded
    * without an event: whoever made it just read the value in `/turns`.
    */
-  private noteChatBlocked(sessionId: string, resolution: ChatResolution, blocked: ChatBlocked | undefined): void {
+  private noteChatBlocked(sessionId: string, agent: string | undefined, blocked: ChatBlocked | undefined): void {
     if (this.isBrainApproval(sessionId)) return;
     // Two views of one state: a capable client may see a `terminal_prompt` as
     // an approval, an older one sees the terminal. A transition in either view
@@ -4301,7 +4416,6 @@ export class WebTerminalServer {
     const previous = this.chatBlockedState.get(sessionId);
     this.chatBlockedState.set(sessionId, key);
     if (previous === undefined || previous === key) return;
-    const agent = resolution.status.terminal?.agent;
     const bodyOf = (view: ChatBlocked | undefined): { event: 'chat.blocked' | 'chat.unblocked'; body: string } => ({
       event: view ? 'chat.blocked' : 'chat.unblocked',
       body: JSON.stringify(view
@@ -4364,7 +4478,7 @@ export class WebTerminalServer {
   private scheduleChatBlockedCheck(sessionId: string): void {
     if (this.opts?.allowTranscript !== true || this.chatBlockedTimers.has(sessionId)) return;
     if (this.isBrainApproval(sessionId) || !this.readableSession(sessionId)) return;
-    if (!(this.deps.chat?.() ?? null) || !this.hasLiveChatWatcher(sessionId)) return;
+    if ((!(this.deps.chat?.() ?? null) && !this.chatV2For(sessionId)) || !this.hasLiveChatWatcher(sessionId)) return;
     const timer = setTimeout(() => {
       this.chatBlockedTimers.delete(sessionId);
       void this.recomputeChatBlocked(sessionId).catch((err: unknown) =>
@@ -4376,17 +4490,24 @@ export class WebTerminalServer {
   }
 
   private async recomputeChatBlocked(sessionId: string): Promise<void> {
-    const chat = this.deps.chat?.() ?? null;
-    if (!chat || this.opts?.allowTranscript !== true) return;
+    if (this.opts?.allowTranscript !== true) return;
     if (!this.readableSession(sessionId)) {
       this.chatBlockedState.delete(sessionId);
       return;
     }
     if (!this.hasLiveChatWatcher(sessionId)) return;
+    // A chat-v2 pane's `blocked` is the host's; the bridge's view would be another binding's.
+    const v2 = this.chatV2For(sessionId);
+    if (v2) {
+      this.noteChatBlocked(sessionId, v2.binding.agent, this.chatV2Blocked(sessionId, v2.binding));
+      return;
+    }
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat) return;
     const resolution = await chat.resolve(sessionId);
     const blocked = await this.readChatBlocked(chat, sessionId, resolution);
     if (!this.server) return;
-    this.noteChatBlocked(sessionId, resolution, blocked);
+    this.noteChatBlocked(sessionId, resolution.status.terminal?.agent, blocked);
   }
 
   /**
@@ -4589,7 +4710,7 @@ export class WebTerminalServer {
     const pane = id === null ? undefined : this.readableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });
     const chat = this.deps.chat?.() ?? null;
-    if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+    if (!chat && !this.chatV2For(id)) return this.json(res, 503, { error: 'chat-unavailable' });
     const incarnation = pane.meta.incarnationId;
 
     this.readJsonBody(req, res, (body) => {
@@ -4606,6 +4727,12 @@ export class WebTerminalServer {
           });
         }
         const { clientMessageId } = parsed.value;
+        // A chat-v2 record is read + approve only on the phone, like a managed one.
+        if (this.chatV2For(id)) {
+          const refused = chatV2SendResponse(clientMessageId);
+          return this.json(res, refused.status, refused.body);
+        }
+        if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
         let outcome;
         try {
           // The cap on THIS request opts it into the daemon queue.
@@ -4652,7 +4779,7 @@ export class WebTerminalServer {
     const pane = id === null ? undefined : this.readableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'pane-not-found' });
     const chat = this.deps.chat?.() ?? null;
-    if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+    if (!chat && !this.chatV2For(id)) return this.json(res, 503, { error: 'chat-unavailable' });
     const incarnation = pane.meta.incarnationId;
 
     this.readJsonBody(req, res, (body) => {
@@ -4670,6 +4797,15 @@ export class WebTerminalServer {
         }
         const { clientCancelId } = parsed.value;
         const authorize = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation);
+        const v2 = this.chatV2For(id);
+        if (v2) {
+          const v2Outcome = await this.chatV2Cancels.cancel({
+            owner: chatOwner(fresh), paneId: id, body: parsed.value, host: v2.host, authorized: () => authorize('first-write'),
+          });
+          const v2Wire = cancelResponse(v2Outcome);
+          return this.json(res, v2Wire.status, v2Wire.body);
+        }
+        if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
         let outcome;
         try {
           outcome = await chat.cancel({ owner: chatOwner(fresh), id, ...parsed.value, authorized: () => authorize('first-write') });
@@ -4708,7 +4844,10 @@ export class WebTerminalServer {
     if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
     const id = decodePathSegment(rawId);
     if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
-    const wire = cancelReceiptResponse(this.deps.chat?.() ?? null, chatOwner(principal), id, decodePathSegment(rawCancelId) ?? '');
+    const clientCancelId = decodePathSegment(rawCancelId) ?? '';
+    const v2Progress = this.chatV2Cancels.progress(chatOwner(principal), id, clientCancelId);
+    if (v2Progress) return this.json(res, 200, { clientCancelId, ...v2Progress });
+    const wire = cancelReceiptResponse(this.deps.chat?.() ?? null, chatOwner(principal), id, clientCancelId);
     return this.json(res, wire.status, wire.body);
   }
 
@@ -4762,7 +4901,7 @@ export class WebTerminalServer {
     const pane = id === null ? undefined : this.readableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });
     const chat = this.deps.chat?.() ?? null;
-    if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+    if (!chat && !this.chatV2For(id)) return this.json(res, 503, { error: 'chat-unavailable' });
     const incarnation = pane.meta.incarnationId;
 
     this.readJsonBody(req, res, (body) => {
@@ -4791,6 +4930,12 @@ export class WebTerminalServer {
         // Past the receipt lifetime `unknown` no longer proves "never typed",
         // so the id is refused rather than risking a second launcher.
         if (age === 'expired') return this.json(res, 400, { error: 'launch-id-expired', effect: 'none', clientLaunchId });
+        // The anchor shell of a chat-v2 pane is idle, but the pane has a writer: the driver.
+        if (this.chatV2For(id)) {
+          const refused = chatV2LaunchResponse(clientLaunchId);
+          return this.json(res, refused.status, refused.body);
+        }
+        if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
 
         const owner = chatOwner(fresh);
         const dangerous = mode !== 'default';
@@ -4823,13 +4968,22 @@ export class WebTerminalServer {
         if (begun.kind === 'replay') return this.json(res, 200, { ...begun.body, replayed: true });
         if (begun.kind === 'full') return this.json(res, 429, { error: 'launch-busy', effect: 'none', clientLaunchId });
 
-        const authorized = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation,
+        const authorize = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation,
           () => !dangerous || this.opts?.allowDangerousLaunch === true);
+        // A chat-v2 record created while the launch ran (the desktop reserves the
+        // pane before its first await) refuses it. Checked after the last await:
+        // the bridge types right after this resolves, with no await between.
+        let claimedByChatV2 = false;
+        const authorized = async (stage?: 'first-write' | 'submit'): Promise<boolean> => {
+          const ok = await authorize(stage);
+          if (ok && this.chatV2For(id)) claimedByChatV2 = true;
+          return ok && !claimedByChatV2;
+        };
         let wire: WireResponse;
         let effect: 'none' | 'uncertain' | 'submitted';
         try {
           const outcome = await chat.launch({ id, agent, prompt, mode, refuseConversation: true, authorized });
-          wire = launchResponse(outcome, clientLaunchId);
+          wire = claimedByChatV2 && !outcome.ok ? chatV2LaunchResponse(clientLaunchId) : launchResponse(outcome, clientLaunchId);
           effect = outcome.ok ? 'submitted' : outcome.effect;
           if (outcome.ok) trace('submitted');
           else if (outcome.error === 'launch-unconfirmed') trace('launch-unconfirmed');
