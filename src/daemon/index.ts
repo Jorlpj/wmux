@@ -1027,6 +1027,16 @@ const daemonLogWriter = createDaemonLogWriter({
   bufferMaxBytes: 64 * 1024,
 });
 process.once('exit', () => daemonLogWriter.flush());
+/** recoveryCwd, plus a warning when a WSL pane's stored cwd could not be
+ *  entered and recovery starts it in home instead (#1729). */
+function recoveryCwdLogged(session: { id?: string; cmd: string; cwd: string }): string {
+  const cwd = recoveryCwd(session);
+  if (isWslShell(session.cmd) && cwd !== session.cwd) {
+    log('warn', `[recovery] ${session.id ?? 'session'}: stored WSL cwd ${JSON.stringify(session.cwd)} cannot be entered; starting in ${cwd}`);
+  }
+  return cwd;
+}
+
 function log(level: string, msg: string, ...args: unknown[]): void {
   const ts = new Date().toISOString();
   console.log(`[${ts}] [daemon/${level}] ${msg}`, ...args);
@@ -1738,7 +1748,7 @@ async function recoverSessions(
         );
 
         // Verify cwd still exists; fall back to homedir
-        const cwd = recoveryCwd(session);
+        const cwd = recoveryCwdLogged(session);
 
         // ConPTY on Windows occasionally rejects the first spawn after a
         // daemon restart with ERROR_INVALID_PARAMETER (87) — a known
@@ -1851,7 +1861,7 @@ async function recoverSessions(
       if (fs.existsSync(snapshotPath)) {
         try {
           const scrollbackData = fs.readFileSync(snapshotPath);
-          const cwd = recoveryCwd(session);
+          const cwd = recoveryCwdLogged(session);
 
           const recovered = await recoverCodexPane(sessionManager, codexPaneRelays, {
             id: session.id,
@@ -1904,7 +1914,7 @@ async function recoverSessions(
       // This handles cases where the daemon was killed before
       // the 30s snapshot interval fired (e.g. immediate reboot).
       try {
-        const cwd = recoveryCwd(session);
+        const cwd = recoveryCwdLogged(session);
         const recovered = await recoverCodexPane(sessionManager, codexPaneRelays, {
           id: session.id,
           cmd: session.cmd,
@@ -2080,7 +2090,7 @@ async function restartSupervisedSession(
     cmd: meta.cmd,
     wslTarget: meta.wslTarget,
     args: meta.args,
-    cwd: recoveryCwd(meta),
+    cwd: recoveryCwdLogged(meta),
     // Replay the ORIGINAL spawn directory; `cwd` above is the live, OSC
     // 7-tracked one. See createSession's `spawnCwd`.
     spawnCwd: meta.spawnCwd,
@@ -2886,7 +2896,7 @@ function registerRpcHandlers(
       // the distribution, which is the only side that knows where home is.
       const cwd = startFresh
         ? (isWslShell(session.cmd) ? '~' : os.homedir())
-        : recoveryCwd(session);
+        : recoveryCwdLogged(session);
 
       const PROMOTE_RETRIES = 4;
       let promoted: ReturnType<typeof sessionManager.createSession> | undefined;

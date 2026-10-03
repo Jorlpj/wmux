@@ -57,6 +57,16 @@ type Probe = (args: string[]) => string | Promise<string>;
 // a project can be removed or the distro's default user changed between retries.
 const inFlight = new Map<string, Promise<ResolvedWslCwd>>();
 
+/** The cwd shapes resolveWslCwd accepts: absolute Linux, ~-anchored or drive. */
+function isWslCwdShape(cwd: string): boolean {
+  return isLinuxCwd(cwd) || /^[A-Za-z]:[\\/]/.test(cwd);
+}
+
+/** No character ConPTY's argv join cannot carry (resolveWslCwd's second check). */
+function isWslCwdSpawnable(cwd: string): boolean {
+  return !/[\0\r\n"]/.test(cwd);
+}
+
 export async function resolveWslCwd(
   shell: string,
   cwd: string | undefined,
@@ -65,12 +75,12 @@ export async function resolveWslCwd(
   selectionArgs?: string[],
 ): Promise<ResolvedWslCwd> {
   const requested = cwd || '~';
-  if (!isLinuxCwd(requested) && !/^[A-Za-z]:[\\/]/.test(requested)) {
+  if (!isWslCwdShape(requested)) {
     throw new Error('WSL working directory must be an absolute Linux/Windows path or ~/path');
   }
   // ConPTY joins argv into a Windows command line. Until a round-trip test
   // establishes double-quote handling, reject it rather than split the path.
-  if (/[\0\r\n"]/.test(requested)) throw new Error('WSL working directory cannot contain double quotes or control characters');
+  if (!isWslCwdSpawnable(requested)) throw new Error('WSL working directory cannot contain double quotes or control characters');
   const targetArgs = target ? wslTargetArgs(target)
     : isWslDistroSpawnArgs(shell, selectionArgs) ? selectionArgs : [];
   const args = [...targetArgs, '--exec', '/bin/sh', '-c', WSL_CWD_PROBE, 'wmux-cwd', requested];
@@ -126,7 +136,14 @@ export async function resolveWslCwd(
 
 /** Preserve Linux paths through daemon restart; Windows stat cannot test them. */
 export function recoveryCwd(session: { cmd: string; cwd: string }, platform = process.platform): string {
-  if (isWslShell(session.cmd, platform)) return session.cwd;
+  // #1729 — a stored cwd resolveWslCwd would refuse (a wrapped prompt's line
+  // break, a relative token left by a prompt false-positive) can never be
+  // entered; start in home instead of leaving the pane suspended on an error
+  // it has no way out of. Exactly resolveWslCwd's checks, so nothing it would
+  // accept (a real directory with a tab in its name) is sent home.
+  if (isWslShell(session.cmd, platform)) {
+    return isWslCwdShape(session.cwd) && isWslCwdSpawnable(session.cwd) ? session.cwd : '~';
+  }
   return fs.existsSync(session.cwd) ? session.cwd : os.homedir();
 }
 
