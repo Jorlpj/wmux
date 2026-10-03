@@ -332,6 +332,12 @@ export interface WebTerminalStartOptions {
    */
   allowDangerousLaunch?: boolean;
   /**
+   * Whether the web client draws inline images (sixel, iTerm2) (#1641).
+   * Absent → on; `wmux web --no-inline-images` turns it off. Advertised on
+   * `/api/config` as `inlineImages`.
+   */
+  inlineImages?: boolean;
+  /**
    * Terminate HTTPS in the daemon with operator-supplied PEM files.
    *
    * Paths are absolute because the CLI and daemon do not necessarily share a
@@ -377,6 +383,8 @@ export interface WebTerminalInfo {
   allowTranscript?: boolean;
   /** Whether chat launch may use `bypass`/`yolo`. Its own opt-in (contract §3.4). */
   allowDangerousLaunch?: boolean;
+  /** Whether the web client draws inline images (#1641). */
+  inlineImages?: boolean;
   /** True when this listener terminates HTTPS inside the daemon. */
   tls?: boolean;
   token?: string;
@@ -1641,6 +1649,7 @@ export class WebTerminalServer {
     allowUpload: boolean;
     allowTranscript: boolean;
     allowDangerousLaunch: boolean;
+    inlineImages: boolean;
   } | undefined {
     if (!this.server || !this.opts) return undefined;
     return {
@@ -1653,6 +1662,7 @@ export class WebTerminalServer {
       allowUpload: this.opts.allowUpload === true,
       allowTranscript: this.opts.allowTranscript === true,
       allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
+      inlineImages: this.opts.inlineImages !== false,
     };
   }
 
@@ -2186,6 +2196,7 @@ export class WebTerminalServer {
         allowUpload: this.opts.allowUpload,
         allowTranscript: this.opts?.allowTranscript === true,
         allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
+        inlineImages: this.opts.inlineImages !== false,
         tls: this.opts.tls !== undefined,
         token: this.token,
         urls: this.buildUrls(),
@@ -2205,6 +2216,7 @@ export class WebTerminalServer {
       allowUpload: this.opts.allowUpload,
       allowTranscript: this.opts.allowTranscript === true,
       allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
+      inlineImages: this.opts.inlineImages !== false,
       tls: this.opts.tls !== undefined,
       token: this.token,
       urls: this.buildUrls(),
@@ -2440,6 +2452,9 @@ export class WebTerminalServer {
         allowUpload: this.opts?.allowUpload === true,
         generalFileUpload: this.opts?.allowUpload === true && this.deps.uploadsDir !== undefined,
         allowTranscript: this.opts?.allowTranscript === true,
+        // Whether the browser terminal may draw inline images (#1641). The
+        // client still refuses where WebAssembly cannot compile.
+        inlineImages: this.opts?.inlineImages !== false,
         // Whether `/api/sessions/:id/turns/image` exists on this daemon, so the
         // phone decides ONCE instead of learning it from a 404 per thumbnail.
         // Only alongside the grant that opens the route: a client that reads
@@ -6134,6 +6149,11 @@ export class WebTerminalServer {
     const meta = this.streamMeta(managed, {
       truncated: snapshot.truncated,
       omittedBytes: snapshot.omittedBytes,
+      // The server's image switch, on the frame the client paints from: a
+      // reconnect after `wmux web --[no-]inline-images` must load or drop the
+      // image addon BEFORE it replays this snapshot, which an /api/config
+      // round trip started on open cannot guarantee (#1641).
+      inlineImages: this.opts?.inlineImages !== false,
       ...(typeof resume?.commandRunning === 'boolean' ? { commandRunning: resume.commandRunning } : {}),
       ...(resume?.resumeAgent ? { resumeAgent: resume.resumeAgent } : {}),
     });
@@ -8727,7 +8747,7 @@ export class WebTerminalServer {
     // browser would compute, and every inline block was refused: a blank
     // terminal. Verified in a real browser both ways; buildWebCsp normalizes
     // first.
-    this.csp = buildWebCsp(this.terminalHtml ? this.terminalHtml.toString('utf8') : null);
+    this.csp = buildWebCsp(this.terminalHtml ? this.terminalHtml.toString('utf8') : null, { wasm: true });
     if (!this.terminalHtml) {
       this.deps.log('warn', `[web] terminal.html missing under ${dir} — run \`npm run build:daemon-web\``);
     }

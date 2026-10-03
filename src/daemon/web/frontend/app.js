@@ -9,7 +9,7 @@
  * <select>), a dot-vocabulary connection chip, and explicit loading / empty /
  * error / auth states instead of a bare status string.
  */
-/* global Terminal, wmuxAttentionFormat, pairQuery, wmuxTouchScroll */ // provided by the inlined bundles
+/* global Terminal, ImageAddon, wmuxAttentionFormat, pairQuery, wmuxTouchScroll, wmuxInlineImages */ // provided by the inlined bundles
 (function () {
   'use strict';
   var $ = function (s) { return document.querySelector(s); };
@@ -178,6 +178,45 @@
     if (owner && owner.focus && owner !== document.body) { try { owner.focus(); } catch (e) { /* torn down */ } }
   }
 
+  // Inline images (#1641). The server can switch them off
+  // (`wmux web --no-inline-images`), and inlineImages.js refuses to load the
+  // addon where WebAssembly cannot compile, since its decoders would throw
+  // inside the parser and lose the output that follows an image.
+  var inlineImagesEnabled = true;
+  function loadImageAddon(t) {
+    if (!t) return;
+    wmuxInlineImages.sync(t, {
+      enabled: inlineImagesEnabled,
+      ImageAddon: typeof ImageAddon === 'object' ? ImageAddon : null,
+      WebAssembly: typeof WebAssembly === 'object' ? WebAssembly : null,
+      createImageBitmap: typeof createImageBitmap === 'function' ? createImageBitmap : null
+    });
+  }
+  // A phone stays connected across a server-side switch, so every snapshot's
+  // `meta` carries the switch and it is applied to every open terminal before
+  // that snapshot repaints — otherwise the first paint after a switch shows
+  // the old state.
+  function applyInlineImages(enabled) {
+    inlineImagesEnabled = enabled;
+    loadImageAddon(term);
+    tiles.forEach(function (tl) { loadImageAddon(tl.term); });
+  }
+  // Only for a daemon whose snapshot meta predates the switch: ask
+  // /api/config instead, which lands after the snapshot it was asked for.
+  var inlineImagesCheck = null;
+  function refreshInlineImages() {
+    if (inlineImagesCheck) return;
+    inlineImagesCheck = api('/api/config').then(function (r) { return r.json(); }).then(function (cfg) {
+      applyInlineImages(cfg.inlineImages !== false);
+    }).catch(function () { /* the next snapshot asks again */ }).then(function () { inlineImagesCheck = null; });
+  }
+  /** Apply the switch a snapshot `meta` carries; true when it carried one. */
+  function inlineImagesFromMeta(m) {
+    if (!m || typeof m.inlineImages !== 'boolean') return false;
+    inlineImagesEnabled = m.inlineImages;
+    return true;
+  }
+
   function newTerm(cols, rows) {
     return new Terminal({
       cols: cols || 80,
@@ -282,6 +321,17 @@
       // and silently swallow every keystroke for the rest of the page's life.
       dec();
     }
+  }
+
+  /**
+   * An onData listener that forwards only what the user produced, never the
+   * answers xterm gives by itself to queries in the pane output — the desktop
+   * mirror's own gate (src/shared/terminal/userInputGate.ts). Without the
+   * shared bundle it forwards everything, as before the gate.
+   */
+  function gateUserInput(t, send) {
+    var shared = window.wmuxTerminalShared;
+    return shared && shared.gateUserInput ? shared.gateUserInput(t, send) : send;
   }
 
   /**
@@ -460,6 +510,7 @@
     if (!term) {
       term = newTerm(cols, rows);
       term.open(termHost);
+      loadImageAddon(term);
       // Swipe to reach scrollback. A phone has no wheel and no Shift+PageUp, so
       // without this the only history it can ever see is the opening snapshot.
       attachTouchScroll(term, termHost, {
@@ -467,10 +518,13 @@
         sendKeys: sendInput,
         notify: touchScrollNotice
       });
-      if (allowInput) term.onData(function (d) {
+      // Answers xterm gives to device queries in the output (DA1, cursor and
+      // size reports, XTSMGRAPHICS) are the pane owner's to give; only what
+      // the user typed is sent (src/shared/terminal/userInputGate.ts).
+      if (allowInput) term.onData(gateUserInput(term, function (d) {
         if (termRepaints > 0) return; // parser reply to a replayed query
         sendInput(d);
-      });
+      }));
       attachTerminalKeys(term, sendInput, !allowInput, function () { return paneAcceptsCsiU(currentSession); }, function () { return paneAcceptsWin32(currentSession); });
       // Auto-focus so typing and Ctrl+V work without a click first — a browser
       // only delivers the paste event to the focused xterm textarea.
@@ -1473,9 +1527,12 @@
       attention: true,
       meta: function (m) {
         if (!m.resize) snapMeta = m;
+        var carried = !m.resize && inlineImagesFromMeta(m);
         ensureTerm(m.cols, m.rows);
+        if (carried) applyInlineImages(inlineImagesEnabled);
       },
       snapshot: function (bytes) {
+        if (!snapMeta || typeof snapMeta.inlineImages !== 'boolean') refreshInlineImages();
         // Snapshot replays the pane's screen, kitty negotiation included —
         // reset before folding so a protocol the app turned off earlier does
         // not survive as stale.
@@ -1602,6 +1659,7 @@
     var tile = { sessionId: s.id, term: null, es: null, el: el, head: head, scaler: scaler, ended: false, repaints: 0 };
     tile.term = newTerm(s.cols, s.rows);
     tile.term.open(host);
+    loadImageAddon(tile.term);
     // Same reason as the single-pane host: on iOS the keyboard only comes up
     // for a focus made inside a user gesture.
     host.addEventListener('click', function () { focusFromGesture(tile.term); });
@@ -1623,10 +1681,10 @@
       // focus back on each reply, which pinned the page to whichever pane
       // chattered most (caught in live dogfood — a tap looked like it did
       // nothing). Focus moves on an explicit tap only.
-      tile.term.onData(function (d) {
+      tile.term.onData(gateUserInput(tile.term, function (d) {
         if (tile.repaints > 0) return; // parser reply to a replayed query
         sendTo(tile.sessionId, d);
-      });
+      }));
     }
     // Same copy/newline/paste handling as the 1-up terminal — Ctrl+C with a
     // selection must copy here too, never SIGINT the tile's process. Sends go
@@ -1644,10 +1702,12 @@
       attention: isAttentionSource,
       meta: function (m) {
         if (!m.resize) snapMeta = m;
+        if (!m.resize && inlineImagesFromMeta(m)) applyInlineImages(inlineImagesEnabled);
         if (tile.term && m.cols && m.rows) tile.term.resize(m.cols, m.rows);
         rescale();
       },
       snapshot: function (bytes) {
+        if (!snapMeta || typeof snapMeta.inlineImages !== 'boolean') refreshInlineImages();
         // Snapshot replays the pane's screen, kitty negotiation included —
         // reset before folding (see connect()'s snapshot for the rationale).
         foldKeyboardState(tile.sessionId, bytes, true);
@@ -1893,6 +1953,9 @@
     showOverlay('loading', 'Connecting to wmux', 'Attaching to the daemon and loading live panes.');
     api('/api/config').then(function (r) { return r.json(); }).then(function (cfg) {
       allowInput = cfg.allowInput === true;
+      // Absent on a daemon predating the switch, which reads as on; the wasm
+      // probe still decides whether the addon can run at all.
+      inlineImagesEnabled = cfg.inlineImages !== false;
       bannerEl.textContent = allowInput ? 'input enabled' : 'read-only';
       bannerEl.setAttribute('data-mode', allowInput ? 'rw' : 'ro');
       // The bar is always available for zoom; the keys only when input is on

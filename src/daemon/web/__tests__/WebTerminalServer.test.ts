@@ -1332,6 +1332,9 @@ describe('WebTerminalServer', () => {
       const csp = page.headers.get('content-security-policy') ?? '';
       expect(csp.match(/'sha256-[A-Za-z0-9+/=]+'/g)).toHaveLength(2);
       expect(csp).toContain("font-src 'self'");
+      // The app compiles no WebAssembly; only the classic page's image
+      // decoders need it (#1641).
+      expect(csp).not.toContain('wasm-unsafe-eval');
       // `/` is the app page too, now that it has terminals.
       const root = await fetch(`${base}/`);
       expect(await root.text()).toContain('var app=2;');
@@ -1341,7 +1344,10 @@ describe('WebTerminalServer', () => {
       for (const classicPath of ['/classic', '/pair']) {
         const classic = await fetch(`${base}${classicPath}`);
         expect(await classic.text()).toContain('var a=1;');
-        expect((classic.headers.get('content-security-policy') ?? '').match(/'sha256-/g)).toHaveLength(1);
+        const classicCsp = classic.headers.get('content-security-policy') ?? '';
+        expect(classicCsp.match(/'sha256-/g)).toHaveLength(1);
+        expect(classicCsp).toContain("'wasm-unsafe-eval'");
+        expect(classicCsp).not.toContain("'unsafe-eval'");
       }
 
       const font = await fetch(`${base}/app/assets/Inter-abc123.woff2`);
@@ -9594,6 +9600,20 @@ describe('WebTerminalServer', () => {
       primeRing('\x1b[?1003h\x1b[?1006h');
       resumeStates = { s1: { commandRunning: false } };
       expect((await firstSnapshotMeta()).commandRunning).toBe(false);
+    });
+
+    it('stamps the snapshot meta with the inline images switch (#1641)', async () => {
+      expect((await firstSnapshotMeta()).inlineImages).toBe(true);
+      await server.stop();
+      const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, inlineImages: false });
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+      expect(metas(text)[0].inlineImages).toBe(false);
     });
 
     it('omits commandRunning from the snapshot meta when the shell reports no prompt state', async () => {

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { WebTlsConfig } from '../../../shared/web';
 import type { WebPersistedState } from '../webStateStore';
-import { decideWebStartPolicy, resolveWebStartGrants, type WebStartPolicyInput } from '../webStartPolicy';
+import {
+  decideWebStartPolicy,
+  resolveWebInlineImages,
+  resolveWebStartGrants,
+  type WebStartPolicyInput,
+} from '../webStartPolicy';
 
 const TLS: WebTlsConfig = {
   certPath: '/absolute/certificate.pem',
@@ -253,5 +258,28 @@ describe('web start grant resolution', () => {
       allowTranscript: false,
       allowDangerousLaunch: false,
     });
+  });
+});
+
+describe('inline images switch (#1641)', () => {
+  const on = { inlineImages: true };
+  const off = { inlineImages: false };
+
+  it('is on for a fresh server', () => {
+    expect(resolveWebInlineImages(undefined, undefined, on)).toBe(true);
+  });
+
+  it('an explicit value always wins', () => {
+    expect(resolveWebInlineImages(false, { inlineImages: true }, on)).toBe(false);
+    expect(resolveWebInlineImages(true, { inlineImages: false }, off)).toBe(true);
+  });
+
+  it('a re-run that does not say keeps the running server\'s choice', () => {
+    expect(resolveWebInlineImages(undefined, { inlineImages: false }, on)).toBe(false);
+    expect(resolveWebInlineImages(undefined, { inlineImages: true }, off)).toBe(true);
+  });
+
+  it('with nothing running (a restart, or after --stop) the saved preference decides', () => {
+    expect(resolveWebInlineImages(undefined, undefined, off)).toBe(false);
   });
 });
