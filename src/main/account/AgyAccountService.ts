@@ -29,6 +29,9 @@ interface AgyAccountsFile {
   version: number;
   autoRotate: boolean;
   accounts: AgyAccount[];
+  /** Account the user picked by hand ("Use now" or a sign-in). Automatic switching never replaces it
+   *  while it is the active one; cleared by another manual pick, its removal, or flipping the switch. */
+  manualEmail?: string;
 }
 
 const SCHEMA_VERSION = 1;
@@ -67,7 +70,13 @@ function sanitizeFile(raw: unknown): AgyAccountsFile {
     .map(sanitizeAccount)
     .filter((a): a is AgyAccount => a !== null && !seen.has(a.email) && Boolean(seen.add(a.email)));
   // Automatic switching is opt-in: a new install, or a file without the field, keeps it off.
-  return { version: SCHEMA_VERSION, autoRotate: o.autoRotate === true, accounts };
+  const manual = typeof o.manualEmail === 'string' ? normalizeAgyEmail(o.manualEmail) : '';
+  return {
+    version: SCHEMA_VERSION,
+    autoRotate: o.autoRotate === true,
+    accounts,
+    ...(manual && accounts.some((a) => a.email === manual) ? { manualEmail: manual } : {}),
+  };
 }
 
 export class AgyAccountError extends Error {
@@ -217,13 +226,16 @@ export class AgyAccountService {
     const email = await this.mutate((file) => {
       const i = file.accounts.findIndex((x) => x.id === id);
       if (i < 0) throw new AgyAccountError('not-found', 'unknown agy account');
-      return file.accounts.splice(i, 1)[0].email;
+      const removed = file.accounts.splice(i, 1)[0].email;
+      if (file.manualEmail === removed) delete file.manualEmail;
+      return removed;
     });
     this.deps.vault?.removeCopy(email);
   }
 
   async setAutoRotate(on: boolean): Promise<void> {
-    await this.mutate((file) => { file.autoRotate = on; });
+    // Flipping the switch hands the choice back to the switch, so an earlier manual pick no longer holds.
+    await this.mutate((file) => { file.autoRotate = on; delete file.manualEmail; });
   }
 
   /** Make an account the active agy sign-in. */
@@ -243,7 +255,7 @@ export class AgyAccountService {
       throw new AgyAccountError('swap-failed', 'the current agy sign-in could not be saved, so it was not replaced');
     }
     if (result !== 'ok') throw new AgyAccountError('swap-failed', 'could not switch the agy sign-in');
-    this.emit();
+    await this.mutate((file) => { file.manualEmail = account.email; });
   }
 
   /**
@@ -289,6 +301,7 @@ export class AgyAccountService {
       this.login = { ...this.login, pending: false, lastResult: email };
       this.loginTimer = null;
       await this.addCurrent();
+      await this.mutate((file) => { file.manualEmail = email; });
       return;
     }
     if (this.now() - (this.login.startedAt ?? 0) > LOGIN_TIMEOUT_MS) {
@@ -321,8 +334,10 @@ export class AgyAccountService {
     if (snap.accounts.length === 0) return { ok: true, account: null, switched: false };
     // Fold agy's own token refreshes back into the vault copy first.
     if (snap.activeEmail && snap.accounts.some((a) => a.active)) this.deps.vault.captureActive();
-    if (!snap.autoRotate) {
-      // Rotation off: never swap, but still refuse an active account that is out.
+    const manual = this.file().manualEmail;
+    if (!snap.autoRotate || (manual && snap.activeEmail === manual)) {
+      // Rotation off, or the active account is the user's own pick: never swap, but still refuse an
+      // active account that is out.
       const active = snap.accounts.find((a) => a.active);
       if (!active || active.state === 'active') return { ok: true, account: active ?? null, switched: false };
       return { ok: false, reason: 'all-exhausted', availableAtMs: active.availableAtMs };
