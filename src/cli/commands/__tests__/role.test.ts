@@ -154,8 +154,15 @@ describe('wmux role resolve', () => {
     });
     expect(resolveRole('Reviewer', { agent: 'codex', tools: 'core' }, entry, registered).mcp?.argv[1]).toContain('"--core"');
     expect(resolveRole('Reviewer', { agent: 'codex', tools: 'full' }, entry, registered).mcp?.tools).toEqual(['*']);
-    expect(resolveRole('Tester', { agent: 'codex', tools: 'role' }, entry, registered).mcp?.argv).toEqual(['-c', 'mcp_servers.wmux.enabled=false']);
-    expect(resolveRole('Builder', { agent: 'agy', tools: 'role' }, entry).mcp).toEqual({ level: 'role', tools: [], argv: [] });
+    // A fan-out worker keeps the tools its preamble asks for (ledger, mission channel).
+    expect(resolveRole('Tester', { agent: 'codex', tools: 'role' }, entry, registered).mcp?.argv).toEqual(
+      ['-c', 'mcp_servers.wmux.args=["C:\\\\u\\\\.wmux\\\\mcp\\\\index.js","--role=Tester"]'],
+    );
+    expect(resolveRole('Builder', { agent: 'agy', tools: 'role' }, entry).mcp).toEqual({
+      level: 'role',
+      tools: ['ledger_update', 'channel_read', 'channel_unread', 'channel_ack', 'channel_post'],
+      argv: [],
+    });
     expect(resolveRole('Builder', { agent: 'opencode', tools: 'role' }, entry).mcp).toBeUndefined();
     expect(resolveRole('Custom', { agent: 'claude', tools: 'role' }, entry).mcp).toBeUndefined();
     expect(resolveRole('Custom', { agent: 'claude', tools: 'core' }, entry).mcp?.level).toBe('core');

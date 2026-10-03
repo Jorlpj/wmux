@@ -38,7 +38,7 @@ describe('wmux tool level on a role-bound launch line', () => {
     expect(run('codex --model gpt-6-sol', 'core', 'Reviewer').out).toBe(
       `codex -c "mcp_servers.wmux.args=['${entry}','--core']" --model gpt-6-sol`,
     );
-    expect(run('codex', 'role', 'Tester').out).toBe('codex -c mcp_servers.wmux.enabled=false');
+    expect(run('codex', 'role', 'Tester').out).toBe(`codex -c "mcp_servers.wmux.args=['${entry}','--role=Tester']"`);
     expect(run('codex', 'full', 'Reviewer').out).toBe(`codex -c "mcp_servers.wmux.args=['${entry}']"`);
   });
 
