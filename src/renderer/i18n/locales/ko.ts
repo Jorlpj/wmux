@@ -761,6 +761,16 @@ export const ko = {
   'settings.roleBindingHintFreshContextInert':
     '작업마다 새 대화는 claude 또는 codex 에이전트에서만 동작합니다. 이 역할에는 아무 효과가 없습니다.',
   'settings.roleBindingRefreshModels': '모델 새로고침',
+  'settings.rolePresetApply': '{role} 프리셋 적용',
+  'settings.rolePresetApplied': '{role} 프리셋 적용됨',
+  'settings.rolePresetApplyBypass':
+    '{role} 프리셋 적용 (권한 확인 건너뜀)',
+  'settings.rolePresetTooltipNoSkip':
+    '이 역할을 {tier} 추론 강도로 설정하고, 선택한 에이전트·모델·추가 인수는 유지합니다. 이 에이전트는 검증된 권한 건너뛰기 플래그가 없어 권한 확인은 그대로 켜져 있습니다.',
+  'settings.rolePresetConfirmBypass':
+    '{role} 프리셋을 적용할까요? 권한 확인 건너뛰기가 켜져, {role}로 실행되는 모든 에이전트(이 역할로 보내진 fan-out 작업 포함)가 먼저 묻지 않고 파일을 수정하고 명령을 실행합니다.',
+  'settings.rolePresetTooltip':
+    '이 역할을 {tier} 추론 강도로 설정하고 권한 확인 건너뛰기를 켭니다. {role}로 실행되는 모든 에이전트(이 역할로 보내진 fan-out 작업 포함)가 권한 확인 없이 실행됩니다. 선택한 에이전트·모델·추가 인수는 유지되며, 비어 있을 때만 에이전트(agy)나 모델을 채웁니다. agy는 추론 강도가 모델 이름 끝부분이라 Flash 모델은 {tier} 변형으로 바뀌고 다른 모델은 그대로 둡니다. agy는 도구·스킬·MCP 설정을 역할별로 나눌 수 없어 모든 역할이 함께 공유합니다.',
   'deck.fleet.enforcedLaunch': '강제 실행: {binding}',
   'pane.enforcedLaunch': '역할이 강제한 실행: {binding}',
   'pane.enforcedSkipBadge': '바이패스',
@@ -877,6 +887,8 @@ export const ko = {
   'settings.a2aAutoApproveExecuteDesc': 'YOLO 모드: 들어오는 A2A execute 요청이 확인 없이 bypassPermissions Claude를 실행할 수 있습니다.',
   'settings.fanoutRequireApproval': '에이전트 fan-out 전에 묻기',
   'settings.fanoutRequireApprovalDesc': '기본 꺼짐: 에이전트가 시작한 fan-out은 확인 없이 실행됩니다 — 한 단계까지, 동시 8개·시간당 24개 이하, 기록 남김. 켜면 모든 파이프/MCP fan-out이 승인을 기다립니다.',
+  'settings.fanoutTrustAgyFolders': 'agy fan-out 작업 폴더 자동 신뢰',
+  'settings.fanoutTrustAgyFoldersDesc': '기본 꺼짐. 켜면 agy fan-out 작업이 시작되기 전에 wmux가 그 작업 폴더를 agy 자체 신뢰 목록(~/.gemini/antigravity-cli/settings.json)에 추가해, 작업이 agy 신뢰 화면에서 멈추지 않습니다. 끄면 wmux는 그 파일에 아무것도 쓰지 않고, agy가 새 작업 폴더마다 묻습니다.',
   'fanout.autoRunToast': '승인 없이 fan-out 수락: {repo}에서 태스크 {count}개',
   'checkout.foreignAgentToast': '{agent}가 fan-out 태스크 “{task}” 소유의 체크아웃에서 시작됐습니다. 한 워킹 트리의 두 에이전트는 서로의 변경을 덮어씁니다. 클릭하면 태스크 워크스페이스로 이동합니다.',
   'checkout.continueHere': '여기서 계속',
@@ -1917,6 +1929,8 @@ export const ko = {
   'fanout.skipPermissionsUnsupported':
     'wmux가 아는 우회 플래그는 `claude` 것뿐입니다. 위 명령에 사용하는 CLI의 플래그를 직접 입력하세요 — 다음 실행에도 그대로 남습니다.',
   'fanout.skipPermissionsWarning': '모든 도구가 확인 없이 실행됩니다. 태스크는 격리 worktree에서 돌지만 에이전트는 셸 전체를 씁니다.',
+  'fanout.agyReadsIgnoredFiles':
+    'agy는 .gitignore, .geminiignore, .agyignore를 따르지 않으며, 절대 경로로 어떤 파일이든 읽을 수 있습니다(예: fan-out worktree에서 메인 체크아웃의 .env). 권한 확인 건너뛰기를 켜면 계정이 읽을 수 있는 모든 파일을 읽을 수 있습니다.',
   'fanout.skipPermissionsStale': '`{agent}`는 claude 전용 플래그를 받지 않는데 명령에 아직 남아 있습니다.',
   'fanout.skipPermissionsStrip': '플래그 제거',
   'fanout.commandPreviewLabel': '실행 명령 (다음에도 유지)',
@@ -1927,6 +1941,7 @@ export const ko = {
   'fanout.errPromptTooLarge': 'fan-out: 프롬프트가 {max}바이트를 초과합니다',
   'fanout.errRepoRequired': 'fan-out: repo 경로가 필요합니다',
   'fanout.failed': 'fan-out 실패: {error}',
+  'fanout.agyTrustScreenNote': 'agy는 새 작업 폴더마다 "Do you trust" 화면에서 멈추며, 해당 페인에서 직접 답해야 진행됩니다. 건너뛰려면 설정 > Fan-out 워커 > agy fan-out 작업 폴더 자동 신뢰를 켜세요.',
   'fanout.rejected': 'fan-out 거부: {error}',
   'fanout.summarySuccess': 'fan-out: 성공 {ok}',
   'fanout.summaryFailed': '실패 {fail}',

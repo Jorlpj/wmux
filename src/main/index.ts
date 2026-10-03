@@ -1114,6 +1114,8 @@ onAutonomyWritten(() => {
 // getDaemonClient: the `claude-pty` brain vendor spawns its interactive TUI as
 // a daemon session, so it needs the live client (a getter, because the deck
 // handler registers before the daemon connects).
+// WMX-06: registerDeckHandler sweeps orphaned atomic-write temp files in the
+// data dir before the Deck stores are first read (once per registration).
 const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
   getDaemonClient: () => daemonClient,
 });

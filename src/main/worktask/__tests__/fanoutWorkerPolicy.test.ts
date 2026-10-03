@@ -8,8 +8,10 @@ import { describe, expect, it } from 'vitest';
 import {
   getFanoutWorkerPolicyPath,
   loadFanoutRequireApproval,
+  loadFanoutTrustAgyFolders,
   loadFanoutWorkerPermissionMode,
   setFanoutRequireApproval,
+  setFanoutTrustAgyFolders,
   setFanoutWorkerPermissionMode,
 } from '../fanoutWorkerPolicy';
 
@@ -37,5 +39,20 @@ describe('fan-out policy store', () => {
     expect(loadFanoutWorkerPermissionMode(dir)).toBe('acceptEdits');
     expect(await setFanoutRequireApproval('yes', dir)).toBe(true);
     expect(await setFanoutWorkerPermissionMode('manualish', dir)).toBe('acceptEdits');
+  });
+
+  it('agy folder trust is opt-in: off without a file, off when torn, only a literal true turns it on', async () => {
+    const dir = tmp();
+    expect(loadFanoutTrustAgyFolders(dir)).toBe(false);
+    expect(await setFanoutTrustAgyFolders('true', dir)).toBe(false);
+    expect(await setFanoutTrustAgyFolders(true, dir)).toBe(true);
+    expect(loadFanoutTrustAgyFolders(dir)).toBe(true);
+    // The other settings survive the write, and the switch survives theirs.
+    await setFanoutRequireApproval(true, dir);
+    expect(loadFanoutTrustAgyFolders(dir)).toBe(true);
+    fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ trustAgyFolders: 'yes' }), 'utf8');
+    expect(loadFanoutTrustAgyFolders(dir)).toBe(false);
+    fs.writeFileSync(getFanoutWorkerPolicyPath(dir), '{ torn', 'utf8');
+    expect(loadFanoutTrustAgyFolders(dir)).toBe(false);
   });
 });

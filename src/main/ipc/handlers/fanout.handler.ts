@@ -26,8 +26,10 @@ import type { FanOutRequest, FanOutResult, FanOutService } from '../../worktask/
 import { getFanOutGuards, promptDigest } from '../../worktask/fanoutGuards';
 import {
   loadFanoutRequireApproval,
+  loadFanoutTrustAgyFolders,
   loadFanoutWorkerPermissionMode,
   setFanoutRequireApproval,
+  setFanoutTrustAgyFolders,
   setFanoutWorkerPermissionMode,
 } from '../../worktask/fanoutWorkerPolicy';
 import { loadFanoutPresetsReport, saveFanoutPresets } from '../../worktask/fanoutPresets';
@@ -82,6 +84,19 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ),
   );
 
+  ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET);
+  ipcMain.handle(
+    IPC.FANOUT_TRUST_AGY_FOLDERS_GET,
+    wrapHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET, async () => loadFanoutTrustAgyFolders()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET);
+  ipcMain.handle(
+    IPC.FANOUT_TRUST_AGY_FOLDERS_SET,
+    wrapHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutTrustAgyFolders(value),
+    ),
+  );
+
   // Fan-out presets (Settings → Agents). Main owns them — see fanoutPresets.ts.
   ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);
   ipcMain.handle(
@@ -114,6 +129,8 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_GET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET);
+    ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET);
+    ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET);
     ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);
     ipcMain.removeHandler(IPC.FANOUT_PRESETS_SET);
   };

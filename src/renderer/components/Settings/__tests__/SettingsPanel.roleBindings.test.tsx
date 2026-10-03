@@ -77,7 +77,9 @@ describe('RoleBindingsView render', () => {
     // 4 roles × agent select, and 4 roles × (model input + args input).
     expect(html.split('class="ui-select').length - 1).toBe(4);
     expect(html.split('class="ui-input').length - 1).toBe(8);
-    expect(html).not.toContain('outline-none');
+    // A bare `outline-none` strips the ring; the shared Button's own
+    // `focus-visible:outline-none` swaps it for a ring-2 and is fine.
+    expect(html).not.toMatch(/(^|[\s"])outline-none/);
     expect(html).not.toMatch(/style="[^"]*(box-shadow|border)[^"]*"/);
 
     const read = (...p: string[]) => readFileSync(join(__dirname, ...p), 'utf8').replace(/\r\n/g, '\n');
@@ -112,12 +114,8 @@ describe('RoleBindingsView render', () => {
     expect(html).not.toContain('<datalist');
   });
 
-  // agy is a known launcher, but fan-out cannot start it with a positional
-  // prompt, so the role list must not offer it.
-  it('does not offer agy as a role-binding agent', () => {
-    const html = render();
-    expect(html).toContain('<option value="gemini">');
-    expect(html).not.toContain('<option value="agy">');
+  it('offers agy as a role-binding agent', () => {
+    expect(render()).toContain('<option value="agy">');
   });
 
   it('offers the agent\'s own launch options once an agent is bound', () => {
@@ -223,6 +221,80 @@ describe('RoleBindingsView render', () => {
     });
   });
 });
+
+describe('agy reads ignored files (owner decision C)', () => {
+  const html = (agent: string) =>
+    renderToStaticMarkup(createElement(RoleBindingsView, { bindings: { Builder: { agent } }, onChange: () => undefined, t: translate }));
+
+  it('warns on a row bound to agy, and only there', () => {
+    expect(html('agy')).toContain('data-role-binding-agy-warning="Builder"');
+    expect(html('agy')).toContain('.geminiignore');
+    expect(html('claude')).not.toContain('data-role-binding-agy-warning');
+  });
+});
+
+describe('role preset button (owner decision B)', () => {
+  type Btn = ReactElement<{ onClick: () => void; children?: unknown; title?: string; 'data-role-preset-bypass'?: string }>;
+  const presetButton = (bindings: RoleBindingsViewProps['bindings'], role: string, extra: Partial<RoleBindingsViewProps> = {}) => {
+    const onChange = vi.fn();
+    const tree = RoleBindingsView({ bindings, onChange, t: translate, ...extra });
+    const row = findByProp(tree, 'data-role-binding-preset', role);
+    const button = row ? (findByProp(row.props.children, 'onClick') as Btn | undefined) : undefined;
+    return { onChange, button };
+  };
+
+  it('names the bypass in the label and the tooltip', () => {
+    const html = renderToStaticMarkup(
+      createElement(RoleBindingsView, { bindings: { Builder: { agent: 'claude' } }, onChange: () => undefined, t: translate }),
+    );
+    expect(html).toContain('Apply Builder preset (skips permission prompts)');
+    expect(html).toContain('turns on skip permissions');
+  });
+
+  it('asks first, and applies nothing when the operator declines', () => {
+    const confirm = vi.fn(() => false);
+    const { onChange, button } = presetButton({ Builder: { agent: 'claude', model: 'claude-opus-5-5' } }, 'Builder', { confirm });
+    expect(button).toBeDefined();
+    button?.props.onClick();
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('skip permissions'));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('applies the preset after a yes, keeping the chosen model', () => {
+    const confirm = vi.fn(() => true);
+    const { onChange, button } = presetButton({ Builder: { agent: 'claude', model: 'claude-opus-5-5' } }, 'Builder', { confirm });
+    button?.props.onClick();
+    expect(onChange).toHaveBeenCalledWith('Builder', expect.objectContaining({
+      agent: 'claude', model: 'claude-opus-5-5', effort: 'high', skipPermissions: true,
+    }));
+  });
+
+  it('does not ask, nor claim a bypass, for an agent without a verified skip flag', () => {
+    const confirm = vi.fn(() => false);
+    const { onChange, button } = presetButton({ Tester: { agent: 'gemini' } }, 'Tester', { confirm });
+    expect(button?.props['data-role-preset-bypass']).toBeUndefined();
+    button?.props.onClick();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(onChange).toHaveBeenCalled();
+  });
+});
+
+/** Depth-first search for an element carrying `prop` (optionally equal to `value`). */
+function findByProp(node: unknown, prop: string, value?: unknown): ReactElement<Record<string, unknown> & { children?: unknown }> | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findByProp(child, prop, value);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!isValidElement(node)) return undefined;
+  const props = node.props as Record<string, unknown> & { children?: unknown };
+  if (prop in props && (value === undefined || props[prop] === value)) {
+    return node as ReactElement<Record<string, unknown> & { children?: unknown }>;
+  }
+  return findByProp(props.children, prop, value);
+}
 
 type Handled = ReactElement<{
   'aria-label'?: string;

@@ -25,6 +25,7 @@
  * in-flight 중복=거부.
  */
 
+import { allowAgyTrustFor } from '../agents/agyTrust';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -56,7 +57,7 @@ import { workerTempEnv } from './fanoutTempDir';
 import { inheritTaskAutonomy } from './taskAutonomy';
 import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
 import { loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
-import { commandChoosesModel } from '../../shared/orchestratorRole';
+import { commandChoosesModel, promptFlagForLauncher } from '../../shared/orchestratorRole';
 import {
   MODEL_ENV_MARKER,
   WORKER_GATEWAY_ENV,
@@ -1173,6 +1174,11 @@ export class FanOutService {
     // starts with the default one (the renderer swaps it), so key on the choice.
     const paneEnv = { ...taskEnv, ...firstRunEnvForAgent(ctx.agentChoice?.agent ?? ctx.agentCmd) };
     let workspaceId: string;
+    // The renderer resolves the final launcher (a role binding may make it agy)
+    // and asks main to pre-trust this folder for agy; main agrees only while
+    // this spawn is in flight (main/agents/agyTrust). Siblings that are gone are
+    // pruned from agy's list on the same write.
+    const releaseAgyTrust = allowAgyTrustFor(cwd, path.dirname(cwd));
     try {
       const spawned = await this.renderer.spawnWorkspace({
         name: wsName,
@@ -1201,6 +1207,8 @@ export class FanOutService {
       handOverTempDir(`task:${taskId}`);
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, ...preserved };
+    } finally {
+      releaseAgyTrust();
     }
     base.workspaceId = workspaceId;
     handOverTempDir(workspaceId);
@@ -1560,6 +1568,11 @@ export function buildInitialCommand(
   platform: NodeJS.Platform = process.platform,
 ): string {
   if (promptPath === undefined) return agentCmd;
+  // A CLI that refuses a positional first prompt (agy) gets its prompt flag
+  // right before the argument, so a launcher typed in the Fan-out dialog runs
+  // the same `agy -i "<prompt>"` a role swap produces.
+  const promptFlag = promptFlagForLauncher(agentCmd);
+  if (promptFlag) agentCmd = `${agentCmd} ${promptFlag}`;
   if (platform === 'win32') {
     // PowerShell 단일따옴표 리터럴: 내부 `'`는 `''`로 이스케이프. -LiteralPath로
     // glob·경로 특수문자 해석까지 봉쇄.

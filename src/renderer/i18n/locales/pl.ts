@@ -1233,6 +1233,16 @@ export const pl = {
   'settings.roleBindingFreshContextTooltip':
     'Gdy ten panel dostaje NOWE zadanie (terminal_send orkiestratora z new_task albo nowe send_message od innego agenta), wmux najpierw wpisuje {command}, aby rozmowa z poprzedniego zadania nie przechodziła dalej. Nigdy przy kontynuacji ani odpowiedzi. Pomijane, gdy agent pracuje albo panel ma jeszcze inne otwarte zadania agentów.',
   'settings.roleBindingRefreshModels': 'Odśwież modele',
+  'settings.rolePresetApply': 'Zastosuj preset {role}',
+  'settings.rolePresetApplied': 'Preset {role} zastosowany',
+  'settings.rolePresetApplyBypass':
+    'Zastosuj preset {role} (pomija pytania o uprawnienia)',
+  'settings.rolePresetTooltipNoSkip':
+    'Ustawia tę rolę na wysiłek {tier}, zachowując wybranego agenta, model i dodatkowe argumenty. Ten agent nie ma zweryfikowanej flagi pomijania uprawnień, więc pytania o uprawnienia pozostają włączone.',
+  'settings.rolePresetConfirmBypass':
+    'Zastosować preset {role}? Włącza pomijanie uprawnień: każde uruchomienie {role}, także zadania fan-out kierowane do {role}, będzie edytować pliki i uruchamiać polecenia bez pytania.',
+  'settings.rolePresetTooltip':
+    'Ustawia tę rolę na wysiłek {tier} ORAZ włącza pomijanie uprawnień: każde uruchomienie {role}, także zadania fan-out kierowane do {role}, działa bez pytań o uprawnienia. Zachowuje wybranego agenta, model i dodatkowe argumenty; uzupełnia tylko pustego agenta (agy) lub model. W agy wysiłek jest końcówką nazwy modelu, więc model Flash przechodzi na wariant {tier}, a każdy inny model zostaje bez zmian. Narzędzia, skille i MCP nie są per rola dla agy; pozostają wspólne dla wszystkich ról.',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Wymuszone uruchomienie: {binding}',
   'pane.enforcedLaunch': 'Uruchomienie wymuszone rolą: {binding}',
@@ -1361,6 +1371,8 @@ export const pl = {
   'settings.a2aAutoApproveExecuteDesc': 'Tryb YOLO: przychodzące żądania wykonania A2A mogą uruchamiać Claude z bypassPermissions bez pytania.',
   'settings.fanoutRequireApproval': 'Pytaj, zanim agent uruchomi fan-out',
   'settings.fanoutRequireApprovalDesc': 'Domyślnie wyłączone: fan-out uruchomiony przez agenta działa bez pytania — jeden poziom, najwyżej 8 aktywnych i 24 na godzinę, z zapisem w dzienniku. Włączone: każdy fan-out z potoku/MCP czeka na Twoją zgodę.',
+  'settings.fanoutTrustAgyFolders': 'Automatycznie ufaj folderom zadań fan-out agy',
+  'settings.fanoutTrustAgyFoldersDesc': 'Domyślnie wyłączone. Włączone: zanim zadanie fan-out agy wystartuje, wmux dopisuje jego folder do listy zaufanych agy (~/.gemini/antigravity-cli/settings.json), więc zadanie nie zatrzymuje się na ekranie zaufania agy. Wyłączone: wmux nic tam nie zapisuje, a agy pyta w każdym nowym folderze zadania.',
   'fanout.autoRunToast': 'Fan-out przyjęty bez zgody: zadania ({count}) w {repo}',
   'checkout.foreignAgentToast': '{agent} uruchomiono w kopii roboczej należącej do zadania fan-out „{task}”. Dwóch agentów w jednym drzewie roboczym nadpisuje sobie zmiany. Kliknij, aby otworzyć obszar roboczy zadania.',
   'checkout.continueHere': 'Kontynuuj tutaj',
@@ -2428,6 +2440,8 @@ export const pl = {
   'fanout.skipPermissionsUnsupported':
     'wmux zna tę flagę obejścia tylko dla `claude`. Wpisz własną flagę Twojego agenta w poleceniu powyżej — zostanie zapamiętana na następny raz.',
   'fanout.skipPermissionsWarning': 'Każde narzędzie działa bez pytania. Zadania działają w izolowanych worktree, ale agent nadal ma pełny dostęp do powłoki.',
+  'fanout.agyReadsIgnoredFiles':
+    'agy nie respektuje .gitignore, .geminiignore ani .agyignore i może odczytać dowolny plik po ścieżce bezwzględnej, w tym .env głównego checkoutu z worktree fan-out. Z włączonym pomijaniem uprawnień może czytać wszystko, do czego ma dostęp Twoje konto.',
   'fanout.skipPermissionsStale': '`{agent}` nie przyjmuje tej flagi specyficznej dla Claude, ale polecenie nadal ją niesie.',
   'fanout.skipPermissionsStrip': 'Usuń flagę',
   'fanout.commandPreviewLabel': 'polecenie uruchomienia (zapamiętane na następny raz)',
@@ -2438,6 +2452,7 @@ export const pl = {
   'fanout.errPromptTooLarge': 'fan-out: prompt przekracza {max} bajtów',
   'fanout.errRepoRequired': 'fan-out: wymagana ścieżka repo',
   'fanout.failed': 'fan-out nie powiódł się: {error}',
+  'fanout.agyTrustScreenNote': 'agy zatrzyma się na ekranie „Do you trust” w każdym nowym folderze zadania, dopóki nie odpowiesz w tym panelu. Aby to pominąć, włącz Ustawienia > Wykonawcy fan-out > Automatycznie ufaj folderom zadań fan-out agy.',
   'fanout.rejected': 'fan-out odrzucony: {error}',
   'fanout.summarySuccess': 'fan-out: {ok} udanych',
   'fanout.summaryFailed': '{fail} nieudanych',

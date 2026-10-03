@@ -29,6 +29,7 @@ import type { CustomThemeColors, NotificationCategory, Workspace, XtermThemeColo
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import type { ChromePreset } from '../../../shared/chromePresets';
+import { ROLE_PRESET_SPECS, applyRolePreset, hasRolePreset, rolePresetApplied, rolePresetSkipsPermissions } from '../../../shared/rolePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, applyRoleBinding, launcherSupportsModelFlag, type RoleBinding } from '../../../shared/orchestratorRole';
 import {
@@ -645,9 +646,9 @@ function disposeWorkspacePtys(ws: Workspace) {
 // but a row that cannot do what it looks like it does says so INLINE rather than
 // no-op'ing silently. Model entry is a datalist combobox, not a <select>: only
 // claude's aliases are known to us, and a codex model id (`gpt-5.5`) must be
-// typeable. agy is left out: a role binding feeds fan-out, which cannot launch
-// agy with a positional prompt (see NO_POSITIONAL_PROMPT_STEMS).
-const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini'] as const;
+// typeable. agy takes its fan-out prompt through `-i` (applyRoleAgent) and its
+// task folder is pre-trusted by main (main/agents/agyTrust).
+const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini', 'agy'] as const;
 
 // Model ids and CLI args are machine evidence, so the free-text fields are mono.
 const ROLE_BINDING_FIELD_CLASS = 'settings-input font-mono';
@@ -734,6 +735,8 @@ export interface RoleBindingsViewProps {
   catalog?: Record<string, ModelCatalogResult>;
   /** Re-run an agent's model discovery (the refresh button). */
   onRefreshModels?: (agent: string) => void;
+  /** Ask before a preset that turns on skip permissions (default window.confirm). */
+  confirm?: (message: string) => boolean;
 }
 
 /** Models to offer for an agent: the discovered list, or claude's static one. */
@@ -763,7 +766,7 @@ export function effortChoicesFor(b: RoleBinding, models: readonly CatalogModel[]
 
 /** Presentational half — the container below owns the store. Split so the view
  *  is renderable (and assertable) without a live store, matching NotificationsView. */
-export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshModels }: RoleBindingsViewProps) {
+export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshModels, confirm }: RoleBindingsViewProps) {
   const update = (role: string, patch: Partial<RoleBinding>) => {
     onChange(role, { ...(bindings[role] ?? {}), ...patch });
   };
@@ -875,6 +878,40 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                 )}
               </div>
             )}
+            {hasRolePreset(role) && (() => {
+              // Bypass is part of the preset: the label names it and a click
+              // asks first, so one click cannot silently turn every launch of
+              // this role (role-routed fan-out included) to skip permissions.
+              const skips = rolePresetSkipsPermissions(role, bindings[role]);
+              const applied = rolePresetApplied(role, bindings);
+              const tier = ROLE_PRESET_SPECS[role].tier;
+              return (
+                <div className="mt-1.5 pl-[84px]" data-role-binding-preset={role}>
+                  <UiButton
+                    variant="secondary"
+                    size="sm"
+                    disabled={applied}
+                    title={skips
+                      ? t('settings.rolePresetTooltip', { tier, role })
+                      : t('settings.rolePresetTooltipNoSkip', { tier })}
+                    data-role-preset-bypass={skips ? 'true' : undefined}
+                    onClick={() => {
+                      if (skips) {
+                        const ask = confirm ?? ((m: string) => window.confirm(m));
+                        if (!ask(t('settings.rolePresetConfirmBypass', { role }))) return;
+                      }
+                      onChange(role, applyRolePreset(role, bindings[role]));
+                    }}
+                  >
+                    {applied
+                      ? t('settings.rolePresetApplied', { role })
+                      : skips
+                        ? t('settings.rolePresetApplyBypass', { role })
+                        : t('settings.rolePresetApply', { role })}
+                  </UiButton>
+                </div>
+              );
+            })()}
             {preview && (
               <p
                 className="ui-code m-0 mt-1 pl-[84px] text-[11px] text-[var(--text-sub)]"
@@ -889,6 +926,15 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                 data-role-binding-hint={role}
               >
                 {t(hint.key, hint.params)}
+              </p>
+            )}
+            {/* Owner decision C: wmux cannot mitigate it, so say it where agy is picked. */}
+            {b.agent === 'agy' && (
+              <p
+                className="ui-field-description m-0 mt-1 pl-[84px] text-[var(--accent-red)]"
+                data-role-binding-agy-warning={role}
+              >
+                {t('fanout.agyReadsIgnoredFiles')}
               </p>
             )}
           </div>
@@ -2502,6 +2548,8 @@ function FanoutWorkersSection() {
   // Main-side too: main makes the approval decision, so the switch it reads
   // is the one this row writes.
   const [requireApproval, setRequireApprovalState] = useState(false);
+  // Main-side as well: main refuses the agy trust write while this is off.
+  const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   const [mode, setMode] = useState<FanoutWorkerPermissionMode>(DEFAULT_FANOUT_WORKER_PERMISSION_MODE);
   // Shown as its own line under the row, not in the (one-line) description,
   // so a failure's text is never cut off behind Learn more.
@@ -2518,6 +2566,11 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getRequireApproval?.()
       .then((v) => {
         if (!cancelled && typeof v === 'boolean') setRequireApprovalState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getTrustAgyFolders?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'boolean') setTrustAgyFoldersState(v);
       })
       .catch(() => undefined);
     return () => {
@@ -2537,6 +2590,13 @@ function FanoutWorkersSection() {
     window.electronAPI.fanout
       .setRequireApproval(next)
       .then((stored) => setRequireApprovalState(stored))
+      .catch(() => undefined);
+  };
+
+  const onTrustAgyFoldersChange = (next: boolean) => {
+    window.electronAPI.fanout
+      .setTrustAgyFolders(next)
+      .then((stored) => setTrustAgyFoldersState(stored))
       .catch(() => undefined);
   };
 
@@ -2565,6 +2625,17 @@ function FanoutWorkersSection() {
           checked={requireApproval}
           onChange={onRequireApprovalChange}
           label={t('settings.fanoutRequireApproval')}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanoutagytrust"
+        label={t('settings.fanoutTrustAgyFolders')}
+        description={t('settings.fanoutTrustAgyFoldersDesc')}
+      >
+        <Toggle
+          checked={trustAgyFolders}
+          onChange={onTrustAgyFoldersChange}
+          label={t('settings.fanoutTrustAgyFolders')}
         />
       </SettingRow>
       <SettingRow

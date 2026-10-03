@@ -86,6 +86,7 @@ describe('slug 파생 (§3)', () => {
 
 describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
   it('경로가 getWmuxHomeDir() 하위 worktrees/{repoHash}/{slug}로 파생된다', async () => {
+    delete process.env.WMUX_DATA_SUFFIX;
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     const { TaskWorktreeManager } = await loadModule();
     const mgr = new TaskWorktreeManager({ runGit: healthyRepoGit(repoRoot) });

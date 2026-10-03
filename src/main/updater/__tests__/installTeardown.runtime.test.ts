@@ -589,7 +589,9 @@ describe.skipIf(!onWindows)('waiter transport (#1056 — the REAL spawnInstallWa
     expect(fs.existsSync(envStamp)).toBe(true);
     const [la, up, un] = fs.readFileSync(envStamp, 'utf-8').trim().split('|');
     expect(la).toBe(process.env.LOCALAPPDATA);
-    expect(up).toBe(process.env.USERPROFILE);
+    // The transport rebuilds the environment from the OS profile, so the waiter
+    // sees the real profile, not the temp HOME the isolate setup gave this worker.
+    expect(up).toBe(process.env.WMUX_TEST_REAL_HOME ?? process.env.USERPROFILE);
     expect(un).toBe(process.env.USERNAME);
 
     // Success path: the interrupted sentinel must be GONE once the waiter's

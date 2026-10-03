@@ -46,6 +46,19 @@ CI (`.github/workflows/ci.yml`) runs the two halves as parallel jobs:
 bundle). A PR needs both green; a branch-protection rule that requires status
 checks must list both.
 
+### Running tests as an agent
+
+Coding agents pay for every line of test output they read. While working,
+run only the files you touched and keep the output short:
+
+```
+npm run test:agent -- src/shared/__tests__/foo.test.ts   # dots + summary
+npm run test:changed                                      # files changed vs git HEAD
+npm run typecheck:quiet                                   # errors + one line
+```
+
+Run the full `npm test` and `npm run typecheck` once before opening the PR.
+
 ### Commit Style
 
 ```

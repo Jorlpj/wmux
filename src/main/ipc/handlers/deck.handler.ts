@@ -111,7 +111,6 @@ import {
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
-  hasPendingDeckWorkA2aTasks,
   isDeckWorkParked,
   loadActiveDeckWork,
   loadActiveDeckWorks,
@@ -120,11 +119,11 @@ import {
   recordDeckWorkA2aTask,
   renderActiveDeckWorkBlock,
   renderActiveDeckWorkReminderLine,
-  renderStrandedDeckWorkBlock,
   setDeckWorkBootId,
   unparkDeckWork,
-  type ActiveDeckWork,
 } from '../../deck/deckWorkStore';
+import { surfaceStrandedWork } from '../../deck/deckWorkspaceTeardown';
+export { surfaceStrandedWork } from '../../deck/deckWorkspaceTeardown';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
 import {
   buildWorkspaceBriefing,
@@ -143,11 +142,14 @@ import {
 import { eventBus } from '../../events/EventBus';
 import {
   loadDeckSchedules,
-  saveDeckSchedules,
+  mutateDeckSchedules,
   createSchedule,
   DECK_SCHEDULE_LIMITS,
   type DeckSchedule,
 } from '../../deck/deckScheduleStore';
+import { sweepOrphanAtomicTemps } from '../../../daemon/util/atomicWrite';
+import { getWmuxDir } from '../../../daemon/config';
+import { isStartupDeckReconcileDone, tryStartupDeckReconcile } from '../../deck/deckOrphanReconcile';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -189,6 +191,8 @@ export interface RegisterDeckHandlerOptions {
   /** Live daemon client getter. Required for the `claude-pty` vendor, whose
    *  brain IS a daemon pty session; every other vendor ignores it. */
   getDaemonClient?: () => DaemonClientLike | null;
+  /** Data directory override for tests. */
+  dir?: string;
 }
 
 /** Fleet-context token budget (~2KB). A larger snapshot is truncated so the
@@ -287,6 +291,13 @@ export function registerDeckHandler(
   // Runs before anything can write a record, otherwise records stamped with the
   // store's own seed value would come back parked.
   setDeckWorkBootId(eventBus.bootId);
+
+  // WMX-06: sweep orphan atomic write temps before deck stores are first read
+  try {
+    sweepOrphanAtomicTemps(opts.dir ?? getWmuxDir());
+  } catch {
+    /* best-effort — startup sweep must never break registration */
+  }
 
   // One-way push: which daemon session holds a workspace's embedded brain TUI
   // (`claude-pty` only; null retires it). Declared before createAdapter so the
@@ -590,48 +601,9 @@ export function registerDeckHandler(
    *
    * Never throws and never blocks its caller — the supersede/clear already
    * happened on disk, and neither may fail because of this bookkeeping.
+   *
+   * Shared implementation imported from deckWorkspaceTeardown.
    */
-  const surfaceStrandedWork = (
-    workspaceId: string,
-    work: ActiveDeckWork,
-    reason: 'superseded' | 'cleared',
-  ): void => {
-    try {
-      if (!hasPendingDeckWorkA2aTasks(work)) {
-        // eslint-disable-next-line no-console
-        console.warn(`[deck] ${reason} work record ${work.id} (no delegated tasks outstanding)`);
-        return;
-      }
-      // The decision store is last-writer-wins, so a real question already
-      // waiting on this human must never be clobbered by our bookkeeping (same
-      // guard as the startup reconcile). The log keeps the drop diagnosable.
-      if (hasPendingDecision(workspaceId)) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[deck] ${reason} work record ${work.id} has outstanding A2A tasks; ` +
-          'a decision is already pending, not replacing it',
-        );
-        return;
-      }
-      const question = reason === 'superseded'
-        ? 'A newer request replaced an earlier one that still has delegated tasks running. ' +
-          'Cancel those tasks, or adopt them into the new request?'
-        : 'Starting a new session dropped a request that still has delegated tasks running. ' +
-          'Cancel those tasks, or leave them running?';
-      void raiseDecision(workspaceId, {
-        question,
-        options: reason === 'superseded'
-          ? ['Cancel the old tasks', 'Adopt them into the current request']
-          : ['Cancel the old tasks', 'Leave them running'],
-        context: renderStrandedDeckWorkBlock(work),
-      }).catch(() => {
-        /* best-effort — the log line above is the fallback record */
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[deck] failed to surface stranded work:', err);
-    }
-  };
 
   /** Persist request ownership without ever breaking a human turn. The store is
    *  synchronous so the DECK_SEND idle-check → send sequence does not yield. */
@@ -788,6 +760,7 @@ export function registerDeckHandler(
     // about to be constructed INTO — late-bound through this holder, exactly
     // like the coalescer's own forward reference above. It can only fire long
     // after the assignment below.
+    // eslint-disable-next-line prefer-const
     let managerRef: CommanderSessionManager | undefined;
     const manager = new CommanderSessionManager({
       adapter: createAdapter({
@@ -1039,7 +1012,7 @@ export function registerDeckHandler(
       const verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
       settleAmbient(workspaceId, verdict);
       if (verdict.ok && injectedDecision?.status === 'resolved') {
-        void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => {});
+        void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => { /* ignore */ });
       }
       return verdict;
     }),
@@ -1404,7 +1377,7 @@ export function registerDeckHandler(
             // instead of deleting the only evidence it existed.
             verdict.code !== 'errored'
           ) {
-            void clearResolvedDecision(workspaceId, after.id).catch(() => {});
+            void clearResolvedDecision(workspaceId, after.id).catch(() => { /* ignore */ });
           } else if (after?.status === 'resolved' && injected && after.id === injected.id) {
             // Two ways to land here, both needing a follow-up resume turn:
             //  - the HUMAN answered while this re-examine turn was running
@@ -1430,7 +1403,7 @@ export function registerDeckHandler(
           // acted on the resolution its prompt carried — keep the durable
           // record so the next natural wake / startup reconcile resumes it
           // again, instead of deleting the answer unacted-on.
-          void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+          void clearResolvedDecision(workspaceId, injected.id).catch(() => { /* ignore */ });
         }
       }
       return verdict;
@@ -1798,6 +1771,10 @@ export function registerDeckHandler(
   // manager OR a resting mode other than 'off'; the coalescer's own gates decide
   // whether a wake actually fires (the tick conditions only skip obvious no-ops).
   const heartbeatWorkspaceIds = (): string[] => {
+    // WMX-06: retry startup orphan reconcile on heartbeat tick if not already completed
+    if (!isStartupDeckReconcileDone()) {
+      void tryStartupDeckReconcile({ dir: opts.dir });
+    }
     const ids = new Set<string>(managers.keys());
     // Durable direct requests arm the heartbeat even when the workspace's
     // resting autonomy mode is off and no brain manager has been recreated yet.
@@ -1875,6 +1852,25 @@ export function registerDeckHandler(
   });
   heartbeat.start();
 
+  // WMX-06: startup reconcile of orphan Deck state once renderer workspace mirror is loaded.
+  // Retries a bounded number of times (max 5 retries at 2.5s intervals) and on heartbeat tick.
+  let orphanReconcileRetries = 0;
+  const MAX_ORPHAN_RECONCILE_RETRIES = 5;
+  const orphanReconcileTimer = setInterval(() => {
+    if (isStartupDeckReconcileDone() || ++orphanReconcileRetries > MAX_ORPHAN_RECONCILE_RETRIES) {
+      clearInterval(orphanReconcileTimer);
+      if (!isStartupDeckReconcileDone()) {
+        // eslint-disable-next-line no-console
+        console.log('[deck:reconcile] skipped startup reconcile: workspace mirror not ready after retries');
+      }
+      return;
+    }
+    void tryStartupDeckReconcile({ dir: opts.dir }).then((done) => {
+      if (done) clearInterval(orphanReconcileTimer);
+    });
+  }, 2500);
+  orphanReconcileTimer.unref?.();
+
   // Seed the binding operator-policy file once (never overwrites an existing
   // one). Fire-and-forget: a missing policy file just means no policy block, so
   // a failure here is harmless. Done at init so the file exists for the operator
@@ -1905,18 +1901,19 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
-      const schedules = loadDeckSchedules();
-      if (schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES) {
-        return { ok: false, code: 'limit' };
-      }
       const schedule = createSchedule({
         workspaceId,
         prompt: typeof req.prompt === 'string' ? req.prompt : '',
         nextRunAt: typeof req.nextRunAt === 'number' ? req.nextRunAt : NaN,
         ...(typeof req.intervalMinutes === 'number' ? { intervalMinutes: req.intervalMinutes } : {}),
       });
+      let atLimit = false;
+      await mutateDeckSchedules((schedules) => {
+        atLimit = schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES;
+        return atLimit || !schedule ? null : [...schedules, schedule];
+      });
+      if (atLimit) return { ok: false, code: 'limit' };
       if (!schedule) return { ok: false, code: 'invalid' };
-      await saveDeckSchedules([...schedules, schedule]);
       return { ok: true, schedule };
     }),
   );
@@ -1932,26 +1929,34 @@ export function registerDeckHandler(
         ? (raw as Record<string, unknown>)
         : {};
       const id = typeof req.id === 'string' ? req.id : '';
-      const schedules = loadDeckSchedules();
-      const idx = schedules.findIndex((s) => s.id === id);
-      if (idx === -1) return { ok: false, code: 'not_found' };
-      let next = schedules[idx];
-      // Re-scoping: a pre-M1.5 schedule (no workspaceId) may be assigned one —
-      // exactly once. Owned schedules never migrate between workspaces (delete
-      // and recreate instead: the prompt was written for that project).
-      const workspaceId = readWorkspaceId(req);
-      if (workspaceId && !next.workspaceId) next = { ...next, workspaceId };
-      // `enabled` is mutable (pause/resume). Re-enabling a fired one-shot
-      // re-arms it at its original time — immediately due. Enabling a schedule
-      // that still has no workspace is rejected: there is no orchestrator to
-      // run it on.
-      if (typeof req.enabled === 'boolean') {
-        if (req.enabled && !next.workspaceId) return { ok: false, code: 'no_workspace' };
-        next = { ...next, enabled: req.enabled };
-      }
-      schedules[idx] = next;
-      await saveDeckSchedules(schedules);
-      return { ok: true };
+      let code: string | undefined;
+      await mutateDeckSchedules((schedules) => {
+        const idx = schedules.findIndex((s) => s.id === id);
+        if (idx === -1) {
+          code = 'not_found';
+          return null;
+        }
+        let next = schedules[idx];
+        // Re-scoping: a pre-M1.5 schedule (no workspaceId) may be assigned one —
+        // exactly once. Owned schedules never migrate between workspaces (delete
+        // and recreate instead: the prompt was written for that project).
+        const workspaceId = readWorkspaceId(req);
+        if (workspaceId && !next.workspaceId) next = { ...next, workspaceId };
+        // `enabled` is mutable (pause/resume). Re-enabling a fired one-shot
+        // re-arms it at its original time — immediately due. Enabling a schedule
+        // that still has no workspace is rejected: there is no orchestrator to
+        // run it on.
+        if (typeof req.enabled === 'boolean') {
+          if (req.enabled && !next.workspaceId) {
+            code = 'no_workspace';
+            return null;
+          }
+          next = { ...next, enabled: req.enabled };
+        }
+        schedules[idx] = next;
+        return schedules;
+      });
+      return code ? { ok: false, code } : { ok: true };
     }),
   );
 
@@ -1966,8 +1971,7 @@ export function registerDeckHandler(
         ? (raw as Record<string, unknown>)
         : {};
       const id = typeof req.id === 'string' ? req.id : '';
-      const schedules = loadDeckSchedules();
-      await saveDeckSchedules(schedules.filter((s) => s.id !== id));
+      await mutateDeckSchedules((schedules) => schedules.filter((s) => s.id !== id));
       return { ok: true };
     }),
   );
@@ -2014,7 +2018,7 @@ export function registerDeckHandler(
   const tearDownAutomation = async (workspaceId: string): Promise<void> => {
     const loop = loadWorkspaceLoopState(workspaceId);
     if (loop?.scheduleId) {
-      await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== loop.scheduleId));
+      await mutateDeckSchedules((schedules) => schedules.filter((s) => s.id !== loop.scheduleId));
     }
     if (loop) await clearLoop(workspaceId);
     // A lingering pending/resolved decision must not survive a teardown into a
@@ -2027,11 +2031,12 @@ export function registerDeckHandler(
     enabled: boolean,
   ): Promise<void> => {
     if (!scheduleId) return;
-    const schedules = loadDeckSchedules();
-    const idx = schedules.findIndex((s) => s.id === scheduleId);
-    if (idx === -1) return;
-    schedules[idx] = { ...schedules[idx], enabled };
-    await saveDeckSchedules(schedules);
+    await mutateDeckSchedules((schedules) => {
+      const idx = schedules.findIndex((s) => s.id === scheduleId);
+      if (idx === -1) return null;
+      schedules[idx] = { ...schedules[idx], enabled };
+      return schedules;
+    });
   };
 
   /** Cadence bounds: floor 5 min (no tight loops), ceiling 7 days. */
@@ -2135,15 +2140,11 @@ export function registerDeckHandler(
       // a fresh loop does not start blocked on a prior loop's question.
       const prior = loadWorkspaceLoopState(workspaceId);
       if (prior?.scheduleId) {
-        await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== prior.scheduleId));
+        await mutateDeckSchedules((schedules) => schedules.filter((s) => s.id !== prior.scheduleId));
       }
       await clearDecision(workspaceId);
       let scheduleId: string | undefined;
       if (intervalMinutes) {
-        const schedules = loadDeckSchedules();
-        if (schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES) {
-          return { ok: false, code: 'schedule_limit' };
-        }
         const schedule = createSchedule({
           workspaceId,
           prompt:
@@ -2152,10 +2153,13 @@ export function registerDeckHandler(
           nextRunAt: Date.now() + intervalMinutes * 60_000,
           intervalMinutes,
         });
-        if (schedule) {
-          await saveDeckSchedules([...schedules, schedule]);
-          scheduleId = schedule.id;
-        }
+        let atLimit = false;
+        await mutateDeckSchedules((schedules) => {
+          atLimit = schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES;
+          return atLimit || !schedule ? null : [...schedules, schedule];
+        });
+        if (atLimit) return { ok: false, code: 'schedule_limit' };
+        if (schedule) scheduleId = schedule.id;
       }
       const loop = await startLoop(workspaceId, {
         objective,
@@ -2188,7 +2192,7 @@ export function registerDeckHandler(
       if (!workspaceId) return { ok: false };
       const loop = loadWorkspaceLoopState(workspaceId);
       if (loop?.scheduleId) {
-        await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== loop.scheduleId));
+        await mutateDeckSchedules((schedules) => schedules.filter((s) => s.id !== loop.scheduleId));
       }
       await clearLoop(workspaceId);
       await clearDecision(workspaceId);
@@ -2480,7 +2484,7 @@ export function registerDeckHandler(
         // drop on a full gate — the answer would sit forever with autonomy off.
         // Provenance-aware prompt (round-3 P2): a brain self-resolution must not
         // replay as "the operator resolved".
-        void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => {});
+        void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => { /* ignore */ });
       }
       return { decision };
     }),
@@ -2690,7 +2694,7 @@ export function registerDeckHandler(
         // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
         // resumes as the brain's OWN answer, never as "the operator resolved".
         await runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(
-          () => {},
+          () => { /* ignore */ },
         );
       }
     }
@@ -2752,6 +2756,7 @@ export function registerDeckHandler(
     app.removeListener('before-quit', disposeAll);
     clearTimeout(reconcileTimer);
     clearInterval(ledgerReconcileTimer);
+    clearInterval(orphanReconcileTimer);
     offBus();
     coalescer?.dispose();
     disposeLedgerEmitter();

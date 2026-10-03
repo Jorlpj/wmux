@@ -181,6 +181,18 @@ describe('buildInitialCommand (§4 D4)', { timeout: SHELL_SPAWN_TIMEOUT_MS }, ()
     expect(buildInitialCommand('claude')).toBe('claude');
   });
 
+  it('puts agy\'s -i right before the prompt argument (agy refuses a positional prompt)', () => {
+    expect(buildInitialCommand('agy', '/m/p.md', 'linux')).toBe("agy -i \"$(cat '/m/p.md')\"");
+    expect(buildInitialCommand('agy --model gemini-3.8-flash-high', '/m/p.md', 'linux')).toBe(
+      "agy --model gemini-3.8-flash-high -i \"$(cat '/m/p.md')\"",
+    );
+    expect(buildInitialCommand('agy', 'C:\\m\\p.md', 'win32').startsWith('agy -i "$(Get-Content -Raw')).toBe(true);
+    // Already flagged, promptless, or another CLI: unchanged.
+    expect(buildInitialCommand('agy --print', '/m/p.md', 'linux')).toBe("agy --print \"$(cat '/m/p.md')\"");
+    expect(buildInitialCommand('agy', undefined, 'linux')).toBe('agy');
+    expect(buildInitialCommand('codex', '/m/p.md', 'linux')).toBe("codex \"$(cat '/m/p.md')\"");
+  });
+
   it('POSIX 경로 치환 명령을 만든다(경로 단일따옴표 쿼팅)', () => {
     // process.platform이 win32가 아닌 CI/로컬 기준.
     if (process.platform !== 'win32') {

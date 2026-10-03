@@ -545,6 +545,9 @@ const electronAPI = {
     getRequireApproval: () => ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_GET) as Promise<boolean>,
     setRequireApproval: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_SET, value) as Promise<boolean>,
+    getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
+    setTrustAgyFolders: (value: boolean) =>
+      ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,
     getWorkerPermissionMode: () =>
       ipcRenderer.invoke(IPC.FANOUT_WORKER_MODE_GET) as Promise<
         import('../shared/workerLaunch').FanoutWorkerPermissionMode
@@ -688,6 +691,11 @@ const electronAPI = {
     list: (agent: string, refresh = false) =>
       ipcRenderer.invoke(IPC.AGENT_MODELS_LIST, { agent, refresh }) as Promise<
         import('../shared/modelCatalog').ModelCatalogResult
+      >,
+    /** Fan-out only: trust the task folder agy is about to launch in. */
+    trustAgyFolder: (folder: string) =>
+      ipcRenderer.invoke(IPC.AGY_TRUST_FOLDER, folder) as Promise<
+        import('../main/agents/agyTrust').AgyTrustResult
       >,
   },
   deck: {

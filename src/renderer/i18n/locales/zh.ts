@@ -771,6 +771,7 @@ export const zh = {
   'fanout.errPromptTooLarge': 'fan-out：提示超过 {max} 字节',
   'fanout.errRepoRequired': 'fan-out：需要 repo 路径',
   'fanout.failed': 'fan-out 失败：{error}',
+  'fanout.agyTrustScreenNote': 'agy 会在每个新任务文件夹的 “Do you trust” 界面停下，需要你在该窗格中回答。如需跳过，请开启 设置 > Fan-out 工作者 > 自动信任 agy fan-out 任务文件夹。',
   'fanout.rejected': 'fan-out 被拒绝：{error}',
   'fanout.summarySuccess': 'fan-out：成功 {ok} 个',
   'fanout.summaryFailed': '失败 {fail} 个',
@@ -1314,6 +1315,16 @@ export const zh = {
   'settings.roleBindingFreshContextTooltip':
     '当此面板收到一个新任务（编排器带 new_task 的 terminal_send，或另一个智能体新的 send_message）时，wmux 会先输入 {command}，使上一个任务的对话不会延续。后续指示或回复不会触发。智能体忙碌时，或面板仍有其他未结束的智能体任务时跳过。',
   'settings.roleBindingRefreshModels': '刷新模型',
+  'settings.rolePresetApply': '应用 {role} 预设',
+  'settings.rolePresetApplied': '已应用 {role} 预设',
+  'settings.rolePresetApplyBypass':
+    '应用 {role} 预设（跳过权限提示）',
+  'settings.rolePresetTooltipNoSkip':
+    '将此角色设为 {tier} 推理强度，保留你选择的智能体、模型和额外参数。此智能体没有经过验证的跳过权限参数，因此权限提示保持开启。',
+  'settings.rolePresetConfirmBypass':
+    '要应用 {role} 预设吗？它会开启跳过权限：每次以 {role} 启动（包括分派给 {role} 的 fan-out 任务）都会在不先询问你的情况下编辑文件和运行命令。',
+  'settings.rolePresetTooltip':
+    '将此角色设为 {tier} 推理强度，并开启跳过权限：每次以 {role} 启动（包括分派给 {role} 的 fan-out 任务）都不会出现权限提示。保留你选择的智能体、模型和额外参数；仅在为空时填入智能体（agy）或模型。agy 的推理强度是模型名后缀，因此 Flash 模型会改为其 {tier} 变体，其他模型保持不变。agy 的工具、技能和 MCP 设置无法按角色区分，仍由所有角色共享。',
   'deck.fleet.enforcedLaunch': '强制启动：{binding}',
   'pane.enforcedLaunch': '按角色强制启动：{binding}',
   'pane.enforcedSkipBadge': '绕过',
@@ -1402,6 +1413,8 @@ export const zh = {
   'settings.a2aAutoApproveExecuteDesc': 'YOLO 模式：传入的 A2A 执行请求可以不经提示以 bypassPermissions 启动 Claude。',
   'settings.fanoutRequireApproval': '代理 fan-out 前询问',
   'settings.fanoutRequireApprovalDesc': '默认关闭：代理发起的 fan-out 无需提示即运行——仅一层、最多 8 个同时运行且每小时 24 个，并记录日志。开启后，每个管道/MCP fan-out 都会等待你的批准。',
+  'settings.fanoutTrustAgyFolders': '自动信任 agy fan-out 任务文件夹',
+  'settings.fanoutTrustAgyFoldersDesc': '默认关闭。开启后，在 agy fan-out 任务启动前，wmux 会把该任务文件夹加入 agy 自己的信任列表（~/.gemini/antigravity-cli/settings.json），任务不会停在 agy 的信任界面。关闭时，wmux 不会写入该文件，agy 会在每个新任务文件夹中询问。',
   'fanout.autoRunToast': '未经批准接受 fan-out：{repo} 中 {count} 个任务',
   'checkout.foreignAgentToast': '{agent} 在 fan-out 任务“{task}”拥有的检出目录中启动。同一工作树中的两个代理会互相覆盖更改。点击打开该任务的工作区。',
   'checkout.continueHere': '在此继续',
@@ -1937,6 +1950,8 @@ export const zh = {
   'fanout.roleNone': '无角色',
   'fanout.skipPermissionsUnsupported': 'wmux 只知道 `claude` 的此绕过标志。请在上面的命令中键入你自己的智能体标志 — 下次会自动记住。',
   'fanout.skipPermissionsWarning': '每个工具都会在无询问的情况下运行。任务在隔离的工作树中运行，但智能体仍拥有完整的 shell 访问权限。',
+  'fanout.agyReadsIgnoredFiles':
+    'agy 不遵守 .gitignore、.geminiignore 或 .agyignore，并且可以通过绝对路径读取任何文件，包括从 fan-out worktree 读取主检出中的 .env。开启跳过权限时，它可以读取你的账户能读取的一切。',
   'fanout.skipPermissionsStale': '`{agent}` 不接受这个仅限 Claude 的标志，但命令仍会携带它。',
   'fanout.skipPermissionsStrip': '移除标志',
   'fanout.commandPreviewLabel': '启动命令（下次会记住）',

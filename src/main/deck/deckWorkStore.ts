@@ -18,9 +18,11 @@
 // on its own. Only a new human turn re-arms it.
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
+import { quarantineFileSync } from '../../daemon/util/atomicWrite/quarantine';
 import type { TaskState } from '../../shared/types';
 
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
@@ -526,4 +528,60 @@ export function renderActiveDeckWorkReminderLine(work: ActiveDeckWork): string {
     `[active-work] id: ${work.id} — unchanged since your last turn (full contract earlier in this conversation). ` +
     'Still ACTIVE: you still own it, and only a successful deck_complete_work({summary, verification}) finishes it.'
   );
+}
+
+export function getDeckWorkArchivePath(dir: string = getWmuxDir()): string {
+  return path.join(dir, 'deck-work.archive.json');
+}
+
+export function loadArchivedDeckWorks(dir?: string): ActiveDeckWork[] {
+  try {
+    const raw = atomicReadJSONSync<unknown>(getDeckWorkArchivePath(dir));
+    if (Array.isArray(raw)) return raw as ActiveDeckWork[];
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+/** Most recent archived work records kept; older ones are dropped first. */
+export const MAX_ARCHIVED_DECK_WORKS = 200;
+
+/**
+ * Append one work record to the archive.
+ *
+ * The archive is read through the atomic reader (primary, then backups). When
+ * the file exists but neither copy is a usable list, it is moved aside into
+ * the atomicWrite quarantine folder before a fresh list is started, so the
+ * old history stays on disk instead of being overwritten. If it cannot be
+ * moved aside this throws and writes nothing: callers must then keep the
+ * work record rather than delete it. The list is capped at
+ * MAX_ARCHIVED_DECK_WORKS, newest kept.
+ */
+export function archiveDeckWork(work: ActiveDeckWork, dir?: string): void {
+  const archivePath = getDeckWorkArchivePath(dir);
+  let list: ActiveDeckWork[];
+  // The array validator makes the reader fall back to a valid backup when the
+  // primary parses but is not a list, instead of resetting the history below.
+  const existing = atomicReadJSONSync<unknown[]>(archivePath, {
+    validate: (data): data is unknown[] => Array.isArray(data),
+  });
+  if (Array.isArray(existing)) {
+    list = existing as ActiveDeckWork[];
+  } else if (existing === null && !fs.existsSync(archivePath)) {
+    list = [];
+  } else {
+    const moved = quarantineFileSync(archivePath, 'deck work archive is not a readable list');
+    if (!moved) {
+      throw new Error(`deck work archive ${archivePath} is unreadable and could not be moved aside`);
+    }
+    // eslint-disable-next-line no-console
+    console.warn(`[deck] unreadable work archive moved aside to ${moved.quarantined_to}`);
+    list = [];
+  }
+  list.push(work);
+  if (list.length > MAX_ARCHIVED_DECK_WORKS) list = list.slice(list.length - MAX_ARCHIVED_DECK_WORKS);
+  atomicWriteJSONSync(archivePath, list, {
+    durable: true,
+  });
 }

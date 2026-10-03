@@ -1252,6 +1252,16 @@ export const en = {
   'settings.roleBindingFreshContextTooltip':
     'When this pane is handed a NEW task (the orchestrator’s terminal_send with new_task, or a new send_message from another agent), wmux first types {command} so the previous task’s conversation does not carry over. Never on a follow-up or a reply. Skipped while the agent is busy or the pane still has other open agent tasks.',
   'settings.roleBindingRefreshModels': 'Refresh models',
+  'settings.rolePresetApply': 'Apply {role} preset',
+  'settings.rolePresetApplied': '{role} preset applied',
+  'settings.rolePresetApplyBypass':
+    'Apply {role} preset (skips permission prompts)',
+  'settings.rolePresetTooltipNoSkip':
+    'Sets this role to {tier} effort, keeping the agent, model and extra args you chose. This agent has no verified skip-permissions flag, so its permission prompts stay on.',
+  'settings.rolePresetConfirmBypass':
+    'Apply the {role} preset? It turns on skip permissions: every {role} launch, including fan-out tasks routed to {role}, will edit files and run commands without asking you first.',
+  'settings.rolePresetTooltip':
+    'Sets this role to {tier} effort AND turns on skip permissions: every {role} launch, including fan-out tasks routed to {role}, runs without permission prompts. Keeps the agent, model and extra args you chose; only an empty agent (agy) or model is filled in. For agy the effort is the model suffix, so a Flash model moves to its {tier} variant and any other model is left as is. Tool, skill and MCP settings are not per role for agy; they stay shared by every role.',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
   'pane.enforcedLaunch': 'Role-enforced launch: {binding}',
@@ -1384,6 +1394,8 @@ export const en = {
   'settings.a2aAutoApproveExecuteDesc': 'YOLO mode: incoming A2A execute requests can spawn Claude with bypassPermissions without prompting.',
   'settings.fanoutRequireApproval': 'Ask before an agent fans out',
   'settings.fanoutRequireApprovalDesc': 'Off by default: a fan-out an agent starts runs without a prompt — one level deep, at most 8 live and 24 per hour, and logged. On: every pipe/MCP fan-out waits for your approval.',
+  'settings.fanoutTrustAgyFolders': 'Trust agy fan-out task folders automatically',
+  'settings.fanoutTrustAgyFoldersDesc': 'Off by default. On: before an agy fan-out task starts, wmux adds its task folder to agy\'s own trusted list (~/.gemini/antigravity-cli/settings.json), so the task does not stop on agy\'s trust screen. Off: wmux writes nothing there, and agy asks in every new task folder.',
   'fanout.autoRunToast': 'Fan-out accepted without approval: {count} tasks in {repo}',
   'checkout.foreignAgentToast': '{agent} started in a checkout that fan-out task “{task}” owns. Two agents in one working tree overwrite each other\'s changes. Click to open the task\'s workspace.',
   'checkout.continueHere': 'Continue here',
@@ -2465,6 +2477,8 @@ export const en = {
   'fanout.skipPermissionsUnsupported':
     'wmux only knows this bypass flag for `claude`. Type your agent\'s own flag into the command above — it is remembered for next time.',
   'fanout.skipPermissionsWarning': 'Every tool runs without asking. Tasks run in isolated worktrees, but the agent still has full shell access.',
+  'fanout.agyReadsIgnoredFiles':
+    'agy does not honour .gitignore, .geminiignore or .agyignore, and it can read any file by absolute path, including the main checkout\'s .env from a fan-out worktree. With skip permissions on, it can read anything your account can.',
   'fanout.skipPermissionsStale': '`{agent}` does not take this Claude-only flag, but the command still carries it.',
   'fanout.skipPermissionsStrip': 'Remove flag',
   'fanout.commandPreviewLabel': 'launch command (remembered for next time)',
@@ -2475,6 +2489,7 @@ export const en = {
   'fanout.errPromptTooLarge': 'fan-out: prompt exceeds {max} bytes',
   'fanout.errRepoRequired': 'fan-out: repo path required',
   'fanout.failed': 'fan-out failed: {error}',
+  'fanout.agyTrustScreenNote': 'agy will stop on its "Do you trust" screen in each new task folder until you answer it in that pane. To skip it, turn on Settings > Fan-out workers > Trust agy fan-out task folders automatically.',
   'fanout.rejected': 'fan-out rejected: {error}',
   'fanout.summarySuccess': 'fan-out: {ok} succeeded',
   'fanout.summaryFailed': '{fail} failed',

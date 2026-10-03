@@ -94,4 +94,13 @@ export interface WorkspaceMirrorPushPayload {
    * main read boundary (the store is hand-editable via session.json).
    */
   roleBindings?: Record<string, unknown>;
+  /**
+   * True once this renderer has installed a SAVED session's workspaces (the
+   * ids came from session.json). False after a failed or empty session load,
+   * where the tree is a freshly generated default workspace whose id matches
+   * nothing on disk. Destructive reconcilers keyed on workspace ids (the
+   * startup Deck orphan pass) must require it. An old renderer omits it,
+   * which counts as false.
+   */
+  sessionRestored?: boolean;
 }

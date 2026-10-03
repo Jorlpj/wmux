@@ -16,7 +16,7 @@ import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { applyTaskQueryView } from '../../shared/a2aTaskQueryView';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
-import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
+import { applyRoleAgent, bindingEnforcesModel, launchRefusesPositionalPrompt, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import {
   FANOUT_EXTRA_AGENT_STEMS,
   applyFanoutAgentFlags,
@@ -432,6 +432,16 @@ type RpcResult = unknown;
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
+
+/** One notice per burst: a fan-out of N agy tasks hits this N times. */
+const AGY_TRUST_NOTE_INTERVAL_MS = 60_000;
+let lastAgyTrustNoteAt = 0;
+
+function noteAgyTrustScreen(now: number = Date.now()): void {
+  if (now - lastAgyTrustNoteAt < AGY_TRUST_NOTE_INTERVAL_MS) return;
+  lastAgyTrustNoteAt = now;
+  useStore.getState().pushToast({ level: 'warn', message: t('fanout.agyTrustScreenNote'), durationMs: 15_000 });
+}
 
 export function useRpcBridge(): void {
   useEffect(() => {
@@ -1195,6 +1205,29 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // fail-soft — the task still launches, so the reason must be visible
       // somewhere rather than silently discarded.
       console.warn('[wmux:role-binding] fan-out agent not swapped', { role, note: swap.note });
+    }
+
+    // agy stops on its "Do you trust…" screen in any folder it has not been told
+    // to trust, and a fresh task worktree never is. Main lists THIS folder in
+    // agy's trustedWorkspaces (only while this spawn is in flight). Done here,
+    // before addWorkspace: nothing may await between that and pty.create. The
+    // launcher is final after the swap (later steps only add flags). A failure
+    // is not fatal — agy's own screen is then the fallback.
+    if (cwd && commandLauncherStem(swap.command) === 'agy' && launchRefusesPositionalPrompt(swap.command)) {
+      // Never trust a folder for a launch agy will reject anyway.
+      console.warn('[wmux:fanout] agy line has no prompt flag; folder not pre-trusted', { cwd });
+    } else if (cwd && commandLauncherStem(swap.command) === 'agy') {
+      try {
+        const trusted = await window.electronAPI.agentModels?.trustAgyFolder?.(cwd);
+        if (trusted && !trusted.ok) {
+          console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, reason: trusted.reason });
+          // Off by default (opt-in setting): say so where the operator looks,
+          // because the task now waits on agy's own trust screen.
+          if (trusted.disabled) noteAgyTrustScreen();
+        }
+      } catch (err) {
+        console.warn('[wmux:fanout] agy folder not pre-trusted', { cwd, err });
+      }
     }
 
     // Who asked: main resolved it ONCE when the fan-out was requested

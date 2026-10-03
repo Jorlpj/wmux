@@ -47,10 +47,20 @@ describe('validateFanoutAgentChoice', () => {
     expect((r as { error: string }).error).toMatch(/not verified end to end/);
   });
 
-  it('refuses agy with the trust-screen reason until a pre-trust mechanism exists', () => {
-    const r = validateFanoutAgentChoice({ agent: 'agy' });
-    expect(r).toMatchObject({ ok: false });
-    expect((r as { error: string }).error).toMatch(/trust screen/);
+  it('accepts agy, with a pinned model (trust is pre-listed by main, the prompt goes through -i)', () => {
+    expect(validateFanoutAgentChoice({ agent: 'agy' })).toMatchObject({ ok: true });
+    expect(validateFanoutAgentChoice({ agent: 'agy', model: 'gemini-3.8-flash-low' })).toMatchObject({ ok: true });
+  });
+
+  it('builds a runnable agy worker line: flags after the launcher, -i right before the prompt', () => {
+    const base = `claude "$(Get-Content -Raw -LiteralPath 'C:\\t\\prompt.md')"`;
+    const swapped = applyRoleAgent(base, { agent: 'agy' }, { extraAgents: new Set(['agy']) });
+    expect(swapped.changed).toBe(true);
+    const withModel = applyRoleBinding(swapped.command, { agent: 'agy', model: 'gemini-3.8-flash-low' }, {
+      extraAgents: new Set(['agy']),
+    }).command;
+    const final = applyFanoutAgentFlags(withModel, { agent: 'agy', unattended: true }, 'C:\\t', 'win32');
+    expect(final).toMatch(/^agy --dangerously-skip-permissions --model gemini-3\.8-flash-low -i "\$\(Get-Content/);
   });
 
   it('every selectable CLI that pins a model has a model grammar on the rewrite path', () => {
