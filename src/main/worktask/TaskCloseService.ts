@@ -61,15 +61,19 @@ export type CloseTaskResult =
 export interface TaskCloseServiceOptions {
   daemon: CloseDaemonPort;
   worktrees: TaskWorktreeManager;
+  /** Stops the panes running inside the worktree; called only after the unpushed and dirty checks pass. */
+  stopPanesIn?: (worktreePath: string) => Promise<void>;
 }
 
 export class TaskCloseService {
   private readonly daemon: CloseDaemonPort;
   private readonly worktrees: TaskWorktreeManager;
+  private readonly stopPanesIn?: (worktreePath: string) => Promise<void>;
 
   constructor(opts: TaskCloseServiceOptions) {
     this.daemon = opts.daemon;
     this.worktrees = opts.worktrees;
+    this.stopPanesIn = opts.stopPanesIn;
   }
 
   async closeTask(input: CloseTaskInput): Promise<CloseTaskResult> {
@@ -108,7 +112,12 @@ export class TaskCloseService {
     if (!input.repoRoot || !input.repoHash) {
       return { ok: false, taskId, reason: 'error', error: 'close: the task is missing repoRoot/repoHash (incomplete worktree record).' };
     }
-    const removed = await this.worktrees.removeWorktree(input.repoRoot, input.repoHash, input.worktreePath);
+    const removed = await this.worktrees.removeWorktree(
+      input.repoRoot,
+      input.repoHash,
+      input.worktreePath,
+      this.stopPanesIn,
+    );
     if (!removed.ok) {
       if (removed.preserved) {
         // dirty 보존 — close 보류(태스크 open 유지, §1 계약).
