@@ -67,18 +67,24 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
     }
   }, []);
 
+  // Latest request per provider. A slower, older answer (an "Update all" overtaken by a card's
+  // Refresh) must not replace a newer reading or clear the newer request's spinner.
+  const seqRef = useRef<Partial<Record<QuotaProviderId, number>>>({});
+  const isLatest = (p: QuotaProviderId, seq: number) => seqRef.current[p] === seq;
+
   const fetchQuota = useCallback(
-    async (providers: QuotaProviderId[]) => {
-      if (!window.electronAPI?.tokenUsage?.readQuota) return;
+    async (providers: QuotaProviderId[]): Promise<Partial<Record<QuotaProviderId, number>>> => {
+      const mine: Partial<Record<QuotaProviderId, number>> = {};
+      for (const p of providers) mine[p] = seqRef.current[p] = (seqRef.current[p] ?? 0) + 1;
+      if (!window.electronAPI?.tokenUsage?.readQuota) return mine;
       try {
         const res = await window.electronAPI.tokenUsage.readQuota({ providers });
         if (res && Array.isArray(res.readings)) {
           setReadings((prev) => {
             const next = { ...prev };
             for (const reading of res.readings) {
-              if (reading?.quota?.provider) {
-                next[reading.quota.provider] = reading;
-              }
+              const p = reading?.quota?.provider;
+              if (p && isLatest(p, mine[p] ?? -1)) next[p] = reading;
             }
             return next;
           });
@@ -88,10 +94,13 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
         const error = err instanceof Error ? err.message : String(err);
         setReadings((prev) => {
           const next = { ...prev };
-          for (const p of providers) next[p] = failedReading(p, tRef.current('settings.tokenUsage.readFailed', { error }));
+          for (const p of providers) {
+            if (isLatest(p, mine[p] ?? -1)) next[p] = failedReading(p, tRef.current('settings.tokenUsage.readFailed', { error }));
+          }
           return next;
         });
       }
+      return mine;
     },
     [],
   );
@@ -105,8 +114,10 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
       return next;
     });
 
+    let mine: Partial<Record<QuotaProviderId, number>> = {};
     try {
-      const tasks: Promise<unknown>[] = [fetchQuota(active)];
+      const quota = fetchQuota(active).then((m) => { mine = m; });
+      const tasks: Promise<unknown>[] = [quota];
       if (active.includes('agy')) {
         tasks.push(fetchAgySensorStatus());
       }
@@ -115,7 +126,7 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
       setLoadingAll(false);
       setLoading((prev) => {
         const next = { ...prev };
-        for (const p of active) next[p] = false;
+        for (const p of active) if (isLatest(p, mine[p] ?? -1)) next[p] = false;
         return next;
       });
     }
@@ -124,14 +135,15 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
   const handleRefresh = useCallback(
     async (provider: QuotaProviderId) => {
       setLoading((prev) => ({ ...prev, [provider]: true }));
+      let mine: Partial<Record<QuotaProviderId, number>> = {};
       try {
-        const tasks: Promise<unknown>[] = [fetchQuota([provider])];
+        const tasks: Promise<unknown>[] = [fetchQuota([provider]).then((m) => { mine = m; })];
         if (provider === 'agy') {
           tasks.push(fetchAgySensorStatus());
         }
         await Promise.all(tasks);
       } finally {
-        setLoading((prev) => ({ ...prev, [provider]: false }));
+        if (isLatest(provider, mine[provider] ?? -1)) setLoading((prev) => ({ ...prev, [provider]: false }));
       }
     },
     [fetchQuota, fetchAgySensorStatus],
@@ -146,6 +158,10 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
         setAgySensorStatus(res.status);
       }
       await Promise.all([fetchQuota(['agy']), fetchAgySensorStatus()]);
+    } catch (err) {
+      // A failed install is shown on the agy card instead of an unhandled rejection.
+      const error = err instanceof Error ? err.message : String(err);
+      setReadings((prev) => ({ ...prev, agy: failedReading('agy', tRef.current('settings.tokenUsage.readFailed', { error })) }));
     } finally {
       setInstallingAgy(false);
     }
