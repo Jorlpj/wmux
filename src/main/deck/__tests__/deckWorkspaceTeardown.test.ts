@@ -373,5 +373,7 @@ describe('deckWorkspaceTeardown — archive before clearing (workspace removal)'
     expect(ids).toHaveLength(MAX_ARCHIVED_DECK_WORKS);
     expect(ids[0]).toBe(`w-${extra}`);
     expect(ids[ids.length - 1]).toBe(`w-${MAX_ARCHIVED_DECK_WORKS + extra - 1}`);
-  });
+    // 200+ fsync'd atomic writes: ~0.3 s locally, but a loaded Windows CI
+    // runner has gone past vitest's 5 s default.
+  }, 30_000);
 });
