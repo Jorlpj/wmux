@@ -139,9 +139,10 @@ export function extractExistingCommand(statusLine: unknown): string {
  *    - If the command equals the command that would be written now: no-op without backup or rewrite.
  *    - If it differs (moved path, old format), rewrites it with a backup, preserving --chain-b64 if present.
  * 5. If statusLine exists and is foreign:
- *    Backs up settings.json to <settingsPath>.bak-wmux-<timestamp>, then rewrites statusLine to chain
+ *    Refuses (ok: false) when it has `enabled: false`: chaining would run a command the user turned off.
+ *    Otherwise backs up settings.json to <settingsPath>.bak-wmux-<timestamp>, then rewrites statusLine to chain
  *    via `--chain-b64 <base64url>`:
- *    `${node} ${sinkScriptPath} agy --chain-b64 <b64>`.
+ *    `${node} ${sinkScriptPath} agy --chain-b64 <b64>`, keeping the entry's other fields.
  * 6. If no statusLine key exists (or empty placeholder):
  *    Writes `"statusLine": { "type": "command", "command": "${node} ${sinkScriptPath} agy", "enabled": true, "stack_with_default": true }`.
  * 7. Preserves all other keys in settings.json; writes atomically via writeJsonAtomic.
@@ -234,12 +235,11 @@ export function installAgyQuotaSensor(
     const backupPath = `${settingsPath}.bak-wmux-${Date.now()}`;
     fs.copyFileSync(settingsPath, backupPath);
 
-    settings.statusLine = {
-      type: 'command',
-      command: targetCommand,
-      enabled: true,
-      stack_with_default: true,
-    };
+    const current = settings.statusLine;
+    settings.statusLine =
+      current && typeof current === 'object' && !Array.isArray(current)
+        ? { ...(current as Record<string, unknown>), type: 'command', command: targetCommand }
+        : { type: 'command', command: targetCommand, enabled: true, stack_with_default: true };
 
     writeJsonAtomic(settingsPath, settings);
 
@@ -253,19 +253,32 @@ export function installAgyQuotaSensor(
   }
 
   if (classification === 'foreign') {
+    const original = settings.statusLine;
+    const originalFields =
+      original && typeof original === 'object' && !Array.isArray(original)
+        ? (original as Record<string, unknown>)
+        : null;
+    // Chaining runs the user's command again; one they turned off must stay off.
+    if (originalFields?.enabled === false) {
+      return {
+        ok: false,
+        action: 'noop',
+        settingsPath,
+        error: 'Your agy statusLine is turned off, so wmux did not chain it. Turn it on or remove it, then install again.',
+      };
+    }
+
     const backupPath = `${settingsPath}.bak-wmux-${Date.now()}`;
     fs.copyFileSync(settingsPath, backupPath);
 
-    const existingCmd = extractExistingCommand(settings.statusLine);
+    const existingCmd = extractExistingCommand(original);
     const b64 = encodeChainedCommand(existingCmd);
     const chainedCommand = `${nodePath} ${sinkScriptPath} agy --chain-b64 ${b64}`;
 
-    settings.statusLine = {
-      type: 'command',
-      command: chainedCommand,
-      enabled: true,
-      stack_with_default: true,
-    };
+    // Keep every field the user set (padding, stack_with_default, ...); only the command changes.
+    settings.statusLine = originalFields
+      ? { ...originalFields, type: 'command', command: chainedCommand }
+      : { type: 'command', command: chainedCommand, enabled: true, stack_with_default: true };
 
     writeJsonAtomic(settingsPath, settings);
 
