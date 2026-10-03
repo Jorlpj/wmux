@@ -151,11 +151,16 @@ export function QuotaSection(props: QuotaSectionProps = {}): ReactElement {
     }
   }, [fetchQuota, fetchAgySensorStatus]);
 
+  // Read on open, and again only when the set of providers really changes. Keying on the array would
+  // re-read every quota whenever a bindings change rebuilds an equal array (refresh on open or click only).
+  const updateAllRef = useRef(handleUpdateAll);
+  updateAllRef.current = handleUpdateAll;
+  const activeKey = active.join(',');
   useEffect(() => {
-    if (active.length > 0) {
-      void handleUpdateAll();
+    if (activeKey) {
+      void updateAllRef.current();
     }
-  }, [active.length, handleUpdateAll]);
+  }, [activeKey]);
 
   const title = t('settings.tokenUsage.quotaTitle');
 
