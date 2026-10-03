@@ -48,7 +48,7 @@ beforeEach(() => {
 afterEach(() => errSpy.mockRestore());
 
 describe('--role surface', () => {
-  it.each(['Planner', 'Reviewer'] as const)('%s lists exactly its surface', async (role) => {
+  it.each(['Planner', 'Reviewer', 'Builder', 'Tester'] as const)('%s lists exactly its surface', async (role) => {
     const names = await listNames({ roleSurface: role });
     expect([...names].sort()).toEqual([...ROLE_TOOL_SURFACES[role]].sort());
   });
@@ -57,8 +57,10 @@ describe('--role surface', () => {
     expect(await listNames({ roleSurface: 'Reviewer' })).toHaveLength(5);
   });
 
-  it.each(['Builder', 'Tester'] as const)('%s lists no wmux tool', async (role) => {
-    expect(await listNames({ roleSurface: role })).toEqual([]);
+  it('a fan-out worker gets its ledger and mission-channel tools: Builder 5, Tester 7', async () => {
+    expect(await listNames({ roleSurface: 'Builder' })).toHaveLength(5);
+    expect(await listNames({ roleSurface: 'Tester' })).toHaveLength(7);
+    expect(await listNames({ roleSurface: 'Builder' })).toContain('ledger_update');
   });
 
   it('an unknown role falls back to core and says so on stderr', async () => {
