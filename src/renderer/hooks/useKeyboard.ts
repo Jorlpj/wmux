@@ -18,6 +18,7 @@ import { disposePanePtys } from '../utils/paneTeardown';
 import { mentionKeyClaim } from '../utils/agentMention';
 import { OPEN_MENTION_PICKER_EVENT } from '../utils/agentMentionInsert';
 import { isChatV2Covering } from '../components/ChatV2/coverage';
+import { showWorkspaces } from '../utils/showWorkspaces';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -61,6 +62,24 @@ const PREFIX_ERROR_DISPLAY_MS = 500;
  * above all. Tab would emit a literal `\t` into the newly focused pane, and
  * Arrow chords would arrive as escape sequences.
  */
+/**
+ * Built-ins that act on the active pane, its PTY or the pane layout. Another
+ * rail page covers the panes (inert, still mounted), so these run only on the
+ * Workspaces page: a split, a close or a pane-focus move behind Fleet or
+ * Settings would change a terminal the user cannot see. Workspace switches are
+ * not here — they bring the Workspaces page forward instead. One exception:
+ * the floating pane floats over every page, so while it is shown its toggle
+ * still runs (to hide it); opening it stays a Workspaces-page action.
+ */
+export const WORKSPACES_ONLY_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<ShortcutActionId>([
+  'splitHorizontal', 'splitVertical', 'newSurface', 'closeSurface', 'closePane', 'closeWorkspace',
+  'searchTerminal', 'viCopyMode', 'renameWorkspace', 'highlightPane', 'floatingPane',
+  'nextSurface', 'prevSurface', 'nextPane', 'prevPane',
+  'focusUp', 'focusDown', 'focusLeft', 'focusRight',
+  'focusUpAlt', 'focusDownAlt', 'focusLeftAlt', 'focusRightAlt',
+  'clearMultiview', 'openBrowser', 'addBookmark', 'zoomIn', 'zoomOut', 'zoomReset',
+]);
+
 const STOP_PROPAGATION_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<ShortcutActionId>([
   'nextPane', 'prevPane',
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
@@ -224,6 +243,7 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
       const nextIdx = (currentIdx + 1) % workspaces.length;
       store.getState().setActiveWorkspace(workspaces[nextIdx].id);
+      store.getState().setAppRoute('workspaces');
     },
     prevWorkspace: () => {
       const { workspaces, activeWorkspaceId } = store.getState();
@@ -231,6 +251,7 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
       const prevIdx = (currentIdx - 1 + workspaces.length) % workspaces.length;
       store.getState().setActiveWorkspace(workspaces[prevIdx].id);
+      store.getState().setAppRoute('workspaces');
     },
     hideWindow: () => { electronAPI.window.hide(); },
     toggleZoom: () => {
@@ -320,6 +341,8 @@ export function useKeyboard() {
       const { workspaces } = store.getState();
       if (idx >= 0 && idx < workspaces.length) {
         store.getState().setActiveWorkspace(workspaces[idx].id);
+        // Switching workspace means "show me that workspace", from any page.
+        store.getState().setAppRoute('workspaces');
       }
     };
     // Terminal font zoom writes through setTerminalFontSize, so xterm picks
@@ -376,7 +399,10 @@ export function useKeyboard() {
           });
         }
       },
-      newWorkspace: () => { store.getState().addWorkspace(); },
+      newWorkspace: () => {
+        store.getState().addWorkspace();
+        showWorkspaces(store.getState());
+      },
       // Close active surface. If it was the last surface in the pane, also
       // collapse the pane so split layouts can actually be torn down via the
       // keyboard. Mirrors the X-button cascade in Pane.tsx — the tab strip
@@ -458,6 +484,7 @@ export function useKeyboard() {
         if (unread.length > 0) {
           const latest = unread[0];
           state.setActiveWorkspace(latest.workspaceId);
+          state.setAppRoute('workspaces');
           state.markRead(latest.id);
         }
       },
@@ -570,6 +597,9 @@ export function useKeyboard() {
 
       // Read prefix mode from store (fresh, no stale closure)
       const prefixMode = store.getState().prefixMode;
+      // Another rail page covers the panes: nothing below may reach a PTY or
+      // change the layout (see WORKSPACES_ONLY_ACTIONS).
+      const onWorkspaces = store.getState().appRoute === 'workspaces';
 
       // Custom-keybinding dispatch: runs when no built-in owns the combo —
       // including one the user switched off or moved away, so a custom macro
@@ -579,7 +609,7 @@ export function useKeyboard() {
         // consistency; match against literalCtrl so user-defined combos behave
         // identically on Windows / Linux / macOS.
         const { customKeybindings } = store.getState();
-        if (customKeybindings.length === 0) return false;
+        if (customKeybindings.length === 0 || !onWorkspaces) return false;
         const pressed = formatKeyCombo(literalCtrl, shift, alt, key);
         const match = customKeybindings.find((kb) => kb.key === pressed);
         if (!match) return false;
@@ -615,7 +645,10 @@ export function useKeyboard() {
       };
 
       // ─── Prefix mode: intercept the next key ───────────────────────
-      if (prefixMode) {
+      // Every prefix action works on panes; a page switch already ends the
+      // mode (applyAppRoute), this covers a mode armed some other way.
+      if (prefixMode && !onWorkspaces) exitPrefixMode();
+      else if (prefixMode) {
         e.preventDefault();
         e.stopImmediatePropagation();
         clearPrefixTimeout();
@@ -705,7 +738,7 @@ export function useKeyboard() {
       // Ctrl+<prefixKey>: Enter prefix mode (configurable, default Ctrl+B)
       // Use e.code for Korean IME compatibility (see commit 60e39b0)
       // tmux convention → literal Ctrl on every OS (do NOT remap to ⌘ on macOS).
-      if (isPrefixTrigger(e, store.getState().prefixConfig.key)) {
+      if (onWorkspaces && isPrefixTrigger(e, store.getState().prefixConfig.key)) {
         e.preventDefault();
         shortcutPressGuard.noteActed(e);
         store.getState().setPrefixMode(true);
@@ -724,7 +757,9 @@ export function useKeyboard() {
       // focus — useTerminal asks the same resolver and lets xterm encode it
       // for the PTY (Ctrl+T reaches Codex, Alt+Up reaches a TUI). A custom
       // macro on the combo still fires. (#1152, #1455)
-      const action = resolveShortcut(e, currentShortcutBindings());
+      const resolved = resolveShortcut(e, currentShortcutBindings());
+      const action = resolved && (onWorkspaces || !WORKSPACES_ONLY_ACTIONS.has(resolved)
+        || (resolved === 'floatingPane' && store.getState().floatingPaneVisible)) ? resolved : undefined;
       const run = action ? builtinActions[action] : undefined;
       // The mention picker claims its key only while an agent pane (or Chat
       // view) has focus — whatever key it is bound to — and only when the key

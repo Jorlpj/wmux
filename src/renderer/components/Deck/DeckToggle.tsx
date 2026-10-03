@@ -6,7 +6,8 @@
 // terminals paid a whole column so four glyphs had somewhere to live.
 //
 // Opening the deck is one command, so it gets one button, and it moves to the
-// row that already exists for app-wide chrome — with an explicit panel label. That is scope-
+// row that already exists for app-wide chrome — an icon whose tooltip and name
+// say which panel ("Show tools panel"), beside Settings. That is scope-
 // correct: the deck's state (activeDeckTab / channelDockVisible) is app-global,
 // not per-workspace, so an app-wide row is its natural home. It also satisfies
 // the 2026-08-14 decision's REASON better than the rail did — the entry point
@@ -21,6 +22,7 @@ import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { Icon } from '../icons';
 import { sumUnread } from '../Channels/ChannelsPanel';
+import { showWorkspaces } from '../../utils/showWorkspaces';
 
 /**
  * Whether the collapsed deck holds anything worth opening it for.
@@ -37,7 +39,10 @@ export function deckHasSignal(unread: number, dirtyWorkspaces: number): boolean 
 
 export default function DeckToggle() {
   const t = useT();
-  const visible = useStore((s) => s.channelDockVisible);
+  // The dock lives on the Workspaces page; under another page it is not on
+  // screen, whatever its flag says.
+  const onWorkspaces = useStore((s) => s.appRoute === 'workspaces');
+  const visible = useStore((s) => s.channelDockVisible) && onWorkspaces;
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const channelUnread = useStore((s) => s.channelUnread);
@@ -64,7 +69,12 @@ export default function DeckToggle() {
   return (
     <button
       type="button"
-      onClick={() => setChannelDockVisible(!visible)}
+      onClick={() => {
+        // From another page: show the Workspaces page with the dock open, so
+        // it never opens (and resizes the terminals) behind an inert page.
+        showWorkspaces(useStore.getState());
+        setChannelDockVisible(!visible);
+      }}
       className={`wmux-panel-toggle ${FOCUS_RING}`}
       title={accessibleName}
       aria-label={accessibleName}
@@ -82,7 +92,6 @@ export default function DeckToggle() {
         </Icon>
         {signal && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-[var(--accent)]" data-deck-toggle-dot />}
       </span>
-      <span>{t('deck.panelLabel')}</span>
     </button>
   );
 }

@@ -28,6 +28,7 @@ beforeEach(() => {
       sidebarPosition: 'left',
       channelUnread: {},
       workspaces: [],
+      appRoute: 'workspaces',
     });
   });
 });
@@ -62,9 +63,12 @@ describe('DeckToggle', () => {
     expect(useStore.getState().channelDockVisible).toBe(false);
   });
 
-  it('names the panel and exposes its open state and controlled region', () => {
+  it('is an icon named for its panel, exposing its open state and controlled region', () => {
     mount();
-    expect(btn().textContent).toContain('Tools panel');
+    // Icon only: the panel's name lives in the tooltip and accessible name.
+    expect(btn().textContent?.trim()).toBe('');
+    expect(btn().getAttribute('title')).toBe('Show tools panel');
+    expect(btn().getAttribute('aria-label')).toBe('Show tools panel');
     expect(btn().getAttribute('aria-expanded')).toBe('false');
     expect(btn().hasAttribute('aria-controls')).toBe(false);
     act(() => { btn().click(); });
@@ -108,5 +112,15 @@ describe('DeckToggle', () => {
     });
     mount();
     expect(dot()).toBeNull();
+  });
+
+  it('from another page it reads closed and opens the dock on the Workspaces page', () => {
+    act(() => { useStore.setState({ channelDockVisible: true, appRoute: 'fleet' }); });
+    mount();
+    expect(btn().getAttribute('aria-expanded')).toBe('false');
+    act(() => { btn().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(useStore.getState().appRoute).toBe('workspaces');
+    expect(useStore.getState().channelDockVisible).toBe(true);
+    expect(btn().getAttribute('aria-expanded')).toBe('true');
   });
 });

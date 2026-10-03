@@ -191,14 +191,14 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     icon: app.isPackaged
       ? path.join(process.resourcesPath, iconFile)
       : path.join(__dirname, '../../assets', iconFile),
-    // Bridge redesign chrome (DESIGN.md "Window Chrome"). The default-frame +
+    // Bridge redesign chrome (DESIGN.md "Window: frame and sheet"). The default-frame +
     // visible File/Edit menu strip was the #1 "web page in an OS window"
-    // offender. The renderer draws a 36px custom titlebar (Titlebar.tsx);
+    // offender. The renderer draws a 40px custom titlebar (Titlebar.tsx);
     // the OS keeps drawing its own window controls:
     //   - Windows: titleBarOverlay → native, snap-layout-capable min/max/close
     //     drawn over the custom bar. Colors follow the theme via the
     //     window:setTitleBarOverlay IPC (registerHandlers.ts).
-    //   - macOS: 'hidden' keeps the traffic lights, nudged to center in 36px.
+    //   - macOS: 'hidden' keeps the traffic lights, nudged to center in 40px.
     //   - Linux: keep the native frame (titleBarStyle is ignored there; a
     //     frameless window would lose drag/resize with no replacement).
     // The menu bar is hidden, not removed — Alt still reveals it on demand and
@@ -208,23 +208,42 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     // Cmd+Shift+R, Cmd+W, and the zoom keys, and silently beat the renderer to
     // them on macOS.
     autoHideMenuBar: true,
+    // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
     ...platformChoice<Partial<Electron.BrowserWindowConstructorOptions>>({
       win: {
         titleBarStyle: 'hidden',
-        // bgBase (not mantle): the overlay strip sits on the titlebar's right
-        // half, which is bgBase — the renderer re-pushes the live theme's
-        // value on boot/theme-change via window:setTitleBarOverlay anyway.
-        titleBarOverlay: { color: '#151517', symbolColor: '#A5A29C', height: 36 },
+        // The overlay strip sits on the window frame, so it starts in the
+        // default (Tint) theme's frame colour, --frame-bg #121015 — the
+        // renderer re-pushes the live theme's painted frame colour on
+        // boot/theme-change via window:setTitleBarOverlay (overlayColors()).
+        // The first paint uses the same colour so the controls never sit on
+        // a different shade before the renderer paints.
+        // Height 40 = uiZoom's CHROME_H at zoom 1 (the scaled resync uses it).
+        titleBarOverlay: { color: '#121015', symbolColor: '#C2BDC9', height: 40 },
+        backgroundColor: '#121015',
       },
       mac: {
         titleBarStyle: 'hidden',
-        trafficLightPosition: { x: 12, y: 11 },
+        // Centered in the 40px bar: macTrafficLightPosition(1) in uiZoom.ts.
+        trafficLightPosition: { x: 12, y: 13 },
+        // Window glass. Adapted from MonoCode (hardbeat920/monocode@6bd432ca,
+        // src-tauri/src/macos.rs), MIT License, Copyright (c) 2026 Nick: a
+        // behind-window material under a transparent window. The page decides
+        // what shows through — under a dark theme the renderer sets
+        // `data-glass` and tints only the chrome (globals.css); the workspace
+        // frame and terminals stay opaque, and a light theme paints the whole
+        // page opaque. The material also covers the first frame, so there is
+        // no white flash before the renderer paints.
+        vibrancy: 'under-window',
+        visualEffectState: 'active',
+        backgroundColor: '#00000000',
       },
-      default: {},
+      default: {
+        // Matches the Tint (default) theme's bgBase so the first paint
+        // doesn't flash a foreign color behind the renderer.
+        backgroundColor: '#1A171D',
+      },
     }),
-    // Matches the amber (default) theme's bgBase so the first paint doesn't
-    // flash a foreign color behind the renderer (was catppuccin '#1e1e2e').
-    backgroundColor: '#151517',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
