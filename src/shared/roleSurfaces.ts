@@ -9,8 +9,10 @@
 // src/shared/__tests__/roleSurfaces.test.ts), so the server runs the core
 // profile and then drops every name outside the role's list.
 //
-// Builder / Tester are empty on purpose: those panes edit and test code and
-// never drive wmux, so the cheapest surface is no wmux tools at all.
+// Builder / Tester get only what a fan-out worker is told to do in
+// WORKER_DELIVERY_PREAMBLE (FanOutService.ts): record its ledger row, read and
+// acknowledge its mission channel, and post completion there. A Tester also
+// reads the output of the pane it checks. Nothing that types into other panes.
 
 import type { OrchRole, WmuxTools } from './orchestratorRole';
 
@@ -30,8 +32,22 @@ export const ROLE_TOOL_SURFACES: Readonly<Record<OrchRole, readonly string[]>> =
     'channel_join',
     'channel_post',
   ],
-  Builder: [],
-  Tester: [],
+  Builder: [
+    'ledger_update',
+    'channel_read',
+    'channel_unread',
+    'channel_ack',
+    'channel_post',
+  ],
+  Tester: [
+    'ledger_update',
+    'channel_read',
+    'channel_unread',
+    'channel_ack',
+    'channel_post',
+    'terminal_read',
+    'pane_list',
+  ],
 };
 
 /** Arguments for the `wmux` stdio server at a tool level. */

@@ -60,15 +60,11 @@ describe('CustomWmuxToolsGroup unit tests', () => {
       `${tools.length} of ${tools.length} enabled`,
     );
     expect(container.querySelector('[data-testid="token-custom-wmux-note"]')?.textContent).toContain(
-      'Applies to every pane of this CLI; roles are still narrowed per pane at launch. browser_* and company_* tools are not listed here.',
+      'Applies to every pane of this CLI.',
     );
 
-    expect(container.querySelector('[data-testid="wmux-preset-core"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="wmux-preset-planner"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="wmux-preset-reviewer"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="wmux-preset-none"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="wmux-preset-all-core"]')).toBeDefined();
-    expect(container.querySelector('[data-testid="wmux-preset-all-core"]')?.textContent).toBe('All core');
+    const presets = [...container.querySelectorAll('[data-testid^="wmux-preset-"]')].map((b) => b.textContent);
+    expect(presets).toEqual(['Planner', 'Reviewer', 'Builder', 'Tester', 'None', 'All']);
 
     expect(container.querySelector('[data-testid="wmux-tools-list"]')).toBeDefined();
     expect(container.querySelector('[data-testid="mcp-tool-terminal_read"]')).toBeDefined();
@@ -156,8 +152,8 @@ describe('CustomWmuxToolsGroup unit tests', () => {
       expect(update.next).toBe(false);
     }
 
-    // 4. All core preset
-    const allBtn = container.querySelector('[data-testid="wmux-preset-all-core"]') as HTMLButtonElement;
+    // 4. All preset
+    const allBtn = container.querySelector('[data-testid="wmux-preset-all"]') as HTMLButtonElement;
     await act(async () => {
       allBtn.click();
     });
@@ -167,17 +163,14 @@ describe('CustomWmuxToolsGroup unit tests', () => {
       expect(update.next).toBe(true);
     }
 
-    // 5. Core preset
-    const coreBtn = container.querySelector('[data-testid="wmux-preset-core"]') as HTMLButtonElement;
-    await act(async () => {
-      coreBtn.click();
-    });
-    expect(onBatchToggle).toHaveBeenCalledTimes(5);
-    const coreUpdates: Array<{ itemId: string; next: boolean }> = onBatchToggle.mock.calls[4][0];
-    const coreNames = new Set(CORE_TOOL_SURFACE);
-    for (const update of coreUpdates) {
-      const toolName = update.itemId.split(':').pop()!;
-      expect(update.next).toBe(coreNames.has(toolName));
+    // 5. Builder and Tester presets turn on exactly their role's tools.
+    for (const [i, role] of (['Builder', 'Tester'] as const).entries()) {
+      await act(async () => {
+        (container.querySelector(`[data-testid="wmux-preset-${role.toLowerCase()}"]`) as HTMLButtonElement).click();
+      });
+      const updates: Array<{ itemId: string; next: boolean }> = onBatchToggle.mock.calls[4 + i][0];
+      const names = new Set(ROLE_TOOL_SURFACES[role]);
+      for (const update of updates) expect(update.next).toBe(names.has(update.itemId.split(':').pop()!));
     }
   });
 
@@ -322,9 +315,9 @@ describe('CustomPanel integration with CustomWmuxToolsGroup', () => {
     const pluginRow = container.querySelector('[data-testid="plugin-my-plugin"]');
     expect(pluginRow?.getAttribute('data-staged')).toBe('true');
 
-    // Now click All core preset: wmux tools were originally all enabled, so All core restores them to original state.
+    // Now click the All preset: wmux tools were originally all enabled, so All restores them to original state.
     // Staged changes for wmux tools should be cleared; plugin remains staged.
-    const allBtn = container.querySelector('[data-testid="wmux-preset-all-core"]') as HTMLButtonElement;
+    const allBtn = container.querySelector('[data-testid="wmux-preset-all"]') as HTMLButtonElement;
     await act(async () => {
       allBtn.click();
     });

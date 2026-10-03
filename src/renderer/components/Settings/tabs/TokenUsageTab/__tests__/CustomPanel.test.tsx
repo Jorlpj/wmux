@@ -1688,7 +1688,7 @@ describe('CustomPanel UI', () => {
     // 1. Initially provider A (claude) is resolved and rendered
     expect(container.querySelector('[data-testid="mcp-server-my-server"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="toggle-mcp-server-my-server"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="wmux-preset-core"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="wmux-preset-planner"]')).not.toBeNull();
 
     // 2. Switch from Claude (A) to Codex (B)
     const codexTab = container.querySelector('button[role="radio"][aria-checked="false"]') as HTMLButtonElement;
@@ -1707,11 +1707,10 @@ describe('CustomPanel UI', () => {
     expect(container.querySelectorAll('button[role="switch"]').length).toBe(0);
     expect(container.querySelector('[data-testid="toggle-mcp-server-my-server"]')).toBeNull();
     // No preset buttons are present
-    expect(container.querySelector('[data-testid="wmux-preset-core"]')).toBeNull();
     expect(container.querySelector('[data-testid="wmux-preset-planner"]')).toBeNull();
     expect(container.querySelector('[data-testid="wmux-preset-reviewer"]')).toBeNull();
     expect(container.querySelector('[data-testid="wmux-preset-none"]')).toBeNull();
-    expect(container.querySelector('[data-testid="wmux-preset-all-core"]')).toBeNull();
+    expect(container.querySelector('[data-testid="wmux-preset-all"]')).toBeNull();
 
     // Verify action bar / staged changes cannot be created during loading
     expect(container.querySelector('[data-testid="token-custom-action-bar"]')).toBeNull();
