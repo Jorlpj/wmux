@@ -1,8 +1,8 @@
 /**
  * Phone Git v1: read-only projects and branches, worktree creation, CI checks
  * (docs/phone-client-contract.md, "Proposed: contract v-next", item 5).
- * Served: projects, branches and checks (src/daemon/web/phoneGitRead.ts).
- * CONTRACT ONLY: worktree creation is not served yet.
+ * Served: projects, branches and checks (src/daemon/web/phoneGitRead.ts) and
+ * worktree creation (src/daemon/web/phoneWorktree.ts).
  *
  * Every request names a session. The daemon derives the repository from that
  * session's trusted `spawnCwd`; the phone never sends a path, a ref or a
@@ -64,7 +64,7 @@ export const PHONE_WORKTREE_BRANCH_PREFIX = 'phone/';
 /** Directory prefix inside `${wmuxHome}/worktrees/<projectId>/`; the desktop scan lists these as `phone-worktree`. */
 export const PHONE_WORKTREE_DIR_PREFIX = 'phone-';
 /** Case-insensitive on input (iOS `UUID().uuidString` is uppercase); the parser lowercases it. */
-const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const PHONE_WORKTREE_REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface PhoneWorktreeCreateBody { slug: string; requestId: string }
 
@@ -73,7 +73,7 @@ export function parseWorktreeCreateBody(body: unknown):
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'invalid-git-request' };
   const o = body as Record<string, unknown>;
   if (Object.keys(o).some((k) => k !== 'slug' && k !== 'requestId')) return { ok: false, error: 'invalid-git-request' };
-  if (typeof o.requestId !== 'string' || !REQUEST_ID.test(o.requestId)) return { ok: false, error: 'invalid-git-request' };
+  if (typeof o.requestId !== 'string' || !PHONE_WORKTREE_REQUEST_ID.test(o.requestId)) return { ok: false, error: 'invalid-git-request' };
   if (typeof o.slug !== 'string' || !PHONE_WORKTREE_SLUG.test(o.slug)) return { ok: false, error: 'invalid-slug' };
   return { ok: true, value: { slug: o.slug, requestId: o.requestId.toLowerCase() } };
 }
@@ -91,7 +91,7 @@ export type PhoneWorktreeRequestError =
 export type PhoneWorktreeRefusal =
   | 'not-a-git-repo' | 'unborn-head' | 'branch-exists' | 'branch-namespace-blocked' | 'worktree-path-exists'
   | 'path-too-long' | 'submodules-unsupported' | 'git-filters-require-desktop' | 'git-operation-in-progress'
-  | 'git-operation-failed';
+  | 'git-operation-failed' | 'worktree-path-unsafe' | 'git-version-unsupported';
 
 /** `GET …/git/worktree/<requestId>`. `none`: no receipt for this caller and id. */
 export type PhoneWorktreeReceiptState = 'pending' | 'created' | 'refused' | 'unknown' | 'none';
@@ -116,7 +116,21 @@ export interface PhoneWorktreeReceipt {
   leaf?: string;
   /** `refused`: a PhoneWorktreeRefusal. `unknown`: `git-outcome-unknown`. */
   error?: PhoneWorktreeRefusal | 'git-outcome-unknown';
+  /**
+   * `unknown` only: nothing was changed, or a removal that was under way is
+   * still incomplete (the next repeat finishes it), and a repeat may get
+   * further. Some process still holds the interrupted checkout (on Windows
+   * usually the orphaned `git reset --hard` still writing it, which can
+   * outlive a daemon restart; also a shell in it, a program with a file open
+   * in it, or an ACL that forbids deleting it), or a recovery step did not
+   * run. Repeat the same POST after this many milliseconds, a bounded number
+   * of times (the contract says when to stop).
+   */
+  retryAfterMs?: number;
 }
+
+/** The `retryAfterMs` of an `unknown` receipt whose checkout is still being written. */
+export const PHONE_WORKTREE_RETRY_AFTER_MS = 5_000;
 
 /** Receipt lifetime, from creation. */
 export const PHONE_WORKTREE_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000;

@@ -39,6 +39,8 @@ export interface PhoneGitRepo {
   mainRoot: string;
   /** Absolute git common dir, as git reports it. */
   commonDir: string;
+  /** The worktree this session runs in, as git reports it. */
+  worktreeRoot: string;
   /** Canonical (native realpath) git common dir: what "same repository" compares. */
   commonReal: string;
   branch: string | null;
@@ -61,13 +63,39 @@ const failed = () => new SessionGitError(409, 'git-operation-failed');
 /** One canonical spelling for cache keys and path matching: the native realpath. */
 export const canonicalPath = async (p: string) => fs.realpath(p).catch(() => path.resolve(p));
 /**
+ * A path as a comparison key: resolved with the platform's separators, and
+ * case-folded on Windows, whose paths are case-insensitive (git prints its
+ * worktree paths with forward slashes there). Compare canonical paths.
+ */
+export function pathKey(p: string, platformPath: typeof path = path): string {
+  const resolved = platformPath.resolve(p);
+  return platformPath === path.win32 ? resolved.toLowerCase() : resolved;
+}
+/** `a` and `b` name the same path (see pathKey). */
+export const samePath = (a: string, b: string, platformPath: typeof path = path): boolean =>
+  pathKey(a, platformPath) === pathKey(b, platformPath);
+/** `inner` is `outer` or lies under it (see pathKey). */
+export function pathWithin(inner: string, outer: string, platformPath: typeof path = path): boolean {
+  const a = pathKey(inner, platformPath);
+  const b = pathKey(outer, platformPath);
+  return a === b || a.startsWith(b.endsWith(platformPath.sep) ? b : b + platformPath.sep);
+}
+/**
  * The desktop's `repoHash` realpath exactly: the JS `realpathSync`, raw path on
  * failure. The native realpath differs on Windows (it expands 8.3 short
  * names), and a different string is a different projectId and directory.
  */
 const repoHashRealpath = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
-interface WorktreeRow { path: string; branch: string | null }
+export interface WorktreeRow {
+  path: string;
+  branch: string | null;
+  locked?: true;
+  /** The lock reason as written (`''` when none); only on a locked row. */
+  lockReason?: string;
+  /** Git reports the worktree's directory as gone. */
+  prunable?: true;
+}
 
 /**
  * `git worktree list --porcelain`: records of `key value` fields, each record
@@ -80,6 +108,10 @@ export function parseWorktreeList(stdout: string, sep = '\0'): WorktreeRow[] {
     if (!field) { if (current) rows.push(current); current = null; continue; }
     if (field.startsWith('worktree ')) current = { path: field.slice('worktree '.length), branch: null };
     else if (current && field.startsWith('branch refs/heads/')) current.branch = field.slice('branch refs/heads/'.length);
+    else if (current && (field === 'locked' || field.startsWith('locked '))) {
+      current.locked = true;
+      current.lockReason = field.slice('locked '.length);
+    } else if (current && (field === 'prunable' || field.startsWith('prunable '))) current.prunable = true;
   }
   if (current) rows.push(current);
   return rows;
@@ -139,6 +171,7 @@ export async function resolvePhoneGitRepo(cwd: string, git: GitRunner): Promise<
     name: path.basename(mainRoot),
     mainRoot,
     commonDir,
+    worktreeRoot: top,
     commonReal: await canonicalPath(commonDir),
     branch: head.ok && head.stdout.trim() ? head.stdout.trim() : null,
     linkedWorktree: repoHashRealpath(top) !== mainRoot,
