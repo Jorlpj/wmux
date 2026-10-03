@@ -80,7 +80,11 @@ enabled = false
 shell_tool = true
 web_search = "disabled"
 
-[hooks.state."hooks.json:pre_tool_use:0:0"]
+[hooks.state.${JSON.stringify(`${path.join(codexDir, 'hooks.json')}:pre_tool_use:0:0`)}]
+enabled = false
+
+# Same event and handler index, but another file: must not switch off this file's hook.
+[hooks.state.${JSON.stringify(`${path.join(tempDir, 'elsewhere', 'hooks.json')}:stop:0:1`)}]
 enabled = false
 `;
       await fs.writeFile(path.join(codexDir, 'config.toml'), tomlContent, 'utf8');
@@ -163,6 +167,7 @@ enabled = false
 
       const hookStop = inventory.items.find((i) => i.name === 'hook-stop' && i.kind === 'hook');
       expect(hookStop?.hookCost).toBe('extra-turn');
+      expect(hookStop?.enabled).toBe(true);
 
       // wmux notify hook
       const notifyHook = inventory.items.find((i) => i.name === 'codex-notify' && i.kind === 'hook');
@@ -351,6 +356,23 @@ enabled = false
       expect(absSkill?.enabled).toBe(false);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('readCodexInventory context settings', () => {
+  it('lists them read-only, since the Codex writer has no edit for them', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-ctx-'));
+    try {
+      await fs.mkdir(path.join(home, '.codex'), { recursive: true });
+      await fs.writeFile(path.join(home, '.codex', 'config.toml'), 'model_verbosity = "low"\n', 'utf8');
+      const inventory = await readCodexInventory({ homeDir: home, run: async () => 'codex 0.159.2' });
+      const item = inventory.items.find((i) => i.kind === 'context-setting' && i.name === 'model_verbosity');
+      expect(item?.toggleable).toBe(false);
+      expect(item?.enabled).toBeNull();
+      expect(item?.readOnlyReason).toBeTruthy();
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
     }
   });
 });
