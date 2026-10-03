@@ -7,10 +7,10 @@ import type {
 import {
   applyConfigEdit,
   ConfigChangedError,
+  rollbackWrittenFiles,
   SurfacesStore,
   snapshotFile,
-  writeFileAtomic,
-  type FileSnapshot,
+  type WrittenFile as RestorableFile,
 } from '../safeWrite';
 import type { ResolvedChange, SurfaceWriter, WriterContext } from './types';
 import { buildClaudeJsonEdits, getClaudeJsonPath } from './claude/claudeJsonTarget';
@@ -67,11 +67,7 @@ export function createClaudeWriter(): SurfaceWriter {
       const store = new SurfacesStore(deps.surfacesStorePath);
       store.load();
 
-      interface WrittenFile {
-        path: string;
-        backupPath?: string;
-        preExisted: boolean;
-        postSnapshot: FileSnapshot;
+      interface WrittenFile extends RestorableFile {
         affectedItemIds: string[];
       }
       const writtenFiles: WrittenFile[] = [];
@@ -207,31 +203,8 @@ export function createClaudeWriter(): SurfaceWriter {
           }
         }
 
-        let rollbackFailed = false;
-
         // Roll back any files that were written in this apply call
-        for (const written of writtenFiles.slice().reverse()) {
-          try {
-            const currentSnap = snapshotFile(written.path);
-            if (!currentSnap.exists || currentSnap.sha256 !== written.postSnapshot.sha256) {
-              // File was modified or deleted concurrently; cannot safely restore
-              rollbackFailed = true;
-              continue;
-            }
-            if (written.preExisted) {
-              if (!written.backupPath || !fs.existsSync(written.backupPath)) {
-                rollbackFailed = true;
-                continue;
-              }
-              const backupContent = fs.readFileSync(written.backupPath, 'utf8');
-              writeFileAtomic(written.path, backupContent);
-            } else {
-              fs.unlinkSync(written.path);
-            }
-          } catch {
-            rollbackFailed = true;
-          }
-        }
+        const rollbackFailed = !rollbackWrittenFiles(writtenFiles);
 
         const isMissingStoreDef =
           err instanceof Error && err.message.includes('definition not found in store');

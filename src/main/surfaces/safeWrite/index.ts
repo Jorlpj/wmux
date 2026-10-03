@@ -35,6 +35,11 @@ export {
 } from './applyConfigEdit';
 
 export {
+  rollbackWrittenFiles,
+  type WrittenFile,
+} from './rollback';
+
+export {
   SurfacesStore,
   type RemovedHookEntry,
   type SurfacesStoreData,
