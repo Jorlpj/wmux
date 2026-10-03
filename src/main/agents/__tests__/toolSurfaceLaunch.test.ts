@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { applyWmuxToolsToCommand, isWmuxToolsHint, locateWmuxMcpEntry } from '../toolSurfaceLaunch';
 import { codexConfigPath, codexHasWmuxServer } from '../../../shared/mcpRegistration';
+import { tokenize } from '../../../shared/agentResume';
 
 // Config files go to the instance's (suffixed) data dir; the bundle lives in
 // the unsuffixed stable copy McpRegistrar keeps.
@@ -28,7 +29,7 @@ describe('wmux tool level on a role-bound launch line', () => {
   it('claude gets a config FILE (no JSON on the shell line) naming the surface', () => {
     const { out, written } = run('claude --model claude-sonnet-5-5', 'role', 'Planner');
     const file = path.join(mcpDir, 'surface-role-planner.json');
-    expect(out).toBe(`claude --mcp-config "${file}" --model claude-sonnet-5-5`);
+    expect(out).toBe(`claude --mcp-config="${file}" --model claude-sonnet-5-5`);
     expect(JSON.parse(written[file])).toEqual({ mcpServers: { wmux: { command: 'node', args: [entry, '--role=Planner'] } } });
   });
 
@@ -44,6 +45,7 @@ describe('wmux tool level on a role-bound launch line', () => {
     expect(run('agy -i "x"', 'role', 'Builder').out).toBe('agy -i "x"');
     expect(run('npm test', 'core').out).toBe('npm test');
     expect(run('claude --mcp-config my.json', 'role', 'Planner').out).toBe('claude --mcp-config my.json');
+    expect(run('claude --mcp-config=my.json', 'role', 'Planner').out).toBe('claude --mcp-config=my.json');
     expect(run('claude', 'core', undefined, false).out).toBe('claude');
     expect(run('claude', 'role', 'Custom').out).toBe('claude');
   });
@@ -57,7 +59,17 @@ describe('wmux tool level on a role-bound launch line', () => {
       expect(logs.join(' ')).toMatch(/codex has no wmux MCP server registered/);
     }
     // claude is unaffected: its --mcp-config file carries the whole server entry.
-    expect(run('claude', 'core', undefined, true, false).out).toMatch(/^claude --mcp-config /);
+    expect(run('claude', 'core', undefined, true, false).out).toMatch(/^claude --mcp-config=/);
+  });
+
+  it('keeps a positional prompt a separate argument after the variadic --mcp-config', () => {
+    // claude's --mcp-config takes <configs...>: in the space form the prompt
+    // would be read as a second config file.
+    const file = path.join(mcpDir, 'surface-core.json');
+    const out = run('claude "fix the bug"', 'core').out;
+    expect(out).toBe(`claude --mcp-config="${file}" "fix the bug"`);
+    const words = tokenize(out).map((t) => t.value);
+    expect(words).toEqual(['claude', `--mcp-config=${file}`, 'fix the bug']);
   });
 
   it('validates the hint shape', () => {
@@ -119,7 +131,7 @@ describe('the splice and the located entry', () => {
       mcpDir, entry: dist, exists: (p) => p === dist, writeFile: (p, d) => { written[p] = d; },
     });
     const file = path.join(mcpDir, 'surface-core.json');
-    expect(out).toBe(`claude --mcp-config "${file}"`);
+    expect(out).toBe(`claude --mcp-config="${file}"`);
     expect(JSON.parse(written[file]).mcpServers.wmux.args[0]).toBe(dist);
     // No bundle found: the line is left alone.
     expect(applyWmuxToolsToCommand('claude', { tools: 'core' }, { mcpDir, entry: null })).toBe('claude');

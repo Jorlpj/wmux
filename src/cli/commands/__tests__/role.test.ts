@@ -143,7 +143,8 @@ describe('wmux role resolve', () => {
     expect(planner.argv).toEqual(['claude']);
     expect(planner.mcp?.level).toBe('role');
     expect(planner.mcp?.tools).toContain('terminal_send');
-    expect(JSON.parse(planner.mcp?.argv[1] ?? '')).toEqual({
+    expect(planner.mcp?.argv).toHaveLength(1);
+    expect(JSON.parse(planner.mcp?.argv[0].replace(/^--mcp-config=/, '') ?? '')).toEqual({
       mcpServers: { wmux: { command: 'node', args: [entry, '--role=Planner'] } },
     });
     expect(resolveRole('Reviewer', { agent: 'codex', tools: 'role' }, entry, registered).mcp).toEqual({
@@ -177,7 +178,7 @@ describe('wmux role resolve', () => {
       });
       return JSON.parse(out[0]);
     };
-    expect((await resolveWith(true)).mcp.argv[1]).toContain(JSON.stringify(entry).slice(1, -1));
+    expect((await resolveWith(true)).mcp.argv[0]).toContain(JSON.stringify(entry).slice(1, -1));
     const missing = await resolveWith(false);
     expect(missing.mcp).toBeUndefined();
     expect(missing.mcpUnavailable).toBe(`wmux MCP bundle not found at ${entry}`);

@@ -62,7 +62,9 @@ export function roleMcpArgv(agent: string, role: OrchRole, entry: string, tools:
   const serverArgs = wmuxServerArgs(entry, tools, role);
   switch (agent) {
     case 'claude':
-      return ['--mcp-config', JSON.stringify({ mcpServers: { wmux: { command: 'node', args: serverArgs } } })];
+      // One `=` token: --mcp-config is variadic, so a separate value would let it
+      // swallow a positional prompt that follows.
+      return [`--mcp-config=${JSON.stringify({ mcpServers: { wmux: { command: 'node', args: serverArgs } } })}`];
     case 'codex':
       // JSON string escaping is valid TOML basic-string escaping.
       return surfaceIsEmpty(tools, role)
@@ -93,7 +95,9 @@ export function toolSurfaceShellFlags(
   if (/['"`$]/.test(entry) || /['"`$]/.test(claudeConfigFile)) return null;
   switch (agent) {
     case 'claude':
-      return `--mcp-config "${claudeConfigFile}"`;
+      // The `=` form: --mcp-config is variadic, and the flags land right after
+      // the launcher, so `claude "<prompt>"` would lose its prompt to it.
+      return `--mcp-config="${claudeConfigFile}"`;
     case 'codex': {
       if (surfaceIsEmpty(tools, role)) return '-c mcp_servers.wmux.enabled=false';
       const list = wmuxServerArgs(entry, tools, role).map((a) => `'${a}'`).join(',');
