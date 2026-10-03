@@ -261,6 +261,26 @@ describe('QuotaSection UI', () => {
     expect(mockReadQuota).toHaveBeenLastCalledWith({ providers: ['claude'] });
   });
 
+  it('does not re-read quota when an equal provider list is passed again', async () => {
+    mockReadQuota.mockResolvedValue({ readings: [] });
+    await act(async () => {
+      root.render(<QuotaSection activeProviders={['claude', 'codex']} />);
+    });
+    expect(mockReadQuota).toHaveBeenCalledTimes(1);
+
+    // A bindings change rebuilds the array with the same providers: no new read.
+    await act(async () => {
+      root.render(<QuotaSection activeProviders={['claude', 'codex']} />);
+    });
+    expect(mockReadQuota).toHaveBeenCalledTimes(1);
+
+    // A provider set that really changed is read.
+    await act(async () => {
+      root.render(<QuotaSection activeProviders={['claude']} />);
+    });
+    expect(mockReadQuota).toHaveBeenCalledTimes(2);
+  });
+
   it('renders Install sensor button for agy when sensor is missing and handles installation', async () => {
     mockAgySensorStatus.mockResolvedValue({
       state: 'missing',
