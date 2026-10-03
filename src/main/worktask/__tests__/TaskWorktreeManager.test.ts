@@ -277,6 +277,43 @@ describe('removeWorktree — dirty 보존 (§3)', () => {
   });
 });
 
+describe('removeWorktree — beforeRemove runs only once removal is decided', () => {
+  const run = async (status: string, beforeRemove: (p: string) => Promise<void>) => {
+    const { TaskWorktreeManager } = await loadModule();
+    const order: string[] = [];
+    const git = makeGitFake((args) => {
+      if (args[0] === 'status') return { stdout: status };
+      if (args[0] === 'worktree' && args[1] === 'remove') order.push('remove');
+      return { stdout: '' };
+    });
+    const mgr = new TaskWorktreeManager({ runGit: git });
+    const res = await mgr.removeWorktree('/repo', 'hash1', '/wt/some', async (p) => {
+      order.push('stop');
+      await beforeRemove(p);
+    });
+    return { res, order };
+  };
+
+  it('a dirty worktree is kept and nothing is stopped', async () => {
+    const { res, order } = await run(' M file.txt\n', async () => undefined);
+    expect(res.ok).toBe(false);
+    expect(order).toEqual([]);
+  });
+
+  it('a clean worktree stops its panes, then is removed', async () => {
+    const { res, order } = await run('', async () => undefined);
+    expect(res.ok).toBe(true);
+    expect(order).toEqual(['stop', 'remove']);
+  });
+
+  it('keeps the worktree when the panes could not be stopped', async () => {
+    const { res, order } = await run('', async () => { throw new Error('daemon offline'); });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/could not stop the panes/);
+    expect(order).toEqual(['stop']);
+  });
+});
+
 describe('per-repo 직렬 큐 (§3 index.lock 경합 차단)', () => {
   it('같은 repoHash의 create는 겹치지 않고 순차 실행된다', async () => {
     const { TaskWorktreeManager } = await loadModule();

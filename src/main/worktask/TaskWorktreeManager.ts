@@ -483,7 +483,16 @@ export class TaskWorktreeManager {
    * worktree 제거(§3 — dirty 보존). remove 진입 시 porcelain 검사 → dirty면 제거
    * 거부 + preserved:true 반환(강제 삭제 API 자체를 만들지 않는다 — J3 UX 몫).
    */
-  async removeWorktree(repoRoot: string, repoHash: string, worktreePath: string): Promise<RemoveResult> {
+  /**
+   * `beforeRemove` runs only once removal is decided (the dirty check passed), so a refused close
+   * never stops anything. If it throws, the worktree is kept.
+   */
+  async removeWorktree(
+    repoRoot: string,
+    repoHash: string,
+    worktreePath: string,
+    beforeRemove?: (worktreePath: string) => Promise<void>,
+  ): Promise<RemoveResult> {
     return this.withRepoLock(repoHash, async () => {
       const safePath = validatePath(worktreePath, 'worktreePath');
 
@@ -496,6 +505,14 @@ export class TaskWorktreeManager {
       } catch (err) {
         // status 실패(경로 부재 등) — 보수적으로 제거 시도하지 않고 보존.
         return { ok: false, error: `removeWorktree: status check failed: ${(err as Error).message}`, preserved: true };
+      }
+
+      if (beforeRemove) {
+        try {
+          await beforeRemove(safePath);
+        } catch (err) {
+          return { ok: false, error: `removeWorktree: could not stop the panes inside the worktree: ${(err as Error).message}` };
+        }
       }
 
       try {

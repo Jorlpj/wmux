@@ -23,6 +23,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import type { RpcMethod } from '../../../shared/rpc';
 import { TaskWorktreeManager, metaDirForWorktree } from '../../worktask/TaskWorktreeManager';
 import { TaskCloseService } from '../../worktask/TaskCloseService';
+import { isPidAlive, stopSessionsInDir } from '../../worktask/stopSessionsInDir';
 import { TaskPrService } from '../../worktask/TaskPrService';
 import { WorktaskScanService, type ScanOpenTask } from '../../worktask/WorktaskScanService';
 import { deletePhoneBranch, removePhoneWorktree } from '../../worktask/PhoneWorktreeRemoval';
@@ -74,7 +75,25 @@ export function registerWorktaskHandlers(
   // 유지해야 하므로(index.lock 경합 차단) 재사용한다. fan-out과는 별도 인스턴스지만
   // 크로스 인스턴스 worktree add/remove 경합은 git 자체의 index.lock이 backstop.
   const worktrees = new TaskWorktreeManager();
-  const closeService = new TaskCloseService({ daemon: daemonPort, worktrees });
+  const closeService = new TaskCloseService({
+    daemon: daemonPort,
+    worktrees,
+    // A pane still running inside the worktree holds files that make the removal partial on Windows.
+    stopPanesIn: async (worktreePath) => {
+      const dc = getDaemonClient();
+      if (!dc) throw new Error('Daemon not connected');
+      const stopped = await stopSessionsInDir(worktreePath, {
+        listSessions: async () => {
+          const sessions = await dc.rpc('daemon.listSessions', {});
+          return Array.isArray(sessions) ? sessions : [];
+        },
+        destroySession: async (id) => { await dc.rpc('daemon.destroySession', { id }); },
+        isAlive: isPidAlive,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      if (stopped.length > 0) console.log(`[worktask] stopped ${stopped.length} pane(s) inside ${worktreePath} before removing it`);
+    },
+  });
   const prService = new TaskPrService({ daemon: daemonPort, cache: prStatusCache });
   const scanService = new WorktaskScanService();
   onServices?.({ close: closeService, pr: prService });
