@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AGY_TRUST_DISABLED_REASON, allowAgyTrustFor, trustAgyForSpawningFolder, trustAgyWorkspace } from '../agyTrust';
+import { AGY_TRUST_DISABLED_REASON, agyPathKey, allowAgyTrustFor, trustAgyForSpawningFolder, trustAgyWorkspace } from '../agyTrust';
 import { getFanoutWorkerPolicyPath, setFanoutTrustAgyFolders } from '../../worktask/fanoutWorkerPolicy';
 
 let dir: string;
@@ -21,7 +21,7 @@ describe('agy trust for fan-out task folders', () => {
     const task = path.join(dir, 'wt', 'task-1');
     fs.mkdirSync(task, { recursive: true });
     expect(trustAgyWorkspace(task, { settingsPath: settings })).toEqual({ ok: true, added: true, pruned: 0 });
-    expect(trustAgyWorkspace(task.toUpperCase(), { settingsPath: settings })).toMatchObject({ added: false });
+    expect(trustAgyWorkspace(task + path.sep, { settingsPath: settings })).toMatchObject({ added: false });
     expect(read()).toEqual({ agentMode: 'accept-edits', trustedWorkspaces: ['C:\\keep', path.resolve(task)] });
   });
 
@@ -52,6 +52,41 @@ describe('agy trust for fan-out task folders', () => {
     expect(trustAgyForSpawningFolder(task, on)).toMatchObject({ ok: true, added: true });
     release();
     expect(trustAgyForSpawningFolder(path.join(dir, 'wt', 'other'), on)).toMatchObject({ ok: false });
+    expect(trustAgyForSpawningFolder(task, on)).toMatchObject({ ok: false });
+  });
+
+  it('case-folds folder keys only on case-insensitive platforms', () => {
+    const a = path.resolve('/w/Task-1');
+    const b = path.resolve('/w/task-1');
+    expect(agyPathKey(a, 'win32')).toBe(agyPathKey(b, 'win32'));
+    expect(agyPathKey(a, 'darwin')).toBe(agyPathKey(b, 'darwin'));
+    expect(agyPathKey(a, 'linux')).not.toBe(agyPathKey(b, 'linux'));
+  });
+
+  it('writes the folder main registered, not the spelling the renderer sent', (ctx) => {
+    if (agyPathKey('/A') !== agyPathKey('/a')) ctx.skip(); // needs a case-folding platform
+    const task = path.join(dir, 'wt', 'Task-4');
+    fs.mkdirSync(task, { recursive: true });
+    const release = allowAgyTrustFor(task);
+    try {
+      expect(trustAgyForSpawningFolder(task.toLowerCase(), { settingsPath: settings, enabled: true }))
+        .toMatchObject({ ok: true, added: true });
+      expect(read().trustedWorkspaces).toEqual(['C:\\keep', path.resolve(task)]);
+    } finally {
+      release();
+    }
+  });
+
+  it('keeps a folder allowed until every overlapping spawn in it has released', () => {
+    const task = path.join(dir, 'wt', 'task-5');
+    fs.mkdirSync(task, { recursive: true });
+    const on = { settingsPath: settings, enabled: true };
+    const releaseA = allowAgyTrustFor(task);
+    const releaseB = allowAgyTrustFor(task);
+    releaseA();
+    releaseA(); // a double release must not take B's registration with it
+    expect(trustAgyForSpawningFolder(task, on)).toMatchObject({ ok: true });
+    releaseB();
     expect(trustAgyForSpawningFolder(task, on)).toMatchObject({ ok: false });
   });
 });

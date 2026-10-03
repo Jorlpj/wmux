@@ -41,7 +41,15 @@ export function agySettingsPath(home: string = os.homedir()): string {
   return path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
 }
 
-const norm = (p: string): string => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+/** Comparison key for a folder. Case folds only where the default filesystem
+ *  is case-insensitive (Windows, macOS); on Linux `/a/Task` and `/a/task` are
+ *  different folders. */
+export function agyPathKey(p: string, platform: NodeJS.Platform = process.platform): string {
+  const key = path.resolve(p).replace(/[\\/]+$/, '');
+  return platform === 'win32' || platform === 'darwin' ? key.toLowerCase() : key;
+}
+
+const norm = (p: string): string => agyPathKey(p);
 
 export type AgyTrustResult =
   | { ok: true; added: boolean; pruned: number }
@@ -161,14 +169,30 @@ export function trustAgyWorkspace(
 
 // Folders FanOutService is spawning a worker in right now. The renderer decides
 // the final launcher (a role binding may turn the default agent into agy), so it
-// asks main to trust the folder — and main only agrees for these.
-const spawning = new Map<string, string | undefined>();
+// asks main to trust the folder — and main only agrees for these. Each spawn
+// holds its own registration, so overlapping spawns in one folder release only
+// their own; the folder main registered is what gets written, never the
+// renderer's spelling of it.
+interface SpawnRegistration {
+  folder: string;
+  pruneUnder?: string;
+}
+const spawning = new Map<string, Set<SpawnRegistration>>();
 
 export function allowAgyTrustFor(folder: string, pruneUnder?: string): () => void {
   const key = norm(folder);
-  spawning.set(key, pruneUnder);
+  const registration: SpawnRegistration = { folder, ...(pruneUnder ? { pruneUnder } : {}) };
+  let set = spawning.get(key);
+  if (!set) {
+    set = new Set();
+    spawning.set(key, set);
+  }
+  set.add(registration);
   return () => {
-    spawning.delete(key);
+    const current = spawning.get(key);
+    if (!current) return;
+    current.delete(registration);
+    if (current.size === 0) spawning.delete(key);
   };
 }
 
@@ -179,13 +203,13 @@ export function trustAgyForSpawningFolder(
   folder: string,
   opts: { settingsPath?: string; enabled?: boolean } = {},
 ): AgyTrustResult {
-  const key = norm(folder);
-  if (!spawning.has(key)) return { ok: false, reason: 'not a folder fan-out is launching a worker in' };
+  const registration = spawning.get(norm(folder))?.values().next().value;
+  if (!registration) return { ok: false, reason: 'not a folder fan-out is launching a worker in' };
   // Read per call: the operator may flip the setting between two fan-outs.
   const enabled = opts.enabled ?? loadFanoutTrustAgyFolders();
   if (!enabled) return { ok: false, reason: AGY_TRUST_DISABLED_REASON, disabled: true };
-  const pruneUnder = spawning.get(key);
-  return trustAgyWorkspace(folder, {
+  const { pruneUnder } = registration;
+  return trustAgyWorkspace(registration.folder, {
     ...(opts.settingsPath ? { settingsPath: opts.settingsPath } : {}),
     ...(pruneUnder ? { pruneUnder } : {}),
   });
