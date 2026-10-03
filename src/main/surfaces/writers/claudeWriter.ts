@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import type {
   SurfaceApplyResult,
   SurfaceFileEdit,
@@ -82,14 +81,16 @@ export function createClaudeWriter(): SurfaceWriter {
           affectedItemIds: [],
         };
         if (isPathAllowed(claudeJsonPath, deps)) {
-          cjResult = buildClaudeJsonEdits(deps, changes);
+          const cjSnapshot = snapshotFile(claudeJsonPath);
+          cjResult = buildClaudeJsonEdits(deps, changes, cjSnapshot.text);
           if (cjResult.edits.length > 0) {
-            const preExisted = fs.existsSync(claudeJsonPath);
+            const preExisted = cjSnapshot.exists;
             const res = applyConfigEdit({
               path: claudeJsonPath,
               kind: 'json',
               edits: cjResult.edits,
               backup: true,
+              snapshot: cjSnapshot,
               now: deps.now(),
             });
             if (res.backupPath) backups.push(res.backupPath);
@@ -123,15 +124,17 @@ export function createClaudeWriter(): SurfaceWriter {
           if (!isPathAllowed(targetPath, deps)) {
             continue;
           }
-          const sResult = buildSettingsEdits(targetPath, deps, pathChanges, true, store);
+          const snapshot = snapshotFile(targetPath);
+          const sResult = buildSettingsEdits(targetPath, deps, pathChanges, true, store, snapshot.text);
           settingsResults.push(sResult);
           if (sResult.edits.length > 0) {
-            const preExisted = fs.existsSync(targetPath);
+            const preExisted = snapshot.exists;
             const res = applyConfigEdit({
               path: targetPath,
               kind: 'json',
               edits: sResult.edits,
               backup: true,
+              snapshot,
               now: deps.now(),
             });
             if (res.backupPath) backups.push(res.backupPath);

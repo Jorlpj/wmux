@@ -84,15 +84,19 @@ export function buildSettingsEdits(
   changes: ResolvedChange[],
   isApply: boolean,
   store?: SurfacesStore,
+  /** The apply snapshot's text, so the plan and the conflict check see the same content. */
+  snapshotText?: string | null,
 ): { edits: JsonEdit[]; fileEdits: SurfaceFileEdit[]; affectedItemIds: string[] } {
   if (!isPathAllowed(targetPath, deps)) {
     return { edits: [], fileEdits: [], affectedItemIds: [] };
   }
 
   let origRoot: Record<string, unknown> = {};
-  if (fs.existsSync(targetPath)) {
+  const text =
+    snapshotText !== undefined ? snapshotText : fs.existsSync(targetPath) ? fs.readFileSync(targetPath, 'utf8') : null;
+  if (text !== null) {
     try {
-      origRoot = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+      origRoot = JSON.parse(text);
     } catch {
       origRoot = {};
     }

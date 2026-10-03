@@ -77,8 +77,8 @@ export function createAgyWriter(): SurfaceWriter {
 
       const written: WrittenFile[] = [];
       for (const [targetPath, changes] of changesByFile.entries()) {
-        const planned = planEditsForFile(targetPath, changes);
         const snapshot = snapshotFile(targetPath);
+        const planned = planEditsForFile(targetPath, changes, snapshot.text);
 
         try {
           const res = applyConfigEdit({
