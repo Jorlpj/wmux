@@ -41,6 +41,11 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
+/** `disable*` keys are inverted: `disableBundledSkills: true` means the feature is off. */
+export function contextSettingEnabled(key: string, value: boolean): boolean {
+  return key.startsWith('disable') ? !value : value;
+}
+
 interface LiveHookInfo {
   event: string;
   handler: Record<string, unknown>;
@@ -178,20 +183,23 @@ export async function readClaudeInventory(deps: InventoryDeps): Promise<Provider
       'disableBundledSkills',
     ];
     for (const ck of contextKeys) {
-      if (ck in parsed) {
-        addItem(
-          makeItem({
-            provider: 'claude',
-            kind: 'context-setting',
-            name: ck,
-            source: 'user',
-            enabled: true,
-            effect: 'removes',
-            toggleable: true,
-            originPath: sp,
-          }),
-        );
-      }
+      if (!(ck in parsed)) continue;
+      const value = parsed[ck];
+      // Only booleans can be switched: a number or list has no "off" value to write and restore.
+      const isBoolean = typeof value === 'boolean';
+      addItem(
+        makeItem({
+          provider: 'claude',
+          kind: 'context-setting',
+          name: ck,
+          source: 'user',
+          enabled: isBoolean ? contextSettingEnabled(ck, value) : null,
+          effect: 'removes',
+          toggleable: isBoolean,
+          readOnlyReason: isBoolean ? null : 'Only on/off settings can be switched here; edit this value in settings.json.',
+          originPath: sp,
+        }),
+      );
     }
 
     // Hooks in settings.json

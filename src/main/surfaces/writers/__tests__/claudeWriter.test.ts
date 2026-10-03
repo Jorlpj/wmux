@@ -362,50 +362,53 @@ describe('claudeWriter', () => {
     expect(skill3.enabled).toBe(true);
   });
 
-  it('toggles boolean and number context-settings and refuses non-bool/num', async () => {
+  it('switches boolean context-settings both ways and keeps numbers and lists read-only', async () => {
     seedFixtures();
     const deps = makeDeps(tempHome, tempProj);
-    const inv = await readInventory('claude', { homeDir: tempHome, projectDir: tempProj, run: deps.run });
+    const settingsFile = path.join(tempHome, '.claude', 'settings.json');
+    const inventoryOf = () => readInventory('claude', { homeDir: tempHome, projectDir: tempProj, run: deps.run });
+    const find = (items: SurfaceItem[], name: string) =>
+      items.find((i) => i.name === name && i.kind === 'context-setting')!;
 
-    const autoMem = inv.items.find((i) => i.name === 'autoMemoryEnabled' && i.kind === 'context-setting')!;
-    expect(autoMem).toBeDefined();
+    let inv = await inventoryOf();
+    const autoMem = find(inv.items, 'autoMemoryEnabled');
+    expect(autoMem.enabled).toBe(true);
 
-    const budget = inv.items.find((i) => i.name === 'skillListingBudgetFraction' && i.kind === 'context-setting')!;
-    expect(budget).toBeDefined();
+    // Off, then back on: the inventory must report the real value or re-enabling is refused.
+    const off = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: autoMem.id, enabled: false }] }, { deps });
+    expect(off.ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).autoMemoryEnabled).toBe(false);
+    inv = await inventoryOf();
+    expect(find(inv.items, 'autoMemoryEnabled').enabled).toBe(false);
+    const on = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: autoMem.id, enabled: true }] }, { deps });
+    expect(on.ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).autoMemoryEnabled).toBe(true);
 
-    const excludes = inv.items.find((i) => i.name === 'claudeMdExcludes' && i.kind === 'context-setting')!;
-    expect(excludes).toBeDefined();
+    // A number or a list is shown but cannot be switched, and the value stays.
+    for (const name of ['skillListingBudgetFraction', 'claudeMdExcludes']) {
+      const item = find(inv.items, name);
+      expect(item.toggleable).toBe(false);
+      expect(item.enabled).toBeNull();
+      const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: item.id, enabled: false }] }, { deps });
+      expect(res.ok).toBe(false);
+    }
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    expect(settings.skillListingBudgetFraction).toBe(0.25);
+    expect(settings.claudeMdExcludes).toEqual(['vendor/**']);
+  });
 
-    // Toggle boolean
-    const disMem = await applySurfaceChanges(
-      { provider: 'claude', changes: [{ itemId: autoMem.id, enabled: false }] },
-      { deps },
-    );
-    expect(disMem.ok).toBe(true);
-    let settings = JSON.parse(fs.readFileSync(path.join(tempHome, '.claude', 'settings.json'), 'utf8'));
-    expect(settings.autoMemoryEnabled).toBe(false);
+  it('inverts disable* keys: switching the feature off writes true', async () => {
+    const deps = makeDeps(tempHome, tempProj);
+    fs.mkdirSync(path.join(tempHome, '.claude'), { recursive: true });
+    const settingsFile = path.join(tempHome, '.claude', 'settings.json');
+    fs.writeFileSync(settingsFile, JSON.stringify({ disableBundledSkills: false }), 'utf8');
 
-    // Toggle number
-    const disBudget = await applySurfaceChanges(
-      { provider: 'claude', changes: [{ itemId: budget.id, enabled: false }] },
-      { deps },
-    );
-    expect(disBudget.ok).toBe(true);
-    settings = JSON.parse(fs.readFileSync(path.join(tempHome, '.claude', 'settings.json'), 'utf8'));
-    expect(settings.skillListingBudgetFraction).toBe(0);
-
-    // Attempt non-boolean/number toggle -> refused in writer
-    const previewEx = await previewSurfaceChanges(
-      { provider: 'claude', changes: [{ itemId: excludes.id, enabled: false }] },
-      { deps },
-    );
-    expect(previewEx.edits).toHaveLength(0);
-
-    const applyEx = await applySurfaceChanges(
-      { provider: 'claude', changes: [{ itemId: excludes.id, enabled: false }] },
-      { deps },
-    );
-    expect(applyEx.appliedItemIds).not.toContain(excludes.id);
+    const inv = await readInventory('claude', { homeDir: tempHome, run: deps.run });
+    const item = inv.items.find((i) => i.name === 'disableBundledSkills')!;
+    expect(item.enabled).toBe(true);
+    const res = await applySurfaceChanges({ provider: 'claude', changes: [{ itemId: item.id, enabled: false }] }, { deps });
+    expect(res.ok).toBe(true);
+    expect(JSON.parse(fs.readFileSync(settingsFile, 'utf8')).disableBundledSkills).toBe(true);
   });
 
   it('hook disable then enable restores a definition deep-equal to the original and the hooks structure equals the original except possibly ordering within the same matcher group', async () => {

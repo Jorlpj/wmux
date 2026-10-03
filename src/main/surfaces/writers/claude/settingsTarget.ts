@@ -286,27 +286,15 @@ export function buildSettingsEdits(
       }
 
       case 'context-setting': {
-        const currentVal = root[item.name];
-        if (typeof currentVal !== 'boolean' && typeof currentVal !== 'number') {
-          // Refuse non-boolean and non-number context settings
-          break;
-        }
-        if (typeof currentVal === 'boolean') {
-          root[item.name] = enabled;
-          fileEdits.push({
-            path: targetPath,
-            summary: `set ${item.name} = ${enabled}`,
-          });
-          affectedItemIds.push(item.id);
-        } else {
-          const numVal = enabled ? 1 : 0;
-          root[item.name] = numVal;
-          fileEdits.push({
-            path: targetPath,
-            summary: `set ${item.name} = ${numVal}`,
-          });
-          affectedItemIds.push(item.id);
-        }
+        // Numbers and lists are listed read-only; writing 1/0 over them would lose the user's value.
+        if (typeof root[item.name] !== 'boolean') break;
+        const value = item.name.startsWith('disable') ? !enabled : enabled;
+        root[item.name] = value;
+        fileEdits.push({
+          path: targetPath,
+          summary: `set ${item.name} = ${value}`,
+        });
+        affectedItemIds.push(item.id);
         break;
       }
 
