@@ -148,6 +148,28 @@ describe('AgyAccountService', () => {
     expect(agyBlobEmail(backend.read(AGY_ACTIVE_TARGET))).toBe('b@x.com');
   });
 
+  it('never switches away from an account the user picked by hand', async () => {
+    const s = make();
+    await s.setAutoRotate(true);
+    await withAccounts(s, ['a@x.com', 'b@x.com']);
+    snapshots.set('a@x.com', quota(0.3));
+    snapshots.set('b@x.com', quota(0.9));
+    const a = s.snapshot().accounts.find((r) => r.email === 'a@x.com')!;
+    await s.activate(a.id); // "Use now"
+
+    // a still has quota: the pick stays even though b has more.
+    expect(await s.prepareLaunch()).toMatchObject({ ok: true, switched: false });
+    // a runs out: held, not switched behind the user's back.
+    snapshots.set('a@x.com', quota(0));
+    expect(await s.prepareLaunch()).toMatchObject({ ok: false, reason: 'all-exhausted' });
+    expect(agyBlobEmail(backend.read(AGY_ACTIVE_TARGET))).toBe('a@x.com');
+
+    // Flipping the switch hands the choice back: now it switches.
+    await s.setAutoRotate(false);
+    await s.setAutoRotate(true);
+    expect(await s.prepareLaunch()).toMatchObject({ ok: true, switched: true, account: { email: 'b@x.com' } });
+  });
+
   it('lets a launch through unchanged with no accounts', async () => {
     expect(await make().prepareLaunch()).toEqual({ ok: true, account: null, switched: false });
   });
