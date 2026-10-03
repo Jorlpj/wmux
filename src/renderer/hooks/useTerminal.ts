@@ -34,7 +34,8 @@ import {
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
-import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
+import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPromptCarry, noteCodexEndedByPrompt } from '../terminal/newlineKeys';
+import { isWslShell } from '../../shared/imagePaste';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
 import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
@@ -97,6 +98,30 @@ export function onTerminalRegistered(listener: (ptyId: string) => void): () => v
   terminalRegistrationListeners.add(listener);
   return () => terminalRegistrationListeners.delete(listener);
 }
+// #1694: ptyId → whether the pane's shell enters WSL, from the pty list's
+// `shell` (the same predicate the clipboard route uses, #1196). Learned once
+// per pane on a Windows host; a pane missing here counts as WSL, which keeps
+// the old newline bytes. Requests queue behind each other, and one that finds
+// its pane already learned (a restore mounts many at once) asks nothing.
+const wslByPtyId = new Map<string, boolean>();
+let ptyShellsQueue: Promise<void> = Promise.resolve();
+/** A failed lookup is retried, so one transient error doesn't leave a pane unknown. */
+const PTY_SHELLS_RETRY_MS = [1_000, 3_000, 10_000];
+function learnPtyShells(ptyId: string, attempt = 0): void {
+  if (wslByPtyId.has(ptyId)) return;
+  ptyShellsQueue = ptyShellsQueue
+    .then(async () => {
+      if (wslByPtyId.has(ptyId)) return;
+      for (const s of await window.electronAPI.pty.list()) {
+        wslByPtyId.set(s.id, isWslShell(s.shell));
+      }
+    })
+    .catch(() => {
+      const delay = PTY_SHELLS_RETRY_MS[attempt];
+      if (delay !== undefined) window.setTimeout(() => learnPtyShells(ptyId, attempt + 1), delay);
+    });
+}
+
 function registerTerminal(ptyId: string, terminal: Terminal): void {
   terminalRegistry.set(ptyId, terminal);
   for (const listener of [...terminalRegistrationListeners]) listener(ptyId);
@@ -1904,15 +1929,46 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const hostPlatform = () =>
       (window.electronAPI as { hostPlatform?: () => string | null }).hostPlatform?.() ?? window.electronAPI.platform;
     const foldOpts = () => ({ trustWin32Input: hostPlatform() !== 'win32' });
+    // #1694: the Codex newline mapping lives only while the command runs. The
+    // detected slug can outlive Codex, so the pane's own OSC 133;A ends the
+    // mapping at once and 133;C starts it again. The liveness edges above need
+    // no hook here: the same hydrate that flips them clears the slug.
+    const atPromptRef = { current: false };
+    // ...and a command started before that stale slug is dropped must not
+    // re-arm it: the prompt edge that ended Codex latches the mapping off until
+    // the slug goes (subscription below) or the grace window passes.
+    const codexEndedAtRef: { current: number | null } = { current: null };
+    // The unscanned end of the last chunk, so a marker split across two data
+    // events is still seen.
+    const promptTailRef = { current: '' };
+    if (hostPlatform() === 'win32') learnPtyShells(ptyId);
     const noteKeyboard = (data: string | Uint8Array) => {
       keyboardRef.current = foldRemoteKeyboardState(keyboardRef.current, data, foldOpts());
       parkedKeyboardByTerminal.set(terminal, keyboardRef.current);
+      if (hostPlatform() === 'win32') {
+        const wasAtPrompt = atPromptRef.current;
+        const folded = foldAtPromptCarry(wasAtPrompt, promptTailRef.current, data);
+        atPromptRef.current = folded.atPrompt;
+        promptTailRef.current = folded.tail;
+        codexEndedAtRef.current = noteCodexEndedByPrompt(
+          codexEndedAtRef.current,
+          wasAtPrompt,
+          atPromptRef.current,
+          useStore.getState().surfaceAgent[ptyId]?.slug,
+          Date.now(),
+        );
+      }
     };
     // #1228 review (C1): the fold is liveness-scoped. When process-truth or
     // OSC 133 says the pane's foreground command is gone, any negotiation it
     // armed (?9001h / kitty push) is stale — the next app in the pane starts
     // from a clean slate, not the dead app's encoding. Same edges #1210 uses.
     const unsubscribeKeyboardLiveness = useStore.subscribe((state, prev) => {
+      // #1694: the stale Codex slug is gone, so the end-of-Codex latch has
+      // done its job; a fresh detection arms the mapping straight away.
+      if (codexEndedAtRef.current !== null && state.surfaceAgent[ptyId]?.slug !== 'codex') {
+        codexEndedAtRef.current = null;
+      }
       const gone = (now: boolean | undefined, was: boolean | undefined) =>
         now === false && was !== false;
       if (
@@ -1970,6 +2026,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // Claude Code inside wmux never pushes kitty, so the historical CSI-u
         // default was Escape + garbage and the prompt submitted (#1152).
         shiftEnterFallback: 'lf',
+        // #1694: native Windows Codex takes Alt+Enter as its newline. Keyed
+        // on the detected agent, not on `?9001h` — ConPTY emits that for
+        // every pane, so the fold ignores it on a Windows host (#1363).
+        altEnterNewline: wantsAltEnterNewline({
+          hostPlatform: hostPlatform(),
+          isWsl: wslByPtyId.get(ptyId),
+          agentSlug: useStore.getState().surfaceAgent[ptyId]?.slug,
+          atPrompt: atPromptRef.current,
+          codexEndedAt: codexEndedAtRef.current,
+        }),
       });
       if (newlineByte !== null) {
         e.preventDefault();
