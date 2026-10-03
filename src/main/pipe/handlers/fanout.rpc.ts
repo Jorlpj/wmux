@@ -94,7 +94,7 @@ import { sendToRenderer } from './_bridge';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { git as runGit } from '../../git/git';
 import { loadWorkspaceDecision } from '../../deck/deckDecisionStore';
-import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
+import type { FanOutRequest, FanOutService, FanOutTaskResult } from '../../worktask/FanOutService';
 import { getFanOutGuards, promptDigest, type FanOutGuards } from '../../worktask/fanoutGuards';
 import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
@@ -108,6 +108,7 @@ import {
   type FanoutAgentChoice,
   type FanoutPreset,
 } from '../../../shared/fanoutPreset';
+import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../../shared/fanoutTaskGraph';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -216,6 +217,7 @@ export function buildFanOutPreview(
   taskPrompts: string[],
   roles: string[] = [],
   agents: string[] = [],
+  graph?: FanoutTaskGraph,
 ): string {
   const perTask = Math.max(
     FANOUT_PREVIEW_MIN_TASK_BYTES,
@@ -237,7 +239,12 @@ export function buildFanOutPreview(
       // A preset row / agents[k] is already concrete (CLI + model), so it is
       // printed as what runs, not as a name that resolves elsewhere.
       const agent = typeof agents[k] === 'string' && agents[k].length > 0 ? ` [agent: ${agents[k]}]` : '';
-      return `── task ${k + 1}/${titles.length}: ${title}${role}${agent}\n${body}`;
+      // Scope and ordering change what the task is allowed to do and when it
+      // runs, so they are part of what is approved. Dependencies are printed
+      // 1-based, like the task headers they refer to.
+      const files = graph?.files[k]?.length ? ` [files: ${graph.files[k].join(', ')}]` : '';
+      const after = graph?.dependsOn[k]?.length ? ` [after: ${graph.dependsOn[k].map((j) => `task ${j + 1}`).join(', ')}]` : '';
+      return `── task ${k + 1}/${titles.length}: ${title}${role}${agent}${files}${after}\n${body}`;
     })
     .join('\n\n');
 }
@@ -799,6 +806,16 @@ export function registerFanOutRpc(
     // approval prompt — two visually identical dialogs carrying different
     // payloads. Reading the gate and claiming it in one tick makes the second
     // caller a poll instead.
+    // The owner's way to stop tasks that are still waiting on dependencies.
+    // The key is already scoped to the calling workspace, so only the fan-out's
+    // owner can reach its waiting tasks.
+    if (params['cancelPending'] === true) {
+      const dropped = service.cancelDependents(key, 'cancelled by the fan-out owner');
+      if (dropped === null) {
+        return deny('NOT_FOUND', 'no task of this fan-out is waiting on its dependencies');
+      }
+      return { ok: true as const, status: 'pending_cancelled' as const, idempotencyKey: callerKey, dropped };
+    }
     const known = service.statusOf(key);
     if (known.state === 'running') {
       return { ok: true as const, status: 'running' as const, idempotencyKey: callerKey };
@@ -892,8 +909,22 @@ export function registerFanOutRpc(
         'with preset or agents every title must be a non-empty string — task k runs on agent k, so an empty title would shift the others',
       );
     }
+    // Same reason for files / dependsOn: both are indexed by the titles as sent.
+    const hasGraph = params['files'] !== undefined || params['dependsOn'] !== undefined;
+    if (
+      hasGraph &&
+      Array.isArray(params['titles']) &&
+      (params['titles'] as unknown[]).some((t) => typeof t !== 'string' || t.trim().length === 0)
+    ) {
+      return deny(
+        'INVALID_ARGUMENT',
+        'with files or dependsOn every title must be a non-empty string — they are indexed by title, so an empty title would shift the others',
+      );
+    }
     const parsed = parseTasks(params, sharedPrompt);
     if ('error' in parsed) return deny('INVALID_ARGUMENT', parsed.error);
+    const graph = validateFanoutTaskGraph(params['files'], params['dependsOn'], parsed.titles.length);
+    if ('error' in graph) return deny('INVALID_ARGUMENT', graph.error);
     // Titles are counted AFTER parseTasks drops empty ones, so a preset row
     // lines up with the task that actually spawns.
     const selection = resolveAgentSelection(params, parsed.titles.length, deps.presets ?? (() => loadFanoutPresets()));
@@ -972,6 +1003,7 @@ export function registerFanOutRpc(
       // Who asked, for each task's lineage stamp — resolved above, the same
       // origin for every task. An unresolvable pane records no requester.
       ...(callerOrigin ? { caller: callerOrigin } : {}),
+      ...(hasGraph ? { files: graph.files, dependsOn: graph.dependsOn } : {}),
     };
     const presetName = selection.kind === 'preset' ? selection.preset.name : undefined;
 
@@ -1006,7 +1038,7 @@ export function registerFanOutRpc(
               // What a claude worker's line gets appended, so an approval covers
               // the permission mode and tool rules, not just the prompt.
               promptPreview:
-                buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles, agentLabels) +
+                buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles, agentLabels, graph) +
                 (worktree ? '' : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
                 // Only when a task can actually run claude: the flags are claude-only.
                 (agentChoices.length === 0 || agentChoices.some((c) => c.agent === 'claude')
@@ -1086,17 +1118,17 @@ export function registerFanOutRpc(
         // await, so there is no window in which the gate says 'started' and the
         // service still says 'unknown'.
         settle(key, { phase: 'started' });
-        guards.commitStart(key);
-        try {
-          const result = await service.start(req);
-          // Tasks that never got a workspace (the output folder could not be
-          // created, a worktree preflight failed) launched nothing, so they
-          // must not keep counting against the rolling hour.
-          const unspawned =
-            result.tasks.length === 0 ? parsed.titles.length : result.tasks.filter((t) => !t.workspaceId).length;
-          if (unspawned > 0) guards.refundStart(key, unspawned);
-          // The second half of the record: the line each task was ACTUALLY
-          // launched with (after the role rewrite and the worker flags).
+        // A task with dependencies is stamped on the hour when it starts, not
+        // now (see stampDeferredStart); its live slot is booked from here on.
+        const isDeferred = (index: number): boolean => (graph.dependsOn[index]?.length ?? 0) > 0;
+        const deferredCount = parsed.titles.filter((_, k) => isDeferred(k)).length;
+        guards.commitStart(key, deferredCount);
+        /** Dependent tasks that passed their start-time cap check (and so hold a stamp). */
+        const stamped = new Set<number>();
+        // The second half of the record: the line each task was ACTUALLY
+        // launched with (after the role rewrite and the worker flags). Written
+        // once for the first wave, then once per dependent task as it launches.
+        const appendLaunched = (tasks: FanOutTaskResult[], outputBatchDir?: string): void => {
           try {
             guards.appendAudit({
               at: Date.now(),
@@ -1114,8 +1146,8 @@ export function registerFanOutRpc(
               workerPermissionMode: workerMode,
               ...(presetName ? { preset: presetName } : {}),
               ...(agentLabels.length > 0 ? { agents: agentLabels } : {}),
-              ...(result.outputBatchDir ? { outputBatchDir: result.outputBatchDir } : {}),
-              launched: result.tasks.map((t) => ({
+              ...(outputBatchDir ? { outputBatchDir } : {}),
+              launched: tasks.map((t) => ({
                 title: t.title,
                 ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
                 ...(t.initialCommand ? { command: t.initialCommand } : {}),
@@ -1125,14 +1157,49 @@ export function registerFanOutRpc(
           } catch (err) {
             console.warn(`[fanout.rpc] could not append the launch record for ${key}: ${String(err)}`);
           }
+        };
+        let holdsDependents = false;
+        try {
+          const result = await service.start({
+            ...req,
+            beforeDeferredLaunch: (index) => {
+              const r = guards.stampDeferredStart(key);
+              if (r.ok) stamped.add(index);
+              return r;
+            },
+            // Settled once per task by the service. Only a task that was
+            // stamped and still got no workspace is refunded; one dropped
+            // before its start was never charged.
+            onDeferredLaunch: (t, info) => {
+              if (stamped.delete(t.index) && !t.workspaceId) guards.refundStart(key, 1);
+              appendLaunched([t], info.outputBatchDir);
+              if (info.remaining === 0) guards.settleStarted(key);
+            },
+          });
+          holdsDependents = result.tasks.some((t) => t.pending);
+          // Tasks that never got a workspace (the output folder could not be
+          // created, a worktree preflight failed) launched nothing, so they
+          // must not keep counting against the rolling hour. Dependent tasks
+          // are settled through onDeferredLaunch instead, never here.
+          const unspawned =
+            result.tasks.length === 0
+              ? parsed.titles.length - deferredCount
+              : result.tasks.filter((t) => !t.workspaceId && !isDeferred(t.index)).length;
+          if (unspawned > 0) guards.refundStart(key, unspawned);
+          appendLaunched(
+            result.tasks.filter((t) => !isDeferred(t.index)),
+            result.outputBatchDir,
+          );
         } catch (err) {
           // start() records a throw as a failed result rather than releasing the
           // key, so this is belt-and-braces.
           console.error(`[fanout.rpc] fan-out ${key} failed:`, err);
         } finally {
           // Whatever of it is still booked as spawning stops counting; the
-          // tasks that did start are counted by their open workspaces.
-          guards.settleStarted(key);
+          // tasks that did start are counted by their open workspaces. Tasks
+          // waiting on dependencies keep their booking: the service settles
+          // each one as it launches or is dropped.
+          if (!holdsDependents) guards.settleStarted(key);
         }
       } catch (err) {
         // Anything that throws before the spawn (a renderer round-trip, a git

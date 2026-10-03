@@ -43,6 +43,8 @@ import { sanitizeFanoutOrigin, type FanoutOrigin } from '../../shared/fanoutOrig
 import type { TaskWorktreePlan } from './TaskWorktreeManager';
 import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
 import { getTaskLedger, rememberMissionChannel, noteWorkTaskClosed } from '../deck/taskLedgerHost';
+import type { TaskLedger } from '../../daemon/ledger/TaskLedger';
+import { validateFanoutTaskGraph, type FanoutTaskGraph } from '../../shared/fanoutTaskGraph';
 import {
   FANOUT_TASK_PORT_ENV,
   assignFanoutPorts,
@@ -223,7 +225,32 @@ export interface FanOutRequest {
    *  resolved to its stable ids and name by the caller (the pipe resolves a
    *  pane at request time). Stamped as-is on every task's lineage. */
   caller?: FanoutOrigin;
+  /** Per-task write scope (globs), index-aligned with `titles`. Overlapping
+   *  scopes refuse the whole fan-out; a task's scope is stated in its prompt. */
+  files?: string[][];
+  /** Per-task dependencies (indices into `titles`). A dependent task is not
+   *  spawned with the others: its worktree and agent come only once every
+   *  dependency's ledger row is review_requested or completed. */
+  dependsOn?: number[][];
+  /** Asked right before a dependent task spawns — the caller's cap check for
+   *  a start that happens long after the fan-out was accepted. A refusal
+   *  drops the task with the given message. */
+  beforeDeferredLaunch?: (index: number) => { ok: true } | { ok: false; message: string };
+  /** Called once per dependent task when it settles (launched, failed, or
+   *  dropped), so the caller can record it the way it recorded the first wave.
+   *  `remaining` is how many still wait; 0 means this fan-out is fully settled. */
+  onDeferredLaunch?: (task: FanOutTaskResult, info: { remaining: number; outputBatchDir?: string }) => void;
 }
+
+/** How long a dependent task may wait before it is dropped. A dependency whose
+ *  ledger row never moves (a worker that died, a row that was never written)
+ *  would otherwise hold its dependents — and their live-cap slots — forever. */
+export const FANOUT_DEPENDENCY_WAIT_MS = 12 * 60 * 60 * 1000;
+
+/** A dependency counts as done at either of these ledger states. `completed`
+ *  alone would deadlock any fan-out whose owner is a pane: only a brain can
+ *  set it. `review_requested` is the worker's own "done, gate passed". */
+const DEPENDENCY_DONE_STATUSES: readonly string[] = ['review_requested', 'completed'];
 
 /** 태스크 단위 결과(리포트 — 상태 구분). */
 export interface FanOutTaskResult {
@@ -266,6 +293,10 @@ export interface FanOutTaskResult {
   /** A-1 — the first-run screen is STILL on the worker's pane: it needs a human
    *  keypress, and the task's ledger row was moved to `input_required`. */
   firstRunStuck?: boolean;
+  /** dependsOn — not spawned yet: waiting for these task indices. Replaced in
+   *  the cached result by the real task result once it launches (or is
+   *  dropped because a dependency failed or was cancelled). */
+  pending?: { waitingOn: number[] };
 }
 
 export interface FanOutResult {
@@ -315,6 +346,11 @@ export interface FanOutServiceOptions {
   /** Root the worktree:false output folders go under. Tests point it at a tmp
    *  dir; production is `<wmux data>/outputs`. */
   outputsRoot?: string;
+  /** dependsOn — the ledger whose transitions release dependent tasks.
+   *  Injected in tests; defaults to the hosted one. */
+  ledger?: Pick<TaskLedger, 'get' | 'onTransition'>;
+  /** dependsOn — wait deadline (tests shorten it). */
+  dependencyWaitMs?: number;
 }
 
 /** `<wmux data>/outputs` — where worktree:false tasks write. */
@@ -362,6 +398,12 @@ export class FanOutService {
   private readonly lineage?: Pick<FanOutGuards, 'markTask' | 'taskSettled'>;
   private readonly workerPermissionMode: () => FanoutWorkerPermissionMode;
   private readonly outputsRoot: string;
+  private readonly ledger?: Pick<TaskLedger, 'get' | 'onTransition'>;
+  private readonly dependencyWaitMs: number;
+  /** dependsOn — late launches still in flight (tests await them). */
+  private pendingLaunches: Promise<void>[] = [];
+  /** dependsOn — fan-out key → drop its still-waiting tasks. */
+  private readonly waitingDependents = new Map<string, (reason: string) => number>();
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -380,6 +422,25 @@ export class FanOutService {
     this.lineage = opts.lineage;
     this.workerPermissionMode = opts.workerPermissionMode ?? (() => loadFanoutWorkerPermissionMode());
     this.outputsRoot = opts.outputsRoot ?? defaultOutputsRoot();
+    this.ledger = opts.ledger;
+    this.dependencyWaitMs = opts.dependencyWaitMs ?? FANOUT_DEPENDENCY_WAIT_MS;
+  }
+
+  /** Drop every task of fan-out `key` still waiting on its dependencies (one
+   *  already spawning finishes). Returns how many were dropped, or null when
+   *  nothing of that fan-out is waiting. */
+  cancelDependents(key: string, reason: string): number | null {
+    const cancel = this.waitingDependents.get(key);
+    return cancel ? cancel(reason) : null;
+  }
+
+  /** Tests: settle every dependent launch started so far. */
+  async drainDeferredLaunches(): Promise<void> {
+    while (this.pendingLaunches.length > 0) {
+      const batch = this.pendingLaunches;
+      this.pendingLaunches = [];
+      await Promise.all(batch);
+    }
   }
 
   /**
@@ -457,6 +518,13 @@ export class FanOutService {
     if (n > FANOUT_MAX_TASKS) {
       return { ok: false, error: `fanout:start: task count ${n} exceeds cap ${FANOUT_MAX_TASKS}`, tasks: [] };
     }
+    // files[k] / dependsOn[k] are indices into the titles AS SENT, so a dropped
+    // empty title would shift every later task onto its neighbour's scope.
+    if ((req.files !== undefined || req.dependsOn !== undefined) && n !== req.titles.length) {
+      return { ok: false, error: 'fanout:start: with files or dependsOn every title must be non-empty', tasks: [] };
+    }
+    const graph = validateFanoutTaskGraph(req.files, req.dependsOn, n);
+    if ('error' in graph) return { ok: false, error: `fanout:start: ${graph.error}`, tasks: [] };
     const sharedPrompt = (typeof req.prompt === 'string' ? req.prompt : '').trim();
     // 태스크 유효 프롬프트 = 공통 + 개별(빈 쪽 생략). 둘 다 비어도 거부하지 않는다 —
     // "환경만 조성"(worktree·브랜치·워크스페이스만 열고 프롬프트는 사람이 직접 입력)도
@@ -483,7 +551,7 @@ export class FanOutService {
     const memberId = req.memberId && req.memberId.length > 0 ? req.memberId : verifiedWorkspaceId;
 
     if (req.worktree === false) {
-      return this.runOutputTasks(req, entries, effectivePrompts, verifiedWorkspaceId, agentCmd, memberId);
+      return this.runOutputTasks(req, entries, effectivePrompts, verifiedWorkspaceId, agentCmd, memberId, graph);
     }
 
     // ── ⓪ 프리플라이트(§2 — repo 유효성 1회 선검증. 부적격이면 태스크 생성 0) ──
@@ -522,26 +590,33 @@ export class FanOutService {
     const requester = sanitizeFanoutOrigin(req.caller);
 
     // ── 태스크 순차 처리(직렬 큐가 이미 강제하지만, 스폰 부하도 직렬로) ──
+    const common = (k: number) => ({
+      index: k,
+      title: titles[k],
+      prompt: effectivePrompts[k],
+      agentCmd,
+      repoPath: req.repoPath,
+      verifiedWorkspaceId,
+      memberId,
+      missionIdemKey: `${req.idempotencyKey}-${k}`,
+      ...(entries[k].role ? { role: entries[k].role } : {}),
+      ...(entries[k].agent ? { agentChoice: entries[k].agent } : {}),
+      workerMode,
+      requester,
+    });
     const tasks: FanOutTaskResult[] = [];
-    for (const [k, title] of titles.entries()) {
-      const missionIdemKey = `${req.idempotencyKey}-${k}`;
+    for (const k of titles.keys()) {
+      if (graph.dependsOn[k].length > 0) {
+        tasks.push({ index: k, title: titles[k], ok: false, pending: { waitingOn: graph.dependsOn[k] } });
+        continue;
+      }
       const r = await this.spawnOne({
-        index: k,
-        title,
-        prompt: effectivePrompts[k],
-        agentCmd,
-        repoPath: req.repoPath,
-        verifiedWorkspaceId,
-        memberId,
-        missionIdemKey,
+        ...common(k),
         port: env.ports[k],
         setupCommand: env.setupCommand,
         baseOid: base.oid,
         baseWarning: base.warning,
-        ...(entries[k].role ? { role: entries[k].role } : {}),
-        ...(entries[k].agent ? { agentChoice: entries[k].agent } : {}),
-        workerMode,
-        requester,
+        taskNote: taskGraphNote(k, graph, tasks),
       });
       tasks.push(r);
       // This task is through its spawn: from here its stamped workspace (if
@@ -550,16 +625,201 @@ export class FanOutService {
     }
 
     // 배정됐지만 태스크가 뜨지 못한 포트는 창에 돌려준다(예약 TTL을 기다리지 않게).
+    // A waiting task gives its port back too: it may wait for hours, past the
+    // reservation, and takes a fresh one when it launches.
     releaseFanoutPorts(tasks.filter((t) => !t.ok).map((t) => env.ports[t.index]));
 
-    const allOk = tasks.every((t) => t.ok);
-    return {
-      ok: allOk,
+    const warnings = base.warning ? [base.warning] : [];
+    const result: FanOutResult = {
+      ok: tasks.every((t) => t.ok || t.pending),
       tasks,
       ...(env.setupSkipped ? { setupSkipped: env.setupSkipped } : {}),
       ...(env.portRangeInvalid ? { portRangeInvalid: true as const } : {}),
-      ...(base.warning ? { warnings: [base.warning] } : {}),
     };
+    // A dependent task is spawned like the first wave, except that its base
+    // is fetched again at launch: whatever its dependencies merged by then is
+    // what it should build on (see taskGraphNote for the unmerged case).
+    this.scheduleDependents(req, result, graph, warnings, async (k) => {
+      const lateBase = await this.worktrees.resolveBase(repoRoot);
+      if (lateBase.error) {
+        return { index: k, title: titles[k], ok: false, error: `base resolve failed: ${lateBase.error}` };
+      }
+      const lateEnv = await this.resolveEnvironment(req.repoPath, 1);
+      // What the first wave reports at the top level, a late task reports the
+      // same way: the caller re-polls the result, not a per-task field.
+      const late = [
+        lateBase.warning,
+        lateEnv.setupSkipped ? `task ${k + 1}: the repository's fanout.setup hook did not run (${lateEnv.setupSkipped})` : undefined,
+        lateEnv.portRangeInvalid ? `task ${k + 1}: the repository's fanout.portRange is invalid, so no WMUX_TASK_PORT was assigned` : undefined,
+      ];
+      for (const w of late) if (w) addWarning(result, w);
+      let r: FanOutTaskResult | undefined;
+      try {
+        r = await this.spawnOne({
+          ...common(k),
+          port: lateEnv.ports[0],
+          setupCommand: lateEnv.setupCommand,
+          baseOid: lateBase.oid,
+          baseWarning: lateBase.warning,
+          taskNote: taskGraphNote(k, graph, result.tasks),
+        });
+        return r;
+      } finally {
+        if (!r?.ok) releaseFanoutPorts([lateEnv.ports[0]]);
+      }
+    });
+    if (warnings.length > 0) result.warnings = warnings;
+    return result;
+  }
+
+  /**
+   * dependsOn — hold every task that has dependencies and launch it once each
+   * dependency's ledger row reaches a DEPENDENCY_DONE_STATUSES state. A
+   * dependency that failed to spawn, or whose row is cancelled, drops its
+   * dependents (transitively) with an error instead. `failed` is retryable in
+   * the ledger, so it keeps them waiting — up to the wait deadline, after
+   * which every task still waiting is dropped. The owner can drop them sooner
+   * with cancelDependents.
+   *
+   * The waiting state lives in this process only: a restart drops it, and the
+   * result says so. A waiting task keeps its live-cap booking until it
+   * settles, and each task settles exactly once.
+   */
+  private scheduleDependents(
+    req: FanOutRequest,
+    result: FanOutResult,
+    graph: FanoutTaskGraph,
+    warnings: string[],
+    launch: (k: number) => Promise<FanOutTaskResult>,
+  ): void {
+    const waiting = result.tasks.filter((t) => t.pending).length;
+    if (waiting === 0) return;
+    const hours = Math.round((this.dependencyWaitMs / 3_600_000) * 10) / 10;
+    warnings.push(
+      `${waiting} task(s) wait for their dependencies and launch when each one reaches review_requested or completed. ` +
+        `They are dropped after ${hours}h of waiting, or when the same call is repeated with cancelPending. ` +
+        'The wait lives in this wmux session: quitting wmux drops the tasks that have not launched yet.',
+    );
+    const key = req.idempotencyKey;
+    const ledger = this.ledger ?? getTaskLedger();
+    const guards = this.lineage ?? getFanOutGuards();
+    /** Queued behind the one-at-a-time chain, or spawning right now. */
+    const queued = new Set<number>();
+    const spawning = new Set<number>();
+    let unsubscribe: (() => void) | null = null;
+    let chain: Promise<void> = Promise.resolve();
+    const remaining = (): number => result.tasks.filter((t) => t.pending).length;
+
+    const finish = (): void => {
+      unsubscribe?.();
+      unsubscribe = null;
+      clearTimeout(deadline);
+      if (this.waitingDependents.get(key) === cancel) this.waitingDependents.delete(key);
+    };
+    /** The ONE place a waiting task leaves `pending` — once per index. */
+    const settle = (k: number, r: FanOutTaskResult): void => {
+      if (!result.tasks[k]?.pending) return;
+      result.tasks[k] = r;
+      result.ok = result.tasks.every((t) => t.ok || t.pending);
+      guards.taskSettled(key);
+      const left = remaining();
+      try {
+        req.onDeferredLaunch?.(r, { remaining: left, ...(result.outputBatchDir ? { outputBatchDir: result.outputBatchDir } : {}) });
+      } catch (err) {
+        console.warn(`[fanout] deferred-launch callback failed: ${String(err)}`);
+      }
+      if (left === 0) finish();
+    };
+    const drop = (k: number, why: string): void =>
+      settle(k, { index: k, title: result.tasks[k].title, ok: false, error: `not launched: ${why}` });
+    /** 'ready', 'wait', or the reason the task will never launch. A reason
+     *  found on ANY dependency wins over a wait on another one. */
+    const verdict = (k: number): 'ready' | 'wait' | string => {
+      let wait = false;
+      for (const j of graph.dependsOn[k]) {
+        const dep = result.tasks[j];
+        if (dep.pending) {
+          wait = true;
+          continue;
+        }
+        if (!dep.ok || !dep.taskId) return `dependency (index ${j}) did not launch`;
+        const status = ledger.get(dep.taskId)?.status;
+        if (status === 'cancelled') return `dependency (index ${j}) was cancelled`;
+        if (!status || !DEPENDENCY_DONE_STATUSES.includes(status)) wait = true;
+      }
+      return wait ? 'wait' : 'ready';
+    };
+    const pump = (): void => {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const t of result.tasks) {
+          if (!t.pending || queued.has(t.index)) continue;
+          const v = verdict(t.index);
+          if (v === 'wait') continue;
+          if (v !== 'ready') {
+            drop(t.index, v);
+            changed = true;
+            continue;
+          }
+          const k = t.index;
+          queued.add(k);
+          // One late spawn at a time, like the first wave.
+          const step = chain
+            .then(async () => {
+              // Re-checked at the head of the queue: while it waited behind an
+              // earlier spawn, a dependency may have been sent back to work,
+              // cancelled, or this task dropped.
+              if (!result.tasks[k]?.pending) return;
+              const again = verdict(k);
+              if (again === 'wait') return;
+              if (again !== 'ready') return drop(k, again);
+              const gate = req.beforeDeferredLaunch?.(k) ?? { ok: true as const };
+              if (!gate.ok) return drop(k, gate.message);
+              spawning.add(k);
+              let r: FanOutTaskResult;
+              try {
+                r = await launch(k);
+              } catch (err) {
+                r = { index: k, title: result.tasks[k].title, ok: false, error: `late spawn threw: ${(err as Error).message}` };
+              }
+              spawning.delete(k);
+              settle(k, r);
+            })
+            .catch((err: unknown) => {
+              console.warn(`[fanout] dependent launch failed: ${String(err)}`);
+            })
+            .finally(() => {
+              queued.delete(k);
+              this.pendingLaunches = this.pendingLaunches.filter((p) => p !== step);
+              if (remaining() > 0) pump();
+            });
+          chain = step;
+          this.pendingLaunches.push(step);
+        }
+      }
+    };
+    const cancel = (reason: string): number => {
+      let n = 0;
+      for (const t of result.tasks) {
+        if (t.pending && !spawning.has(t.index)) {
+          drop(t.index, reason);
+          n++;
+        }
+      }
+      return n;
+    };
+    const deadline = setTimeout(() => cancel(`its dependencies did not finish within ${hours}h`), this.dependencyWaitMs);
+    deadline.unref?.();
+    this.waitingDependents.set(key, cancel);
+    unsubscribe = ledger.onTransition(() => {
+      try {
+        pump();
+      } catch (err) {
+        console.warn(`[fanout] dependent scheduling failed: ${String(err)}`);
+      }
+    });
+    pump();
   }
 
   /**
@@ -583,6 +843,7 @@ export class FanOutService {
     verifiedWorkspaceId: string,
     agentCmd: string,
     memberId: string,
+    graph: FanoutTaskGraph,
   ): Promise<FanOutResult> {
     const folder = typeof req.outputFolder === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(req.outputFolder)
       ? req.outputFolder
@@ -601,10 +862,10 @@ export class FanOutService {
     const workerMode = req.workerPermissionMode ?? this.workerPermissionMode();
     const requester = sanitizeFanoutOrigin(req.caller);
     const tasks: FanOutTaskResult[] = [];
-    for (const [k, e] of entries.entries()) {
-      const r = await this.spawnOne({
+    const spawnAt = (k: number, done: FanOutTaskResult[]): Promise<FanOutTaskResult> =>
+      this.spawnOne({
         index: k,
-        title: e.title,
+        title: entries[k].title,
         prompt: effectivePrompts[k],
         agentCmd,
         repoPath: '',
@@ -612,15 +873,25 @@ export class FanOutService {
         memberId,
         missionIdemKey: `${req.idempotencyKey}-${k}`,
         output: { batchDir },
-        ...(e.role ? { role: e.role } : {}),
-        ...(e.agent ? { agentChoice: e.agent } : {}),
+        ...(entries[k].role ? { role: entries[k].role } : {}),
+        ...(entries[k].agent ? { agentChoice: entries[k].agent } : {}),
         workerMode,
         requester,
+        taskNote: taskGraphNote(k, graph, done),
       });
-      tasks.push(r);
+    for (const k of entries.keys()) {
+      if (graph.dependsOn[k].length > 0) {
+        tasks.push({ index: k, title: entries[k].title, ok: false, pending: { waitingOn: graph.dependsOn[k] } });
+        continue;
+      }
+      tasks.push(await spawnAt(k, tasks));
       (this.lineage ?? getFanOutGuards()).taskSettled(req.idempotencyKey);
     }
-    return { ok: tasks.every((t) => t.ok), tasks, outputBatchDir: batchDir };
+    const result: FanOutResult = { ok: tasks.every((t) => t.ok || t.pending), tasks, outputBatchDir: batchDir };
+    const warnings: string[] = [];
+    this.scheduleDependents(req, result, graph, warnings, (k) => spawnAt(k, result.tasks));
+    if (warnings.length > 0) result.warnings = warnings;
+    return result;
   }
 
   /**
@@ -704,6 +975,8 @@ export class FanOutService {
     /** Who asked (see FanOutRequest.caller) — the same origin for every task
      *  of one fan-out. */
     requester?: FanoutOrigin;
+    /** Write scope / dependency notes (taskGraphNote); '' = none. */
+    taskNote?: string;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
     if (ctx.agentChoice) base.agent = ctx.agentChoice.agent;
@@ -774,7 +1047,10 @@ export class FanOutService {
     let promptPath: string | undefined;
     try {
       fs.mkdirSync(metaDir, { recursive: true });
-      if (ctx.prompt.length > 0) {
+      // A declared scope or dependency is written even with no prompt: the
+      // worker must know what it may edit before it edits anything.
+      const taskNote = ctx.taskNote ?? '';
+      if (ctx.prompt.length > 0 || taskNote.length > 0) {
         promptPath = path.join(metaDir, 'prompt.md');
         // A3: the caller's prompt verbatim, then the delivery contract (see
         // WORKER_DELIVERY_PREAMBLE). 프롬프트 없이 여는 "환경만 조성" 경로는
@@ -784,7 +1060,7 @@ export class FanOutService {
         const outputNote = ctx.output
           ? `\n\n---\n\nWrite every file you produce into your current directory (${cwd}); that folder is what gets compared. It is not a git repository — there is no branch to commit to.`
           : '';
-        fs.writeFileSync(promptPath, ctx.prompt + outputNote + WORKER_DELIVERY_PREAMBLE, 'utf8');
+        fs.writeFileSync(promptPath, ctx.prompt + outputNote + taskNote + WORKER_DELIVERY_PREAMBLE, 'utf8');
       }
       const stamp: WorkTaskMetaStamp = {
         taskId,
@@ -1119,6 +1395,45 @@ export class FanOutService {
       this.results.delete(oldest);
     }
   }
+}
+
+/** Append a warning to a result once (late launches add theirs after the
+ *  result was first returned). */
+function addWarning(result: FanOutResult, warning: string): void {
+  const list = result.warnings ?? (result.warnings = []);
+  if (!list.includes(warning)) list.push(warning);
+}
+
+/**
+ * The prompt section for a task's write scope and dependencies ('' when it has
+ * neither). `done` holds the results so far, so a dependency's branch is named
+ * when it has one.
+ */
+export function taskGraphNote(k: number, graph: FanoutTaskGraph, done: FanOutTaskResult[]): string {
+  let note = '';
+  const scope = graph.files[k] ?? [];
+  if (scope.length > 0) {
+    note +=
+      '\n\n---\n\n## Your write scope\n\n' +
+      `Edit only paths matching: ${scope.map((g) => `\`${g}\``).join(', ')} (relative to the repository root). ` +
+      'Other tasks of this fan-out own the rest of the repository and are working at the same time. ' +
+      'If the job needs a change outside your scope, do not make it: set your ledger row to input_required and name the path.';
+  }
+  const deps = graph.dependsOn[k] ?? [];
+  if (deps.length > 0) {
+    const lines = deps.map((j) => {
+      const d = done[j];
+      const branch = d?.branch ? ` — branch \`${d.branch}\`` : d?.outputDir ? ` — folder \`${d.outputDir}\`` : '';
+      return `- task ${j + 1}: ${d?.title ?? '(unknown)'}${branch}`;
+    });
+    note +=
+      '\n\n---\n\n## Tasks this one builds on\n\n' +
+      'This task was started only after these tasks of the same fan-out handed in their work (review requested or completed):\n\n' +
+      lines.join('\n') +
+      '\n\nYour checkout starts from a freshly fetched origin commit, so their changes are in it only if they were already merged. ' +
+      'If they are not, merge their branches (local to this repository) before building on them.';
+  }
+  return note;
 }
 
 /** 에러 값 표시(문자열/객체 방어). */
