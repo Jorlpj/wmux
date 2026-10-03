@@ -402,7 +402,6 @@ export const IPC = {
   AGY_ACCOUNT_RENAME: 'agy-account:rename',
   AGY_ACCOUNT_REMOVE: 'agy-account:remove',
   AGY_ACCOUNT_SET_AUTO_ROTATE: 'agy-account:set-auto-rotate',
-  AGY_ACCOUNT_CLEAR_COOLDOWN: 'agy-account:clear-cooldown',
   AGY_ACCOUNT_CHANGED: 'agy-account:changed',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',

@@ -2423,7 +2423,6 @@ export const ko = {
   'agyAccounts.quotaTitle': "이 계정의 마지막 agy 세션 기준 남은 Gemini 할당량",
   'agyAccounts.quota5h': "5시간 {pct}",
   'agyAccounts.quotaWeekly': "주간 {pct}",
-  'agyAccounts.clearCooldown': "다시 시도",
   'agyAccounts.useNow': "지금 사용",
   'agyAccounts.removeTitle': "wmux에서 이 agy 계정 제거",
   'agyAccounts.labelPlaceholder': "이름(선택)",
