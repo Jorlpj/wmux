@@ -143,7 +143,7 @@ export function capBody(raw: string): { body: string; truncated: boolean } {
 // 인라인(파일 라인) 리뷰 코멘트 — `gh pr view`의 comments/reviews가 누락하는
 // 리뷰 스레드 코멘트(Codex P2). `gh api .../pulls/N/comments` 원형.
 interface GhReviewComment {
-  user?: { login?: string };
+  user?: { login?: string; type?: string };
   body?: string;
   created_at?: string;
   html_url?: string;
@@ -152,13 +152,51 @@ interface GhReviewComment {
   original_line?: number | null;
 }
 
-/** comments + (본문 있는) reviews + 인라인 리뷰 코멘트를 시간순 단일 스트림으로. */
+// `gh pr view` reports an author as a bare login (no `[bot]` suffix, no type —
+// checked against a live PR), so a bot's conversation comment reads like a
+// person's. One GraphQL read in the same (updatedAt-cached) detail fetch types
+// the comment and review authors.
+const BOT_AUTHORS_QUERY =
+  'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){'
+  + 'comments(last:100){nodes{author{__typename login}}} reviews(last:100){nodes{author{__typename login}}}}}}';
+
+type AuthorNodes = { nodes?: Array<{ author?: { __typename?: string; login?: string } | null } | null> } | null;
+
+export type AuthorTypes = ReadonlyMap<string, 'Bot' | 'User'>;
+
+/** Lower-cased login → account type from a BOT_AUTHORS_QUERY answer; null
+ *  when the answer has no pull request (an error, no access). */
+export function authorTypesFromGraphql(json: unknown): Map<string, 'Bot' | 'User'> | null {
+  const pr = (json as { data?: { repository?: { pullRequest?: { comments?: AuthorNodes; reviews?: AuthorNodes } | null } } })
+    ?.data?.repository?.pullRequest;
+  if (!pr) return null;
+  const out = new Map<string, 'Bot' | 'User'>();
+  for (const n of [...(pr.comments?.nodes ?? []), ...(pr.reviews?.nodes ?? [])]) {
+    const a = n?.author;
+    if (typeof a?.login !== 'string' || !a.login) continue;
+    if (a.__typename === 'Bot' || a.__typename === 'User') out.set(a.login.toLowerCase(), a.__typename);
+  }
+  return out;
+}
+
+/** How long a detail read whose author types could not be read is reused
+ *  before it is tried again (a change to the PR retries at once). */
+const UNTYPED_DETAIL_RETRY_MS = 5 * 60_000;
+
+/** comments + (본문 있는) reviews + 인라인 리뷰 코멘트를 시간순 단일 스트림으로.
+ *  `authorTypes` (lower-cased login → type) types conversation comments and
+ *  reviews; inline comments carry their own REST `user.type`. */
 export function mapGhDetail(
   json: GhDetailJson,
   prUrl: string,
   reviewComments: GhReviewComment[] = [],
+  authorTypes: AuthorTypes = new Map(),
 ): PrComment[] {
   const out: PrComment[] = [];
+  const typed = (login: string | undefined) => {
+    const t = login ? authorTypes.get(login.toLowerCase()) : undefined;
+    return t ? { authorType: t } : {};
+  };
   for (const c of json.comments ?? []) {
     if (typeof c.body !== 'string') continue;
     const { body, truncated } = capBody(c.body);
@@ -170,6 +208,7 @@ export function mapGhDetail(
       kind: 'comment',
       reviewState: '',
       truncated,
+      ...typed(c.author?.login),
     });
   }
   for (const r of json.reviews ?? []) {
@@ -184,6 +223,7 @@ export function mapGhDetail(
       kind: 'review',
       reviewState: (r.state ?? '').toUpperCase(),
       truncated,
+      ...typed(r.author?.login),
     });
   }
   for (const rc of reviewComments) {
@@ -199,6 +239,7 @@ export function mapGhDetail(
       kind: 'review',
       reviewState: '',
       truncated,
+      ...(rc.user?.type === 'Bot' || rc.user?.type === 'User' ? { authorType: rc.user.type } : {}),
     });
   }
   out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -216,7 +257,7 @@ interface ListEntry {
 export class GhPrService implements PrProvider {
   private listCache = new Map<string, ListEntry>();
   /** 상세 캐시 — key = repo\0number, updatedAt이 같으면 재fetch 생략. */
-  private detailCache = new Map<string, { updatedAt: string; value: PrDetailResult }>();
+  private detailCache = new Map<string, { updatedAt: string; value: PrDetailResult; retryAt?: number }>();
   /** When gh was last found missing (ENOENT); probed again after GATE_TTL_MS
    *  or on an explicit Check again, so installing gh needs no restart. */
   private ghMissingAt: number | null = null;
@@ -334,7 +375,10 @@ export class GhPrService implements PrProvider {
     const key = `${remoteKey ?? cacheKey(repoPath)}\0${number}`;
     const cached = this.detailCache.get(key);
     // updatedAt 불변 → 코멘트 재fetch 생략(rate limit 상한의 핵심).
-    if (cached && cached.updatedAt === updatedAt && cached.value.ok) return cached.value;
+    if (
+      cached && cached.updatedAt === updatedAt && cached.value.ok
+      && (cached.retryAt === undefined || this.now() < cached.retryAt)
+    ) return cached.value;
     try {
       const { stdout } = await this.gh(
         ['pr', 'view', String(number), '--json', 'number,url,comments,reviews'],
@@ -354,11 +398,27 @@ export class GhPrService implements PrProvider {
       } catch {
         /* 인라인 코멘트 조회 실패 — 대화 코멘트만으로 강등 */
       }
+      let authorTypes: Map<string, 'Bot' | 'User'> | null = null;
+      try {
+        const g = await this.gh(
+          ['api', 'graphql', '-F', 'owner={owner}', '-F', 'name={repo}', '-F', `number=${number}`, '-f', `query=${BOT_AUTHORS_QUERY}`],
+          repoPath,
+        );
+        authorTypes = authorTypesFromGraphql(JSON.parse(g.stdout));
+      } catch {
+        /* untyped: those authors stay unknown, never "a person" */
+      }
       const value: PrDetailResult = {
         ok: true,
-        detail: { number, comments: mapGhDetail(json, json.url ?? '', reviewComments) },
+        detail: { number, comments: mapGhDetail(json, json.url ?? '', reviewComments, authorTypes ?? new Map()) },
       };
-      this.detailCache.set(key, { updatedAt, value });
+      // An untyped read is not a success to keep: tried again on the next
+      // change, or after UNTYPED_DETAIL_RETRY_MS if the PR stays put.
+      this.detailCache.set(key, {
+        updatedAt,
+        value,
+        ...(authorTypes ? {} : { retryAt: this.now() + UNTYPED_DETAIL_RETRY_MS }),
+      });
       this.evict(this.detailCache);
       return value;
     } catch (err) {

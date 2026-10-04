@@ -1055,6 +1055,18 @@ const electronAPI = {
       ipcRenderer.on(IPC.DECK_FANOUT_CALLER, listener);
       return () => { ipcRenderer.removeListener(IPC.DECK_FANOUT_CALLER, listener); };
     },
+    // A PR event for a brain-less workspace: a pointer for the PR owner
+    // pane's one-line nudge (same queue as the fan-out caller nudge).
+    onPrOwner: (
+      callback: (ev: import('../main/deck/prOwnerNotify').PrOwnerEvent) => void,
+    ) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        ev: import('../main/deck/prOwnerNotify').PrOwnerEvent,
+      ) => callback(ev);
+      ipcRenderer.on(IPC.DECK_PR_OWNER, listener);
+      return () => { ipcRenderer.removeListener(IPC.DECK_PR_OWNER, listener); };
+    },
     fanoutCallerSession: (ptyId: string) =>
       ipcRenderer.invoke(IPC.DECK_FANOUT_CALLER_SESSION, ptyId) as Promise<{ incarnationId: string } | null>,
     fanoutCallerSubmit: (payload: {
@@ -1062,6 +1074,8 @@ const electronAPI = {
       ownerWorkspaceId: string;
       incarnationId: string;
       text: string;
+      /** The PRs the line names, with the url the owner was resolved by. */
+      prs?: { number: number; url: string }[];
     }) =>
       ipcRenderer.invoke(IPC.DECK_FANOUT_CALLER_SUBMIT, payload) as Promise<
         import('../main/deck/fanoutCallerSubmit').FanoutCallerSubmitReply

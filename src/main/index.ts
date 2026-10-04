@@ -185,7 +185,7 @@ import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
-import { broadcastMetadataUpdate } from './ipc/handlers/metadata.handler';
+import { broadcastMetadataUpdate, currentPrOfPty, resetPollCacheOnRendererLoad } from './ipc/handlers/metadata.handler';
 import { broadcastSettledIdle } from './notification/turnSettle';
 import { readOrchRole } from '../shared/orchestratorRole';
 import { initLogSink, isBrokenPipeError, logLine, stdioErrorsConsumed } from './util/logSink';
@@ -895,6 +895,7 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
 const fanoutCallerSubmit = createFanoutCallerSubmit({
   deliveryGate: (ptyId) => inputRpc.deliveryGate(ptyId),
   ownerOf: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  prOf: (ptyId) => currentPrOfPty(ptyId),
   agentState: async (ptyId) => (daemonClient?.isConnected ? daemonClient.getAgentState(ptyId) : null),
   deliver: async (args) =>
     daemonClient ? daemonClient.deliverCallerNudge(args) : { result: 'unavailable', pasted: false },
@@ -2322,6 +2323,7 @@ app.on('window-all-closed', () => {
 // either of the other two destroyed itself on close instead of hiding.
 function adoptMainWindow(win: BrowserWindow): void {
   attachWindowRecovery(win);
+  resetPollCacheOnRendererLoad(win);
 
   win.on('closed', () => {
     // Guarded: a recovery window may be adopted while the old reference is
