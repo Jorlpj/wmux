@@ -12,7 +12,7 @@
 // pull-only and lives only while the page is shown; only the shown list of
 // the active repo polls.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -23,7 +23,10 @@ import { GitTab } from './GitTab';
 import { PrSection } from './PrSection';
 import { IssueSection } from './IssueSection';
 import { GitDetail } from './GitDetail';
-import { useRepoGroups } from './repoGroups';
+import { repoOwnerWorkspace, useRepoGroups } from './repoGroups';
+import { GhConnectPage } from './GhConnectPage';
+import { useGhAuthGate } from './ghAuthGate';
+import type { GitDragOwner } from './gitPageState';
 import { saveGitTab, type GitPageTab, type GitScope, type GitSelection } from './gitPageState';
 import type { PrSummary } from '../../../shared/prSurface';
 import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
@@ -42,6 +45,32 @@ export default function GitPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [repoName, setRepoName] = useState<string | null>(null);
   const [resolved, setResolved] = useState<{ repoPath: string; mainPath: string } | null>(null);
+  // Signed out or no gh: the page is one connect card (re-read on refresh / after a login).
+  const gate = useGhAuthGate(resolved?.repoPath ?? null, refreshKey);
+  const recheck = () => setRefreshKey((k) => k + 1);
+  // Back from the connect card: the lists mounted while the gate was still
+  // re-checking read main's stale signed-out answer, so read them once more,
+  // forced, now that gh answers.
+  const wasBlocked = useRef(false);
+  useEffect(() => {
+    if (gate === 'unauthenticated' || gate === 'cli-missing') wasBlocked.current = true;
+    else if (gate === 'ok' && wasBlocked.current) {
+      wasBlocked.current = false;
+      setRefreshKey((k) => k + 1);
+    }
+  }, [gate]);
+  // Who owns a hand-off from a list (the fan-out's workspace for "Start in a
+  // new worktree"): in This repo the active workspace, which is in it; in All
+  // repos each group's own workspace, reported by AllLists.
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const repoContext: GitDragOwner | undefined = resolved
+    ? { repoPath: resolved.repoPath, ...(activeWorkspaceId ? { workspaceId: activeWorkspaceId } : {}) }
+    : undefined;
+  const [groupOwners, setGroupOwners] = useState<Record<string, string | undefined>>({});
+  const groupContext = (repoPath: string): GitDragOwner => {
+    const workspaceId = groupOwners[repoPath];
+    return { repoPath, ...(workspaceId ? { workspaceId } : {}) };
+  };
   // Each list's last answer, so the detail pane can find the selected item.
   const [items, setItems] = useState<Record<string, PrSummary[] | IssueSummary[]>>({});
   // Bumped by every new list answer, so the list scroll can be restored once
@@ -103,6 +132,10 @@ export default function GitPage() {
 
       <GitTab layout="summary" refreshKey={refreshKey} onRepo={setRepoName} onResolved={setResolved} />
 
+      {(gate === 'unauthenticated' || gate === 'cli-missing') ? (
+        // Not connected (or gh missing): the whole page is the connect card.
+        <GhConnectPage gate={gate} onRecheck={recheck} onConnected={recheck} />
+      ) : (<>
       <div className="wmux-git-toolbar">
         <div role="tablist" aria-label={t('git.tab.label')} className="wmux-git-tabs">
           {TABS.map((tab) => (
@@ -157,6 +190,7 @@ export default function GitPage() {
                     selected={sel && sel.repoPath === resolved.repoPath ? sel.number : null}
                     onSelect={(n) => select(resolved.repoPath, n)}
                     onItems={publish(resolved.repoPath, kind)}
+                    dragContext={repoContext}
                   />
                 )
               ) : (
@@ -168,6 +202,7 @@ export default function GitPage() {
                   sel={sel}
                   onSelect={select}
                   publish={(repoPath) => publish(repoPath, kind)}
+                  onOwners={setGroupOwners}
                 />
               )}
             </ListPane>
@@ -180,6 +215,7 @@ export default function GitPage() {
                   repoLabel={page.scope === 'repo' ? repoName ?? '' : repoLabelOf(sel.repoPath)}
                   pr={kind === 'pr' ? (selItem as PrSummary) : null}
                   issue={kind === 'issue' ? (selItem as IssueSummary) : null}
+                  repo={page.scope === 'repo' ? repoContext : groupContext(sel.repoPath)}
                 />
               ) : (
                 <GitDetail kind={kind} repoPath="" repoLabel="" />
@@ -188,6 +224,7 @@ export default function GitPage() {
           </div>
         )}
       </div>
+      </>)}
     </div>
   );
 }
@@ -233,7 +270,7 @@ function ListPane({ scrollKey, ready, children }: { scrollKey: string; ready: nu
   );
 }
 
-function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selected, onSelect, onItems }: {
+function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selected, onSelect, onItems, dragContext }: {
   tab: GitPageTab;
   repoPath: string;
   refreshKey: number;
@@ -244,6 +281,7 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
   selected: number | null;
   onSelect: (n: number) => void;
   onItems: (list: PrSummary[] | IssueSummary[]) => void;
+  dragContext?: GitDragOwner;
 }) {
   return tab === 'issues' ? (
     <IssueSection
@@ -256,6 +294,7 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
       selected={selected}
       onSelect={(i) => onSelect(i.number)}
       onItems={onItems}
+      dragContext={dragContext}
     />
   ) : (
     <PrSection
@@ -266,12 +305,13 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
       selected={selected}
       onSelect={(p) => onSelect(p.number)}
       onItems={onItems}
+      dragContext={dragContext}
     />
   );
 }
 
 /** All repos: one collapsible list per repo, the active repo first and open. */
-function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish }: {
+function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish, onOwners }: {
   tab: GitPageTab;
   refreshKey: number;
   filter: IssueFilter;
@@ -279,10 +319,18 @@ function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish }:
   sel: GitSelection | null;
   onSelect: (repoPath: string, n: number) => void;
   publish: (repoPath: string) => (list: PrSummary[] | IssueSummary[]) => void;
+  /** Each group's owning workspace by its list path, for the detail header. */
+  onOwners?: (owners: Record<string, string | undefined>) => void;
 }) {
   const t = useT();
   const groups = useRepoGroups(refreshKey);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const owners = useMemo(
+    () => Object.fromEntries((groups ?? []).map((g) => [g.prPath, repoOwnerWorkspace(g, activeWorkspaceId)])),
+    [groups, activeWorkspaceId],
+  );
+  useEffect(() => { onOwners?.(owners); }, [owners, onOwners]);
   if (groups === null) return <div className="wmux-git-note">{t('git.loading')}</div>;
   if (groups.length === 0) return <div className="wmux-git-note" data-git-all-empty>{t('git.allRepos.empty')}</div>;
   return (
@@ -313,6 +361,7 @@ function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish }:
                 selected={sel && sel.repoPath === g.prPath ? sel.number : null}
                 onSelect={(n) => onSelect(g.prPath, n)}
                 onItems={publish(g.prPath)}
+                dragContext={{ repoPath: g.prPath, ...(owners[g.prPath] ? { workspaceId: owners[g.prPath] } : {}) }}
               />
             )}
           </section>

@@ -11,6 +11,10 @@ import { GhGateNotice } from './GhGateNotice';
 import { ListFreshness } from './ListFreshness';
 import { relTime, useGitList, type ListAnswer } from './useGitList';
 import { PR_STEP_IS_PROBLEM, prNextStep } from '../../../shared/prNextStep';
+import { PR_DRAG_TYPE, prUrlParts, serializePrDragRef } from '../../../shared/prDragRef';
+import { useStore } from '../../stores';
+import type { GitDragOwner } from './gitPageState';
+import { beginHandoffDrag } from './handoffDrag';
 import type { PrSummary, PrComment } from '../../../shared/prSurface';
 
 export { relTime };
@@ -48,7 +52,7 @@ export function PrStepText({ pr }: { pr: Pick<PrSummary, 'state' | 'checks' | 'm
   );
 }
 
-export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true, lazy = false, selected = null, onSelect, onItems }: {
+export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true, lazy = false, selected = null, onSelect, onItems, dragContext }: {
   repoPath: string | null;
   refreshKey?: number;
   /** The list is on screen. */
@@ -62,6 +66,8 @@ export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true,
   onSelect?: (pr: PrSummary) => void;
   /** Every good answer, so the page can keep the selected PR's summary fresh. */
   onItems?: (prs: PrSummary[]) => void;
+  /** The repo a dragged row comes from (for the drop's "Start in a new worktree"). */
+  dragContext?: GitDragOwner;
 }): React.ReactElement | null {
   const t = useT();
   const read = useCallback(async (force: boolean): Promise<ListAnswer<PrSummary[]>> => {
@@ -107,6 +113,15 @@ export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true,
                 className={`wmux-git-item ${FOCUS_RING}`}
                 aria-current={selected === pr.number ? 'true' : undefined}
                 onClick={() => onSelect?.(pr)}
+                // Drags as a PR ref (application/x-wmux-pr) onto an agent pane or workspace.
+                draggable={!!prUrlParts(pr.url)}
+                onDragStart={(e) => {
+                  const parts = prUrlParts(pr.url);
+                  if (!parts) return;
+                  e.dataTransfer.effectAllowed = 'copy';
+                  e.dataTransfer.setData(PR_DRAG_TYPE, serializePrDragRef({ ...parts, title: pr.title, url: pr.url }));
+                  beginHandoffDrag({ repoPath, ...(dragContext?.workspaceId ? { workspaceId: dragContext.workspaceId } : {}), owner: parts.owner, repo: parts.repo });
+                }}
               >
                 <span className="wmux-git-item-line">
                   <span className={`wmux-git-item-dot ${checksClass(pr.checks)}`} title={pr.checks ?? ''} aria-hidden="true">●</span>

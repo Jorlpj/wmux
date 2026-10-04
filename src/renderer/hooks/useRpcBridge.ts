@@ -298,9 +298,11 @@ function submitToPty(ptyId: string, text: string): void {
 // `operatorOrigin` at the router (the human's own surface) is written here.
 // ---------------------------------------------------------------------------
 
-/** Whether an A2A delivery skips the approval gate: main-stamped operator origin only. */
+/** Whether an A2A delivery skips the approval gate: main-stamped operator
+ *  origin only, and not when the send asks for the gated delivery (the Git
+ *  page's hand-off, which also waits for the person to stop typing). */
 function a2aOperatorOrigin(params: RpcParams): boolean {
-  return params.operatorOrigin === true;
+  return params.operatorOrigin === true && params.gatedDelivery !== true;
 }
 
 /**
@@ -322,6 +324,12 @@ export interface A2aPtyWrite {
  */
 interface NewTaskDelivery {
   taskId: string;
+  /** Hold the paste while the person is typing in the pane (gatedDelivery sends). */
+  waitQuiet?: boolean;
+  /** With waitQuiet: the agent the sender saw in the pane; main refuses if it changed. */
+  expectAgent?: string;
+  /** With waitQuiet: main's deadline for the whole delivery (epoch ms). */
+  deadlineAt?: number;
 }
 
 /** The fields a new-task delivery's receipt carries about the fresh-context
@@ -359,6 +367,9 @@ async function deliverA2aText(
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: ptyAgent(ptyId).name,
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
+    ...(newTask?.waitQuiet ? { waitQuiet: true } : {}),
+    ...(newTask?.waitQuiet && newTask.expectAgent ? { expectAgent: newTask.expectAgent } : {}),
+    ...(newTask?.waitQuiet && newTask.deadlineAt !== undefined ? { deadlineAt: newTask.deadlineAt } : {}),
   });
   if (!result.ok) return { ptyId: null, refused: result };
   const fresh = freshContextOf(result);
@@ -390,6 +401,18 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     "The target pane hit its provider's usage limit and is held until the limit resets, so nothing was " +
     'written to it. The task is stored; the receiver can find it with a2a_task_query. Send again after the ' +
     'reset (the detail names the reset time when it is known).',
+  user_typing:
+    'Someone was typing in the target pane (or left a draft in its composer), so nothing was submitted there. ' +
+    'The task is stored; the receiver can find it with a2a_task_query. Send again once the pane is idle.',
+  agent_changed:
+    'The agent this was sent to left the target pane or was replaced before the message could be submitted, ' +
+    'so nothing was submitted there. The task is stored. Pick the pane again and resend.',
+  agent_unverified:
+    "wmux could not read the target pane's agent, so it could not confirm the message would reach that agent " +
+    'and submitted nothing. The task is stored. Retry in a few seconds.',
+  deadline:
+    'The delivery waited too long (someone kept typing, or the pane was busy) and gave up without submitting. ' +
+    'The task is stored. Send again once the pane is idle.',
 };
 
 /** The `delivery` receipt for a refused write. */
@@ -3164,19 +3187,42 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // pane. #1489: silent:false no longer overrides it — it was the
       // "paste it loudly anyway" switch, and into a shell that runs the body.
       const noAgentTarget = !a2aTargetHasAgent(target, explicitPty);
+      // A Git page hand-off (operator only; main stamps operatorOrigin): the
+      // body is a fixed reference built in main, pasted as is instead of a
+      // nudge, and only into the addressed pane's own detected agent: anything
+      // else counts as no agent. Absence is decided by the agent's name, not
+      // its status: an agent idle at its first prompt is live, and one that
+      // left is dropped from the pane's entry (the workspace-level name is not).
+      const referenceDelivery = params.operatorOrigin === true && params.referenceDelivery === true && typeof message === 'string';
+      const panes = useStore.getState();
+      const referencePaneHasAgent = !!explicitPty && paneHasDetectedAgent(explicitPty, panes.surfaceAgent, {
+        agentAlive: panes.agentAliveByPtyId,
+        commandRunning: panes.commandRunningByPtyId,
+      });
+      const gated: Omit<NewTaskDelivery, 'taskId'> = params.gatedDelivery === true
+        ? {
+            waitQuiet: true,
+            ...(liveMeta?.agentName ? { expectAgent: liveMeta.agentName } : {}),
+            ...(typeof params.deliveryDeadlineAt === 'number' ? { deadlineAt: params.deliveryDeadlineAt } : {}),
+          }
+        : {};
       let write: A2aPtyWrite = { ptyId: null };
       let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
-      if (noAgentTarget) {
+      if (noAgentTarget || (referenceDelivery && !referencePaneHasAgent)) {
         // Nothing is written: a body pasted into a shell prompt is the #1336
         // hazard whether or not we press Enter. The task is stored and teed
         // onto the EventBus below, so the receiver can still poll it.
         mode = 'no-agent-pane';
+      } else if (!silentExplicit && referenceDelivery) {
+        // One line for a pane that cannot take a multi-line paste.
+        write = await deliverPtyNudge(target, (pty) => (a2aFormatOptionsFor(pty).multiline ? message : message.replace(/\n+/g, ' — ')), explicitPty, operator, { taskId: newTaskId, ...gated });
+        mode = 'notification';
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
         // #1680 — this branch is the task boundary: the pane's role may ask
         // for a fresh conversation before the task lands (both modes).
-        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined), explicitPty, operator, { taskId: newTaskId });
+        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined), explicitPty, operator, { taskId: newTaskId, ...gated });
       } else {
-        write = await deliverPtyNotification(target, fromName, message, explicitPty, operator, { taskId: newTaskId });
+        write = await deliverPtyNotification(target, fromName, message, explicitPty, operator, { taskId: newTaskId, ...gated });
         mode = 'notification';
       }
       const wrotePty = write.ptyId;
