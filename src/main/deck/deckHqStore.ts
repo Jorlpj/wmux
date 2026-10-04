@@ -1,0 +1,497 @@
+// ─── Command Deck — the HQ workspace (main bot, A2 core) ─────────────────────
+//
+// With an HQ designated, exactly ONE workspace may run a deck brain: the HQ.
+// Every other workspace keeps its panes, channels and fan-out routing, but never
+// starts a brain turn. With no HQ designated (the default) nothing changes —
+// every workspace keeps today's per-workspace brain eligibility.
+//
+// The HQ is app-owned: its id lives here, in main, and this file is the source
+// of truth. The renderer only reads it (DECK_HQ_GET); the setter is an internal
+// main API (the HQ-pick UI is a later change).
+//
+// One JSON file (`deck-hq.json`) in the wmux data dir, atomic-written and
+// WMUX_DATA_SUFFIX-isolated — the same storage shape as deck-autonomy.json.
+// Reads are cached in memory and revalidated by the file's mtime/size, so the
+// per-event hot paths do not re-parse it.
+//
+// MASTER SWITCH (`moaEnabled`): the main bot as a whole. Absent = on, which is
+// today's behaviour. Off makes the deck brain fully inert (see deck.handler).
+// Nothing is deleted, so turning it back on restores the previous state.
+//
+// HQ TURN CAP (`hqMaxTurnsPerHour`): with an HQ designated, its automatic turns
+// are capped per trailing hour (default 12). No HQ designated → no cap.
+//
+// UNREADABLE FILE (fail closed): a file that exists but whose primary and every
+// backup copy are unreadable or invalid is NOT read as unset. It reads as
+// 'corrupt': the master switch is off (no brain runs anywhere), and every
+// write to this store is refused so the next write cannot erase the HQ id, the
+// migration marker or the archive. Recovery is manual (fix or remove the file).
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { getWmuxDir } from '../../daemon/config';
+import { atomicReadJSONSync, atomicWriteJSON, BACKUP_SUFFIXES } from '../../daemon/util/atomicWrite';
+import { createSerialChain } from './serialChain';
+import { mutateDeckSchedules } from './deckScheduleStore';
+import { loadDeckLoopState, setLoopStatus } from './deckLoopStateStore';
+import {
+  loadDeckDecisions,
+  clearPendingDecisionIfUnchanged,
+  type WorkspaceDecision,
+} from './deckDecisionStore';
+import { loadLiveDeckWorks, archiveDeckWork, clearActiveDeckWork } from './deckWorkStore';
+import { loadWorkspaceMode, modeToCaps, setWorkspaceAutonomy } from './deckAutonomyStore';
+import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
+
+const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+
+/** Non-HQ pending decisions archived by the migration, kept for reference. */
+const MAX_ARCHIVED_DECISIONS = 200;
+
+/** Default hourly cap on the HQ's automatic turns. */
+export const DEFAULT_HQ_MAX_TURNS_PER_HOUR = 12;
+
+export interface ArchivedHqDecision {
+  workspaceId: string;
+  decision: WorkspaceDecision;
+  archivedAt: number;
+}
+
+interface HqFile {
+  hqWorkspaceId: string | null;
+  /** Master switch; absent = on. */
+  moaEnabled?: boolean;
+  /** Hourly cap on the HQ's automatic turns; absent = the default. */
+  hqMaxTurnsPerHour?: number;
+  /** Set once the non-HQ migration has completed for `hqWorkspaceId`. */
+  migration?: { doneAt: number; hqWorkspaceId: string };
+  archivedDecisions?: ArchivedHqDecision[];
+}
+
+interface Loaded {
+  file: HqFile;
+  corrupt: boolean;
+}
+
+export function getDeckHqPath(dir: string = getWmuxDir()): string {
+  return path.join(dir, 'deck-hq.json');
+}
+
+const serialize = createSerialChain();
+let corruptWarned = false;
+
+/** Strict shape check: anything else is "invalid", which fails closed. */
+function isValidHqFile(data: unknown): data is Record<string, unknown> {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const o = data as Record<string, unknown>;
+  if (o.hqWorkspaceId !== undefined && o.hqWorkspaceId !== null
+    && !(typeof o.hqWorkspaceId === 'string' && WORKSPACE_ID_RE.test(o.hqWorkspaceId))) return false;
+  if (o.moaEnabled !== undefined && typeof o.moaEnabled !== 'boolean') return false;
+  if (o.hqMaxTurnsPerHour !== undefined
+    && !(typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1)) return false;
+  if (o.archivedDecisions !== undefined && !Array.isArray(o.archivedDecisions)) return false;
+  return true;
+}
+
+function sanitize(o: Record<string, unknown>): HqFile {
+  const out: HqFile = { hqWorkspaceId: typeof o.hqWorkspaceId === 'string' ? o.hqWorkspaceId : null };
+  if (typeof o.moaEnabled === 'boolean') out.moaEnabled = o.moaEnabled;
+  if (typeof o.hqMaxTurnsPerHour === 'number') out.hqMaxTurnsPerHour = o.hqMaxTurnsPerHour;
+  const m = o.migration as Record<string, unknown> | undefined;
+  if (m && typeof m.doneAt === 'number' && typeof m.hqWorkspaceId === 'string') {
+    out.migration = { doneAt: m.doneAt, hqWorkspaceId: m.hqWorkspaceId };
+  }
+  if (Array.isArray(o.archivedDecisions)) out.archivedDecisions = o.archivedDecisions as ArchivedHqDecision[];
+  return out;
+}
+
+function readFresh(p: string): Loaded {
+  let raw: Record<string, unknown> | null = null;
+  try {
+    // No quarantine: moving a bad primary aside would make the next read see
+    // "no file" and fail OPEN.
+    raw = atomicReadJSONSync<Record<string, unknown>>(p, {
+      validate: isValidHqFile,
+      quarantineOnCorruption: false,
+    });
+  } catch {
+    raw = null;
+  }
+  if (raw !== null) return { file: sanitize(raw), corrupt: false };
+  const exists = [p, ...BACKUP_SUFFIXES.map((s) => `${p}${s}`)].some((f) => fs.existsSync(f));
+  if (!exists) return { file: { hqWorkspaceId: null }, corrupt: false };
+  if (!corruptWarned) {
+    corruptWarned = true;
+    console.warn(`[deck:hq] ${p} is unreadable or invalid; the main bot stays off until it is fixed`);
+  }
+  return { file: { hqWorkspaceId: null }, corrupt: true };
+}
+
+/** mtime+size of the primary and the first backup: a write renames over the
+ *  primary, so any change (ours or external) changes the key. */
+function statKey(p: string): string {
+  const one = (f: string): string => {
+    try {
+      const s = fs.statSync(f);
+      return `${s.mtimeMs}:${s.size}`;
+    } catch {
+      return '-';
+    }
+  };
+  return `${one(p)}|${one(`${p}${BACKUP_SUFFIXES[0]}`)}`;
+}
+
+const cache = new Map<string, { key: string; loaded: Loaded }>();
+
+function load(dir?: string): Loaded {
+  const p = getDeckHqPath(dir);
+  const key = statKey(p);
+  const hit = cache.get(p);
+  if (hit && hit.key === key) return hit.loaded;
+  const loaded = readFresh(p);
+  cache.set(p, { key, loaded });
+  return loaded;
+}
+
+/** Write the file (refused while corrupt) and drop the cached copy. */
+async function write(dir: string | undefined, next: HqFile): Promise<void> {
+  const p = getDeckHqPath(dir);
+  try {
+    await atomicWriteJSON(p, next);
+  } finally {
+    cache.delete(p);
+  }
+}
+
+class HqStoreCorruptError extends Error {
+  constructor() {
+    super('deck-hq.json is unreadable; refusing to overwrite it');
+  }
+}
+
+/** Run a read-modify-write of the file, refused while the store is corrupt. */
+function mutate<T>(dir: string | undefined, fn: (file: HqFile) => Promise<T>): Promise<T> {
+  return serialize(async () => {
+    const { file, corrupt } = load(dir);
+    if (corrupt) throw new HqStoreCorruptError();
+    return fn(file);
+  });
+}
+
+/** True while deck-hq.json exists but cannot be read (fail closed). */
+export function isHqStoreCorrupt(dir?: string): boolean {
+  return load(dir).corrupt;
+}
+
+/** The designated HQ workspace id, or null when none is designated. Never throws. */
+export function getHqWorkspaceId(dir?: string): string | null {
+  return load(dir).file.hqWorkspaceId;
+}
+
+/** The master switch. Absent = on (today's behaviour); a corrupt store = off. */
+export function isMoaEnabled(dir?: string): boolean {
+  const { file, corrupt } = load(dir);
+  return !corrupt && file.moaEnabled !== false;
+}
+
+/** Persist the master switch. Stores only; the handler stops/starts the
+ *  runtime. Returns false (nothing written) while the store is corrupt. */
+export async function setMoaEnabled(enabled: boolean, dir?: string): Promise<boolean> {
+  try {
+    await mutate(dir, (file) => write(dir, { ...file, moaEnabled: enabled }));
+    return true;
+  } catch (err) {
+    if (err instanceof HqStoreCorruptError) return false;
+    throw err;
+  }
+}
+
+/** The hourly cap on the HQ's automatic turns. */
+export function getHqMaxTurnsPerHour(dir?: string): number {
+  return load(dir).file.hqMaxTurnsPerHour ?? DEFAULT_HQ_MAX_TURNS_PER_HOUR;
+}
+
+/** True once the non-HQ migration has completed for the CURRENT HQ. */
+export function isHqMigrationDone(dir?: string): boolean {
+  const { file } = load(dir);
+  return file.migration !== undefined && file.migration.hqWorkspaceId === file.hqWorkspaceId;
+}
+
+/** The decisions the migration archived, oldest first. */
+export function loadArchivedHqDecisions(dir?: string): ArchivedHqDecision[] {
+  return load(dir).file.archivedDecisions ?? [];
+}
+
+/**
+ * The HQ half of brain eligibility. No HQ designated → every workspace passes
+ * (each call site keeps its existing mode / task-workspace checks, so today's
+ * behaviour is unchanged). An HQ designated → only the HQ passes.
+ */
+export function hqAllowsBrain(workspaceId: string, hq: string | null): boolean {
+  return hq === null || workspaceId === hq;
+}
+
+// ── HQ presence (from the renderer's workspace mirror) ─────────────────────
+
+export type HqPresence = 'unset' | 'unknown' | 'present' | 'missing';
+
+type MirrorView = Pick<ReturnType<typeof getWorkspaceMirror>, 'peek' | 'isSessionRestored'>;
+
+/** How old the workspace mirror may be to count as a fresh observation:
+ *  three of the renderer's 30s periodic refreshes. */
+const HQ_MIRROR_MAX_AGE_MS = 90_000;
+
+/** The last thing this process observed about the HQ, latched until a fresh
+ *  observation contradicts it. */
+let observed: { hq: string; state: 'present' | 'missing' } | null = null;
+
+/**
+ * Where the designated HQ stands:
+ *   - 'present'  a fresh mirror lists it;
+ *   - 'missing'  a fresh mirror does not, and that absence is trustworthy
+ *                (restored session, or this process saw it before). Latched
+ *                until the HQ is listed again — a stale or empty mirror never
+ *                clears it;
+ *   - 'unknown'  nothing trustworthy has been observed yet (cold boot, a
+ *                session that restored nothing). No brain runs in this state.
+ */
+export function hqPresence(hq: string | null, mirror: MirrorView = getWorkspaceMirror(), maxAgeMs = HQ_MIRROR_MAX_AGE_MS): HqPresence {
+  if (hq === null) return 'unset';
+  const memo = observed?.hq === hq ? observed.state : null;
+  const peek = mirror.peek();
+  if (peek && peek.entries.length > 0 && peek.ageMs <= maxAgeMs) {
+    if (peek.entries.some((e) => e.id === hq)) {
+      observed = { hq, state: 'present' };
+      return 'present';
+    }
+    if (mirror.isSessionRestored() || memo !== null) {
+      observed = { hq, state: 'missing' };
+      return 'missing';
+    }
+    return 'unknown';
+  }
+  return memo ?? 'unknown';
+}
+
+/** Tests only. */
+export function __resetHqMemoryForTest(): void {
+  observed = null;
+  cache.clear();
+  corruptWarned = false;
+}
+
+/**
+ * The store half of brain eligibility, applied at every site that decides
+ * whether a workspace may run a brain: the master switch (off when the store
+ * is corrupt), then the HQ gate, and for the HQ itself, that its workspace is
+ * known to exist. With the switch on and no HQ designated it is true for every
+ * workspace.
+ */
+export function brainEligible(workspaceId: string, dir?: string): boolean {
+  const { file, corrupt } = load(dir);
+  if (corrupt || file.moaEnabled === false) return false;
+  const hq = file.hqWorkspaceId;
+  if (hq === null) return true;
+  return workspaceId === hq && hqPresence(hq) === 'present';
+}
+
+// ── Runtime hook (registered by the deck handler, which owns the brains) ────
+
+export interface HqRuntime {
+  /** A brain for this workspace is in the middle of a turn. */
+  isBrainBusy: (workspaceId: string) => boolean;
+  /** Dispose every brain except the HQ's (session files are kept). */
+  retireBrainsExcept: (hqWorkspaceId: string) => void;
+  /** The HQ changed: queued turns re-check eligibility now. */
+  onHqChanged?: () => void;
+}
+
+let runtime: HqRuntime | null = null;
+
+/** Register the live-brain hook. Returns the unregister function. */
+export function setHqRuntime(r: HqRuntime): () => void {
+  runtime = r;
+  return () => {
+    if (runtime === r) runtime = null;
+  };
+}
+
+// ── Setter (internal API) ────────────────────────────────────────────────────
+
+export type SetHqResult =
+  | { ok: true; hqWorkspaceId: string | null; migration: HqMigrationReport | null }
+  | { ok: false; code: 'invalid_workspace' | 'brain_running' | 'store_corrupt'; workspaceId?: string };
+
+/**
+ * Designate (or clear, with null) the HQ workspace. Refused while the old or
+ * the new HQ's brain is mid-turn (an idle brain does not block it). On a
+ * designation, the non-HQ migration runs (once per HQ) and every non-HQ brain
+ * is retired.
+ */
+export async function setHqWorkspaceId(next: string | null, dir?: string): Promise<SetHqResult> {
+  if (next !== null && !WORKSPACE_ID_RE.test(next)) return { ok: false, code: 'invalid_workspace' };
+  let refused: SetHqResult | null;
+  try {
+    refused = await mutate(dir, async (file): Promise<SetHqResult | null> => {
+      for (const ws of [file.hqWorkspaceId, next]) {
+        if (ws !== null && runtime?.isBrainBusy(ws)) {
+          return { ok: false, code: 'brain_running', workspaceId: ws };
+        }
+      }
+      await write(dir, { ...file, hqWorkspaceId: next });
+      return null;
+    });
+  } catch (err) {
+    if (err instanceof HqStoreCorruptError) return { ok: false, code: 'store_corrupt' };
+    throw err;
+  }
+  if (refused) return refused;
+  try {
+    runtime?.onHqChanged?.();
+  } catch (err) {
+    console.warn(`[deck:hq] HQ change hook failed: ${String(err)}`);
+  }
+  if (next === null) return { ok: true, hqWorkspaceId: null, migration: null };
+  const migration = await runNonHqMigration(next, dir);
+  try {
+    runtime?.retireBrainsExcept(next);
+  } catch (err) {
+    console.warn(`[deck:hq] could not retire non-HQ brains: ${String(err)}`);
+  }
+  return { ok: true, hqWorkspaceId: next, migration };
+}
+
+// ── Non-HQ migration (once per HQ) ───────────────────────────────────────────
+
+export interface HqMigrationReport {
+  /** False when the marker for this HQ was already present (nothing touched). */
+  ran: boolean;
+  schedulesPaused: string[];
+  loopsPaused: string[];
+  /** The non-HQ pending decisions, archived and returned so the caller can
+   *  show them once. */
+  decisionsArchived: ArchivedHqDecision[];
+  workArchived: string[];
+}
+
+/**
+ * Park everything that would drive a non-HQ workspace: disable its schedules
+ * (they would otherwise fail every tick), pause its running loops, archive its
+ * pending decisions and its live work record. Brains, memory and session files
+ * are left alone. Clearing the HQ re-opens the gate, but what this parked stays
+ * parked — schedules stay disabled and loops paused until the operator turns
+ * them back on.
+ *
+ * Runs once per HQ (the marker names the HQ it ran for). Every step is
+ * idempotent and the marker is written only when every step succeeded, so a
+ * crash or IO failure re-runs it (on the next designation or at deck handler
+ * start). Never throws.
+ */
+export async function runNonHqMigration(
+  hq: string,
+  dir?: string,
+  log: (line: string) => void = (line) => console.log(`[deck:hq] ${line}`),
+  now: () => number = Date.now,
+): Promise<HqMigrationReport> {
+  const report: HqMigrationReport = {
+    ran: false,
+    schedulesPaused: [],
+    loopsPaused: [],
+    decisionsArchived: [],
+    workArchived: [],
+  };
+  const loaded = load(dir);
+  if (loaded.corrupt) {
+    log('migration skipped: deck-hq.json is unreadable');
+    return report;
+  }
+  if (loaded.file.migration?.hqWorkspaceId === hq) return report;
+  report.ran = true;
+  let failed = false;
+
+  // 1. Schedules: disable every enabled schedule owned by a non-HQ workspace.
+  try {
+    await mutateDeckSchedules((schedules) => {
+      let changed = false;
+      const next = schedules.map((s) => {
+        if (!s.enabled || !s.workspaceId || s.workspaceId === hq) return s;
+        changed = true;
+        report.schedulesPaused.push(s.id);
+        return { ...s, enabled: false };
+      });
+      return changed ? next : null;
+    }, dir);
+  } catch (err) {
+    failed = true;
+    log(`[schedule] failed to pause non-HQ schedules: ${String(err)}`);
+  }
+
+  // 2. Loops: pause each running non-HQ loop the way the loop pause control
+  //    does (its cadence schedule was disabled above; caps back to the mode).
+  try {
+    for (const [ws, loop] of Object.entries(loadDeckLoopState(dir))) {
+      if (ws === hq || loop.status !== 'running') continue;
+      await setLoopStatus(ws, 'paused', dir);
+      await setWorkspaceAutonomy(ws, modeToCaps(loadWorkspaceMode(ws, dir)), dir);
+      report.loopsPaused.push(ws);
+    }
+  } catch (err) {
+    failed = true;
+    log(`[loop] failed to pause non-HQ loops: ${String(err)}`);
+  }
+
+  // 3. Pending decisions: archive here first (skipping an id already archived
+  //    — a crash between the two writes), then clear only if the decision is
+  //    still exactly what was archived. One answered or replaced in between is
+  //    kept, and the migration re-runs later to pick up a replacement.
+  try {
+    for (const [ws, decision] of Object.entries(loadDeckDecisions(dir))) {
+      if (ws === hq || decision.status !== 'pending') continue;
+      const entry: ArchivedHqDecision = { workspaceId: ws, decision, archivedAt: now() };
+      await mutate(dir, async (file) => {
+        const list = file.archivedDecisions ?? [];
+        if (list.some((a) => a.decision.id === decision.id && a.workspaceId === ws)) return;
+        await write(dir, { ...file, archivedDecisions: [...list, entry].slice(-MAX_ARCHIVED_DECISIONS) });
+      });
+      if (await clearPendingDecisionIfUnchanged(ws, decision, dir)) {
+        report.decisionsArchived.push(entry);
+        log(`[decision] archived pending decision ${decision.id} of ${ws}: ${decision.question}`);
+      } else {
+        failed = true;
+        log(`[decision] kept decision of ${ws}: it changed while it was being archived`);
+      }
+    }
+  } catch (err) {
+    failed = true;
+    log(`[decision] failed to archive non-HQ decisions: ${String(err)}`);
+  }
+
+  // 4. Live work: archive, then clear. Kept when the archive write fails.
+  for (const [ws, work] of Object.entries(loadLiveDeckWorks(dir))) {
+    if (ws === hq) continue;
+    try {
+      archiveDeckWork(work, dir);
+      clearActiveDeckWork(ws, dir);
+      report.workArchived.push(ws);
+    } catch (err) {
+      failed = true;
+      log(`[work] kept live work ${work.id} of ${ws}: ${String(err)}`);
+    }
+  }
+
+  if (failed) {
+    log('migration incomplete; it will run again');
+    return report;
+  }
+  try {
+    await mutate(dir, (file) => write(dir, { ...file, migration: { doneAt: now(), hqWorkspaceId: hq } }));
+    log(
+      `non-HQ migration done for HQ ${hq}: ${report.schedulesPaused.length} schedule(s) paused, ` +
+        `${report.loopsPaused.length} loop(s) paused, ${report.decisionsArchived.length} decision(s) archived, ` +
+        `${report.workArchived.length} work record(s) archived`,
+    );
+  } catch (err) {
+    log(`failed to record the migration marker: ${String(err)}`);
+  }
+  return report;
+}

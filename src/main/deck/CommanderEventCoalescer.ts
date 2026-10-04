@@ -241,7 +241,9 @@ export interface CoalescerDeps {
   /** Fire ONE orchestrator turn on this workspace's brain. Same verdict shape
    *  as CommanderSessionManager.send / DeckScheduler.runTurn. Must emit
    *  turn-start before send and reject `busy` when a turn is in flight. */
-  runTurn: (workspaceId: string, prompt: string) => Promise<{ ok: boolean; code?: string }>;
+  /** `rate_limited` (with `retryAfterMs`) is a cap the caller enforces on
+   *  automatic turns: the buffer is kept and retried once it lifts. */
+  runTurn: (workspaceId: string, prompt: string) => Promise<{ ok: boolean; code?: string; retryAfterMs?: number }>;
   /** True when this workspace's brain is mid-turn (a flush must wait). */
   isBusy: (workspaceId: string) => boolean;
   /** Resolve this workspace's autonomy caps (fail-closed). */
@@ -312,6 +314,9 @@ export interface CoalescerDeps {
    *  left no trace anywhere, so "the brain never woke" was indistinguishable
    *  from "no event ever fired". */
   log?: (line: string) => void;
+  /** Master switch. False drops every push at the entry, before any per-
+   *  workspace state is allocated. Absent = always on. */
+  isEnabled?: () => boolean;
 }
 
 const DEFAULT_DEBOUNCE_MS = 1_500;
@@ -357,6 +362,7 @@ export class CommanderEventCoalescer {
    *  (idle) or holds (busy) until a flush point. */
   push(ev: CoalescerInput, opts: { replay?: boolean } = {}): void {
     if (this.disposed) return;
+    if (this.deps.isEnabled && !this.deps.isEnabled()) return;
     if (
       ev.kind !== 'agent.stop' &&
       ev.kind !== 'agent.stop_failure' &&
@@ -584,7 +590,7 @@ export class CommanderEventCoalescer {
           if (snapshotMaxSeq > st.watermark) st.watermark = snapshotMaxSeq;
           this.pruneBuffer(st, snapshotMaxSeq);
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
-        } else if (r.code === 'busy') {
+        } else if (r.code === 'busy' || r.code === 'rate_limited') {
           // The turn never ran, so the brain never reviewed these — put them back
           // (issue #561 review). The sync isBusy() gate above only sees THIS
           // workspace's manager mid-turn; runTurn rejects `busy` for two more
@@ -723,6 +729,16 @@ export class CommanderEventCoalescer {
   lastWakeAt(workspaceId: string): number | null {
     const ts = this.states.get(workspaceId)?.wakeTimestamps;
     return ts && ts.length > 0 ? ts[ts.length - 1] : null;
+  }
+
+  /** The master switch went off: cancel every pending flush and drop the
+   *  buffered events. Unlike dispose, pushes resume once isEnabled is true. */
+  suspend(): void {
+    for (const st of this.states.values()) {
+      this.clearDebounce(st);
+      st.buffer.clear();
+      st.phase = 'idle';
+    }
   }
 
   dispose(): void {
@@ -1161,6 +1177,10 @@ export class CommanderEventCoalescer {
           // racer's onIdle fires, plus a short belt-timer in case it already did.
           st.phase = 'buffering';
           this.restartDebounce(workspaceId, st);
+        } else if (r.code === 'rate_limited') {
+          // The caller's hourly turn cap: keep the buffer, retry once it lifts.
+          st.phase = 'rate-limited';
+          this.armBeltTimer(workspaceId, st, Math.max(this.debounceMs, r.retryAfterMs ?? this.debounceMs));
         } else {
           // Non-busy failure (invalid_workspace, spawn error): consume to avoid a
           // poison-event loop; advance the watermark so the same events don't
