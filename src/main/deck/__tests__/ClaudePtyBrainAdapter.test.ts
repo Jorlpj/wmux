@@ -342,6 +342,16 @@ describe('buildBrainSettingsProfile', () => {
     expect(command).not.toContain('--context');
   });
 
+  it('reports a permission dialog (PermissionRequest) and its end (PostToolUse) without gating', () => {
+    const hooks = profile.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
+    for (const event of ['PermissionRequest', 'PostToolUse']) {
+      const command = hooks[event][0].hooks[0].command;
+      expect(hooks[event][0].matcher).toBe('');
+      expect(command).toContain('wmux-bridge.mjs');
+      expect(command.endsWith(` ${event}`)).toBe(true);
+    }
+  });
+
   it('backstops each denied tool with a PreToolUse hook that names the tool', () => {
     const pre = profile.hooks as { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
     const matchers = pre.PreToolUse.map((g) => g.matcher);
@@ -1551,6 +1561,35 @@ describe('a session id learned from a foreign Stop', () => {
     deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId));
     deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-tui', payload: { transcript_path: '/tmp/t.jsonl' } }));
     expect(reported).toEqual(['sess-tui']);
+    adapter.dispose();
+  });
+});
+
+describe('transcript hints', () => {
+  it('reports every hook signal\'s session id and transcript path, own turn or foreign', async () => {
+    const host = makeHost();
+    const hints: unknown[] = [];
+    const adapter = makeAdapter(host, { onTranscriptHint: (h: unknown) => hints.push(h) });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-own', payload: { transcript_path: '/tmp/sess-own.jsonl' } }));
+    await turn;
+    deliverBrainPtyHookSignal(signal('agent.session_start', ptyId, { agentSessionId: 'sess-new' }));
+    expect(hints).toEqual([
+      { kind: 'agent.stop', agentSessionId: 'sess-own', transcriptPath: '/tmp/sess-own.jsonl' },
+      { kind: 'agent.session_start', agentSessionId: 'sess-new' },
+    ]);
+    adapter.dispose();
+  });
+
+  it('a throwing hint listener never breaks the turn', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { onTranscriptHint: () => { throw new Error('boom'); } });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 's' }));
+    expect((await turn).some((e) => e.type === 'turn-end')).toBe(true);
     adapter.dispose();
   });
 });

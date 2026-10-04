@@ -416,8 +416,10 @@ export function buildBrainSettingsProfile(opts: {
     // did not start is open, so automation can defer to it.
     // PermissionRequest is a signal only (the bridge writes no decision): it
     // tells main the brain's own permission dialog is on screen, which the
-    // phone's Moa pane must not be able to answer by typing (moaPaneFeed).
-    for (const event of ['Stop', 'SessionStart', 'UserPromptSubmit', 'PermissionRequest'] as const) {
+    // phone's Moa pane must not be able to answer by typing (moaPaneFeed), and
+    // which Moa's chat sends the human to the terminal for. PostToolUse says a
+    // tool ran — the dialog is gone again.
+    for (const event of ['Stop', 'SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'PostToolUse'] as const) {
       // `Stop` runs the bridge in GATE mode: it reads the `hooks.signal`
       // response and exits 2 when the adapter refuses to end the turn. The
       // verdict has to travel on this one round trip — a second, independent
@@ -681,6 +683,10 @@ export interface ClaudePtyBrainAdapterDeps {
    *  resumed the previous (or an empty) session and the TUI-only conversation
    *  was lost. */
   onForeignSessionId?: (sessionId: string) => void;
+  /** Every hook signal's session id and transcript path, as Claude reported
+   *  them (the HQ's right-panel transcript binds from these). Observational:
+   *  it sees each signal before the turn logic and can never block one. */
+  onTranscriptHint?: (hint: { kind: AgentSignal['kind']; agentSessionId?: string; transcriptPath?: string }) => void;
   /** Reader for the final assistant text (injected in tests). */
   readTranscript?: typeof readLastAssistantMessage;
   /** The Stop gate. Absent means no gating at all (every Stop ends its turn),
@@ -859,6 +865,18 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  resolved, so no `turn-end` is emitted and TURN_TIMEOUT_MS stays the
    *  backstop. */
   private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock | BrainPtyHookContext {
+    if (this.deps.onTranscriptHint) {
+      try {
+        const raw = signal.payload?.['transcript_path'];
+        this.deps.onTranscriptHint({
+          kind: signal.kind,
+          ...(signal.agentSessionId ? { agentSessionId: signal.agentSessionId } : {}),
+          ...(typeof raw === 'string' && raw.length > 0 ? { transcriptPath: raw } : {}),
+        });
+      } catch {
+        /* the transcript view is best-effort — never surface into a hook */
+      }
+    }
     if (signal.kind === 'agent.session_start') {
       this.sessionStartSeen = true;
       this.sessionStarted?.resolve();

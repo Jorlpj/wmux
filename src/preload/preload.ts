@@ -812,6 +812,28 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_MEMORY_CARD) as Promise<{ card: import('../shared/moa').MoaMemoryCard | null }>,
       memoryResolve: (args: { id: string; answer: 'save' | 'discard'; fullTextShown: boolean }) =>
         ipcRenderer.invoke(IPC.DECK_MOA_MEMORY_RESOLVE, args) as Promise<{ ok: boolean; code?: string }>,
+      // Every workspace's pending decision ("Waiting on you").
+      decisions: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DECISIONS) as Promise<{ decisions: import('../shared/moa').MoaPendingDecision[] }>,
+      // The HQ brain's transcript as turn events (chat look over the terminal brain).
+      transcript: {
+        status: () =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_STATUS) as Promise<import('../shared/transcript/turnEvents').TranscriptStatus>,
+        snapshot: (opts?: { before?: number }) =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT, opts ?? {}) as Promise<import('../shared/transcript/turnEvents').TranscriptPage | null>,
+        // `client` names who listens ('panel', 'notice'): appends flow while
+        // any client is subscribed, so one cannot unsubscribe the other.
+        subscribe: (client?: string) =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE, client) as Promise<import('../shared/transcript/turnEvents').TranscriptStatus>,
+        unsubscribe: (client?: string) => ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE, client) as Promise<void>,
+        codeBlock: (args: { srcOffset: number; n: number; eventId?: string }) =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_CODEBLOCK, args) as Promise<{ body: string } | null>,
+        onAppend: (callback: (data: import('../shared/transcript/turnEvents').TranscriptAppendData) => void) => {
+          const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/transcript/turnEvents').TranscriptAppendData): void => callback(data);
+          ipcRenderer.on(IPC.DECK_MOA_TRANSCRIPT_APPEND, listener);
+          return () => { ipcRenderer.removeListener(IPC.DECK_MOA_TRANSCRIPT_APPEND, listener); };
+        },
+      },
       onChanged: (callback: () => void) => {
         const listener = (): void => callback();
         ipcRenderer.on(IPC.DECK_MOA_CHANGED, listener);

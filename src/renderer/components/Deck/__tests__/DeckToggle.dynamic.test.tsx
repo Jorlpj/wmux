@@ -29,6 +29,8 @@ beforeEach(() => {
       channelUnread: {},
       workspaces: [],
       appRoute: 'workspaces',
+      moa: null,
+      activeDeckTab: 'commander',
     });
   });
 });
@@ -110,6 +112,35 @@ describe('DeckToggle', () => {
     });
     mount();
     expect(dot()).toBeNull();
+  });
+
+  it('opening lands on the conversation tab, not the last tab left selected', () => {
+    act(() => { useStore.setState({ activeDeckTab: 'channels' }); });
+    mount();
+    act(() => { btn().click(); });
+    expect(useStore.getState().channelDockVisible).toBe(true);
+    expect(useStore.getState().activeDeckTab).toBe('commander');
+  });
+
+  const moaState = (enabled: boolean) => ({
+    config: { enabled, onboarded: true, level: 1 as const, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
+    hq: { workspaceId: 'ws-hq', state: 'ok' as const },
+    archive: { unacked: 0, total: 0 },
+  });
+
+  it('steps aside while Moa is on — the titlebar Moa button opens the panel', () => {
+    act(() => { useStore.setState({ moa: moaState(true) }); });
+    mount();
+    expect(btn()).toBeNull();
+  });
+
+  it('with Moa off it stays and opens the panel (which says how to turn Moa on)', () => {
+    act(() => { useStore.setState({ moa: moaState(false), activeDeckTab: 'channels' }); });
+    mount();
+    expect(btn()).not.toBeNull();
+    act(() => { btn().click(); });
+    expect(useStore.getState().channelDockVisible).toBe(true);
+    expect(useStore.getState().activeDeckTab).toBe('commander');
   });
 
   it('from another page it reads closed and opens the dock on the Workspaces page', () => {

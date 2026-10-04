@@ -41,6 +41,11 @@ export default function DeckToggle() {
   const onWorkspaces = useStore((s) => s.appRoute === 'workspaces');
   const visible = useStore((s) => s.channelDockVisible) && onWorkspaces;
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
+  const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
+  // Moa on: the titlebar's Moa button opens this same panel, so this one
+  // steps aside (one button per panel). Moa off: it stays, and the panel it
+  // opens says how to turn Moa on.
+  const moaOn = useStore((s) => !!s.moa?.config.enabled);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const channelUnread = useStore((s) => s.channelUnread);
 
@@ -60,6 +65,8 @@ export default function DeckToggle() {
     ? `${label} — ${t('deck.hasSignal') || 'something in here needs you'}`
     : label;
 
+  if (moaOn) return null;
+
   return (
     <button
       type="button"
@@ -67,6 +74,9 @@ export default function DeckToggle() {
         // From another page: show the Workspaces page with the dock open, so
         // it never opens (and resizes the terminals) behind an inert page.
         showWorkspaces(useStore.getState());
+        // Opening lands on the conversation (Moa's, or the orchestrator's),
+        // not on whichever tab was left selected.
+        if (!visible) setActiveDeckTab('commander');
         setChannelDockVisible(!visible);
       }}
       className={`wmux-panel-toggle ${FOCUS_RING}`}

@@ -21,28 +21,20 @@ const sidebar = read('components/Sidebar/Sidebar.tsx');
 const uiSlice = read('stores/slices/uiSlice.ts');
 
 describe('channel dock — wiring regression guard', () => {
-  it('ChannelDock renders the list + the conversation', () => {
-    expect(dock).toMatch(/<ChannelsPanel\s*\/>/);
-    expect(dock).toMatch(/<ChannelView\s*\/>/);
+  it('ChannelDock is Moa only: the tab bar shows no Channels tab and the channels view is unreachable', () => {
+    // Owner decision 2026-10-04: the right panel is Moa only. Channel data, the
+    // MCP channel tools and the phone's /api/channels stay; the desktop tab goes.
     expect(dock).toContain('data-channel-dock');
-  });
-
-  it('ChannelDock is a Command Deck: tab bar + Commander tab (default) over the channels tab', () => {
-    // Phase 1 P1a — the dock gained a [Commander] [Channels] tab bar; Commander
-    // is the default and the classic list/conversation moved under the channels
-    // tab (conditional render, code otherwise unchanged). The channels view is
-    // ALSO gated on channelsTabVisible (human channel UI frozen — the tab is a
-    // Settings opt-in), so a stale persisted activeDeckTab can never render it.
     expect(dock).toMatch(/<DeckTabs\b/);
-    expect(dock).toMatch(/<CommanderView\s*\/>/);
-    expect(dock).toContain('activeDeckTab');
-    expect(dock).toMatch(/activeDeckTab === 'channels' && channelsTabVisible/);
-    // The VIEW stays gated on channelsTabVisible, but the glyph no longer is:
-    // hiding it left an open deck with no way to reach channels at all once
-    // the sidebar's Channels row was deleted, since the flag ships false.
-    // Pressing the glyph is the opt-in, exactly as that row was (2026-08-14).
-    expect(dock).not.toMatch(/showChannels=/);
-    expect(dock).toMatch(/if \(tab === 'channels' && !channelsTabVisible\) setChannelsTabVisible\(true\)/);
+    expect(dock).toMatch(/showChannels=\{false\}/);
+    expect(dock).toMatch(/active="commander"/);
+    // The conversation is pinned by prop: Moa's HQ when Moa runs, else the
+    // active workspace (resolveMoaPanelMode), never read inside the view.
+    expect(dock).toMatch(/<CommanderView chatWorkspaceId=\{mode\.chatWorkspaceId\} viewedWorkspaceId=\{activeWorkspaceId\}/);
+    // No path from the dock to the channel list or a conversation.
+    expect(dock).not.toMatch(/<ChannelsPanel\b/);
+    expect(dock).not.toMatch(/<ChannelView\b/);
+    expect(dock).not.toContain('activeDeckTab');
   });
 
   it('ChannelView is dock content, NOT a fixed covering overlay', () => {
@@ -59,7 +51,11 @@ describe('channel dock — wiring regression guard', () => {
     // rail that used to stand in for the dock is gone, and the way back is the
     // titlebar's DeckToggle. Nothing may render on this edge while collapsed —
     // that is the whole point, the terminals take the width.
-    expect(appLayout).toContain('channelDockVisible && (');
+    expect(appLayout).toContain("channelDockVisible && dockMode === 'inline' && (");
+    // Too narrow for the panes' floor: the dock leaves the row and floats over
+    // the panes on the far edge (dockLayout.ts), so the sheet never overflows.
+    expect(appLayout).toContain("channelDockVisible && dockMode === 'overlay' && (");
+    expect(appLayout).toMatch(/data-dock-overlay[\s\S]{0,200}absolute inset-y-0/);
     expect(appLayout).not.toMatch(/<DeckMiniRail\s*\/>/);
     expect(appLayout).toMatch(/<ChannelDock\s*\/>/);
     // The old always-mounted overlay <ChannelView /> must be gone from AppLayout.

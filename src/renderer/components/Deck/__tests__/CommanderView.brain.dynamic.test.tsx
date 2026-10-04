@@ -22,6 +22,15 @@ vi.mock('../BrainTerminalEmbed', () => ({
     createElement('div', { 'data-commander-brain-terminal': true, 'data-pty-id': ptyId }),
 }));
 
+// The decision card and ledger hydrate from main; here only WHERE they are
+// drawn matters, so they are stubbed to markers.
+vi.mock('../DeckDecisionCard', () => ({
+  DeckDecisionCard: () => createElement('div', { 'data-test-decision-card': true }),
+}));
+vi.mock('../DeckLedgerPanel', () => ({
+  DeckLedgerPanel: () => createElement('div', { 'data-test-ledger': true }),
+}));
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -450,5 +459,74 @@ describe('CommanderViewContent — surfaced rate-limit notices (real locale)', (
     msgs = applyBrainEvent(msgs, { type: 'limit', status: 'allowed_warning', ...ep });
     mount({ brainMessages: msgs, t });
     expect(container.querySelectorAll('[data-commander-brain-limits] [data-limit-status]')).toHaveLength(2);
+  });
+});
+
+describe('CommanderViewContent — Moa slots', () => {
+  const chatNode = createElement('div', { 'data-test-moa-chat': true }, 'bubbles');
+  const topNode = createElement('div', { 'data-test-moa-top': true });
+
+  it('opens on the chat look: no terminal is mounted until asked for', () => {
+    const onViewChange = vi.fn();
+    mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange } });
+    expect(container.querySelector('[data-test-moa-top]')).not.toBeNull();
+    expect(container.querySelector('[data-test-moa-chat]')).not.toBeNull();
+    expect(container.querySelector('[data-commander-brain-terminal]')).toBeNull();
+    const toggle = container.querySelector('[data-moa-terminal-toggle]') as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    act(() => toggle.click());
+    expect(onViewChange).toHaveBeenCalledWith('terminal');
+  });
+
+  it('the terminal view mounts the brain pty exactly once, in place of the chat', () => {
+    mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: chatNode, view: 'terminal', onViewChange: vi.fn() } });
+    const embeds = container.querySelectorAll('[data-commander-brain-terminal]');
+    expect(embeds).toHaveLength(1);
+    expect(embeds[0].getAttribute('data-pty-id')).toBe('pty-hq');
+    expect(container.querySelector('[data-test-moa-chat]')).toBeNull();
+    expect(container.querySelector('[data-moa-terminal-toggle]')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('before the brain is up, the composer speaks of Moa, not the orchestrator', () => {
+    mount({ brainPtyId: null, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+    const input = container.querySelector('[data-channel-composer-input]') as HTMLTextAreaElement;
+    expect(input.placeholder).toBe('moa.panel.placeholder');
+    // A send here goes to Moa, not into a channel's shared record.
+    expect(container.querySelector('[data-channel-record-hint]')?.textContent).toBe('chat.inputHint');
+  });
+
+  it('without a transcript source the terminal is the only view, and there is no toggle', () => {
+    mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: null, view: 'chat', onViewChange: vi.fn() } });
+    expect(container.querySelectorAll('[data-commander-brain-terminal]')).toHaveLength(1);
+    expect(container.querySelector('[data-moa-terminal-toggle]')).toBeNull();
+  });
+
+  it('Waiting on you and the task cards replace the HQ decision card and ledger', () => {
+    for (const brainPtyId of ['pty-hq', null]) {
+      mount({ brainPtyId, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+      expect(container.querySelector('[data-test-moa-top]')).not.toBeNull();
+      expect(container.querySelector('[data-test-decision-card]')).toBeNull();
+      expect(container.querySelector('[data-test-ledger]')).toBeNull();
+    }
+  });
+
+  it('without Moa (per-workspace chat) both stay, in either layout', () => {
+    for (const brainPtyId of ['pty-a', null]) {
+      mount({ brainPtyId, chatWorkspaceId: 'ws-a' });
+      expect(container.querySelector('[data-test-decision-card]')).not.toBeNull();
+      expect(container.querySelector('[data-test-ledger]')).not.toBeNull();
+    }
+  });
+
+  it('Wake fires for the chat workspace (the HQ), not the one on screen', () => {
+    const wake = vi.fn(async () => ({ ok: true }));
+    (window as unknown as { electronAPI: unknown }).electronAPI = { deck: { wake } };
+    try {
+      mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+      act(() => (container.querySelector('[data-commander-wake-now]') as HTMLButtonElement).click());
+      expect(wake).toHaveBeenCalledWith('ws-hq');
+    } finally {
+      delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+    }
   });
 });
