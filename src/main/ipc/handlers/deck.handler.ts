@@ -56,6 +56,8 @@ import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer, type CoalescerInput } from '../../deck/CommanderEventCoalescer';
 import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import { runHqAutoPress, takeHqPressPointer } from '../../deck/hqApprovalLane';
+import { trackContextMemory } from '../../deck/trackRecordFeed';
+import { getTrackRecordStore } from '../../deck/trackRecordStore';
 import { notifyPrOwner, setPrOwnerSink } from '../../deck/prOwnerNotify';
 import {
   routeWorkerEventToOwner,
@@ -983,6 +985,7 @@ export function registerDeckHandler(
       pendingActiveWorkBlocks.delete(workspaceId);
       if (delivered) shownActiveWorkBlocks.set(workspaceId, pendingWork);
     }
+    trackContextMemory.settle(workspaceId, delivered);
   };
   /** Drop the changed-only memory — a retired conversation must be told the
    *  rules (and the full active-work contract) again. */
@@ -991,6 +994,7 @@ export function registerDeckHandler(
     pendingAmbientBlocks.delete(workspaceId);
     shownActiveWorkBlocks.delete(workspaceId);
     pendingActiveWorkBlocks.delete(workspaceId);
+    trackContextMemory.forget(workspaceId);
   };
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
@@ -1066,6 +1070,15 @@ export function registerDeckHandler(
       const pressed = takeHqPressPointer();
       if (pressed) blocks.push(pressed);
     }
+    // The track record, read-only, when this conversation has not seen it yet.
+    const track = trackContextMemory.take(workspaceId, {
+      moaEnabled: isMoaEnabled(),
+      hq: getHqWorkspaceId(),
+      data: getTrackRecordStore().read(),
+      now: Date.now(),
+      nameOf: (ws) => getWorkspaceMirror().getEntries()?.find((e) => e.id === ws)?.name,
+    });
+    if (track) blocks.push(track);
     if (blocks.length === 0) return text;
     return `${blocks.join('\n\n')}\n\n${text}`;
   };
