@@ -156,6 +156,7 @@ import {
 } from './push/presence';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
+import { MoaPaneRpc, resolveMoaPane } from './web/moaPane';
 import { parseApprovalResolveRequest } from './approvals/resolveRequest';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
@@ -440,6 +441,13 @@ const workspaceFacts = new WorkspaceFactStore();
 /** The pipe client whose push the current table came from, so the table can be
  *  dropped when that client disconnects rather than outliving its publisher. */
 let workspaceFactsPublisher: string | null = null;
+
+// The Moa (HQ brain) pane main pushes down (see web/moaPane.ts). Module-scoped
+// like the fact table: the RPC handler writes it, the web server and the
+// transcript projector read it, and the client-close sweep drops it. Built in
+// registerRpcHandlers, which holds the session manager it checks against.
+let moaPaneRpc: MoaPaneRpc<ManagedSession> | null = null;
+const currentMoaPane = () => moaPaneRpc?.current() ?? null;
 
 // #783 — the gate broker holds bridge RPC responses open until a phone answers.
 // Module-scoped for the same reason as the registry: the RPC handler creates
@@ -788,6 +796,10 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
         // Each file served because an agent sent it with SendUserFile.
         auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
+        // The Moa (HQ brain) pane main last vouched for, read per request so a
+        // withdrawal closes the next check. See web/moaPane.ts.
+        moaPane: currentMoaPane,
+        auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
         // #782 — the phone turn view. Lazy: the projector is built after the
         // first resume binding, so a getter resolves the live instance per
         // request rather than capturing a null at construction.
@@ -3108,6 +3120,9 @@ function registerRpcHandlers(
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
       // See the restore path.
       auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
+      // See the restore path.
+      moaPane: currentMoaPane,
+      auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
       // See the restore path: lazy projector for the phone turn view (#782).
       projector: () => transcriptProjector,
       chat: () => chatBridge,
@@ -3533,7 +3548,13 @@ function registerRpcHandlers(
           return selection ? { agent: 'codex', sessionId: selection.threadId, cwd: selection.cwd,
             transcriptPath: selection.transcriptPath, ts: Date.now() } : undefined;
         }
-        const binding = pane?.meta.resumeBinding;
+        // The Moa pane's transcript is known only to main (a brain's hooks go
+        // there), so it arrives with the pushed fact and is read from memory —
+        // never persisted, see web/moaPane.ts. Only while the fact still
+        // resolves to this live brain pane.
+        const fact = currentMoaPane();
+        const binding = pane?.meta.resumeBinding
+          ?? (fact?.sessionId === id && resolveMoaPane(fact, (sid) => sessionManager.getSession(sid)) ? fact.binding : undefined);
         const current = agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '');
         return current && binding?.agent !== current ? undefined : binding;
       },
@@ -4290,6 +4311,36 @@ function registerRpcHandlers(
     workspaceFactsPublisher = ctx.clientId;
     return { ok: true, applied: true, accepted: result.accepted, seq: result.seq };
   });
+
+  // ── Main → daemon Moa pane (phone access to the HQ brain) ────────────────
+  // Which daemon session is the Moa (HQ brain) pane, while Moa is on and its
+  // HQ is present; null otherwise. Main pushes it on every change, and the web
+  // server opens that one brain pane's turns, chat and input routes to a
+  // paired device for exactly as long as it stands. See web/moaPane.ts.
+  if (!moaPaneRpc) {
+    moaPaneRpc = new MoaPaneRpc<ManagedSession>({
+      isFirstParty: (clientId) => firstPartyOnly(clientId, 'daemon.moa.set'),
+      getSession: (id) => sessionManager.getSession(id),
+      onChanged: (prev, next, pane) => {
+        if (!next || !pane) return;
+        // The brain's hooks go to main, so none of the hook paths that attach
+        // the process watch ever runs for this pane, and a chat send needs the
+        // live claude process proven (`agentVerified`). Main vouching for the
+        // pane is that evidence's trigger here. Idempotent while a watch is live.
+        agentProcessTracker.arm(next.sessionId, pane.meta.pid);
+        // A new answer (Stop) or a dialog opening/closing is news for a phone
+        // reading this pane: the brain's hooks never reach the daemon's own
+        // transcript nudge path, so the push is that path.
+        const sameBinding = prev?.sessionId === next.sessionId && JSON.stringify(prev.binding) === JSON.stringify(next.binding);
+        const sameDialog = prev?.sessionId === next.sessionId && JSON.stringify(prev.dialog) === JSON.stringify(next.dialog);
+        if (!sameBinding) transcriptProjector?.rebind(next.sessionId);
+        if (!sameBinding || !sameDialog) webTerminalServer?.emitTranscriptNudge(next.sessionId);
+      },
+      log: (level, message) => log(level, message),
+    });
+  }
+  const moaRpc = moaPaneRpc;
+  pipeServer.onRpc('daemon.moa.set', async (params, ctx) => moaRpc.handle(params, ctx.clientId));
 
   const readDaemonAgentState = (id: string): {
     agentName: string | null;
@@ -7089,6 +7140,9 @@ async function main(): Promise<void> {
       workspaceFacts.clear();
       workspaceFactsPublisher = null;
     }
+    // Same for the Moa pane: nobody is vouching for it any more, so the phone
+    // loses it until a main process publishes again.
+    moaPaneRpc?.onClientClose(clientId);
   });
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event
