@@ -3888,6 +3888,9 @@ function registerRpcHandlers(
   // drift between the two transports.
   const bridge: NativeChatBridge = createChatBridge({
     pane: (id) => sessionManager.getSession(id),
+    panesBoundTo: (agent, sessionId) => sessionManager.listManagedSessions()
+      .filter((s) => s.meta.resumeBinding?.agent === agent && s.meta.resumeBinding.sessionId === sessionId)
+      .map((s) => s.meta.id),
     agentState: (id) => readDaemonAgentState(id),
     chatAgentState: (id) => readChatAgentState(id),
     projector,
@@ -3981,7 +3984,7 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.chat.launchTerminal', async (params, ctx) => {
     const id = typeof params.id === 'string' ? params.id : '';
     if (!firstPartyOnly(ctx.clientId, 'launchTerminal') || !id || !['claude', 'codex'].includes(String(params.agent))) return { ok: false, error: 'Unavailable' };
-    const outcome = await bridge.launch({ id, agent: params.agent as 'claude' | 'codex', prompt: params.prompt as string, mode: params.mode as ChatLaunchRequest['mode'] });
+    const outcome = await bridge.launch({ id, agent: params.agent as 'claude' | 'codex', prompt: typeof params.prompt === 'string' ? params.prompt : '', mode: params.mode as ChatLaunchRequest['mode'] });
     if (outcome.ok) return { ok: true };
     // The desktop wire stays prose; the tags are the phone's.
     const error = outcome.error === 'launch-pending' ? 'Launch already pending'
