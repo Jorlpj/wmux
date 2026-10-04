@@ -651,6 +651,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     // pushed a table at all, which is what makes a missing integration report
     // as `scope-unavailable` instead of looking like a policy refusal.
     pressScope: (workspaceId) => workspaceFacts.get(workspaceId),
+    hqLane: () => workspaceFacts.hqLane(),
     log: (level, message) => log(level, message),
   });
 }
@@ -4279,7 +4280,7 @@ function registerRpcHandlers(
     if (!firstPartyOnly(ctx.clientId, 'daemon.workspaceFacts.set')) {
       return { ok: false, error: 'daemon.workspaceFacts.set is first-party only' };
     }
-    const payload = params as { facts?: unknown; seq?: unknown };
+    const payload = params as { facts?: unknown; seq?: unknown; lane?: unknown };
     if (!Array.isArray(payload?.facts)) {
       return { ok: false, error: 'daemon.workspaceFacts.set requires a facts array' };
     }
@@ -4300,6 +4301,7 @@ function registerRpcHandlers(
     const result = workspaceFacts.replace(
       payload.facts as WorkspaceFactRowInput[],
       payload.seq,
+      payload.lane,
     );
     if (!result.ok) {
       // A push that lost a race. Not an error the caller must handle — the
@@ -7101,6 +7103,12 @@ async function main(): Promise<void> {
   // because which pushes were delivered is not persisted.
   approvalPushRouter.adopt(approvalRegistry.list().pending);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  // A re-list nudge for main's HQ approval lane (deck/hqApprovalLane.ts).
+  // Subscribed here, not above: that listener runs before `pipeServer` exists.
+  // No record field rides along — every subscribed client gets broadcasts.
+  approvalRegistry.onEvent((event) => {
+    pipeServer.broadcast({ type: 'approvals.changed', sessionId: '', data: { change: event.type } });
+  });
   // Desktop presence, reported by the Electron main process on every
   // focus/blur transition. Registered here rather than in `registerRpcHandlers`
   // so the wiring stays additive — the tracker is a boot-scope value and

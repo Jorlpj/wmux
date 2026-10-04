@@ -108,10 +108,13 @@ import { TaskAdoptService } from './worktask/TaskAdoptService';
 import { TaskGateRunner } from './worktask/TaskGateRunner';
 import { createHostedLedgerPort } from './worktask/ledgerPort';
 import { getProjectConfigStore } from './project/ProjectConfigStore';
-import { createWorkspaceFactsPublisher, invalidateAutonomyCache } from './workspace/workspaceFactsFeed';
+import { createWorkspaceFactsPublisher, invalidateAutonomyCache, registerWorkspaceFactsPublisher } from './workspace/workspaceFactsFeed';
 import { publishMoaPane, setMoaPanePush } from './deck/moaPaneFeed';
+import { reconcileOwnerDowngrades } from './worktask/taskAutonomy';
+import { createHqAutoPress, setHqAutoPress } from './deck/hqApprovalLane';
 import { getTaskLedger } from './deck/taskLedgerHost';
-import { onAutonomyWritten } from './deck/deckAutonomyStore';
+import { onAutonomyWritten, loadWorkspaceMode } from './deck/deckAutonomyStore';
+import { getHqWorkspaceId, hqPresence, isHqApprovalPressEnabled, isMoaEnabled, onHqStoreWritten } from './deck/deckHqStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { getWorkspaceMirror } from './workspace/WorkspaceMirror';
@@ -1106,12 +1109,51 @@ registerWorktaskHandlers(() => daemonClient, (services: WorktaskServices) => {
 // cancelled) and an autonomy write. Until the first push lands the daemon
 // answers `scope-unavailable` and refuses, which is the safe direction.
 // See workspace/workspaceFactsFeed.ts.
-const workspaceFactsPublisher = createWorkspaceFactsPublisher({
-  push: async (facts, seq) => {
-    if (!daemonClient) throw new Error('Daemon not connected');
-    return daemonClient.rpc('daemon.workspaceFacts.set', { facts, seq });
+// The HQ approval lane (deck/hqApprovalLane.ts) presses by the facts this feed
+// publishes, so a lane pass runs right after each push lands — never before
+// the daemon holds the table it will judge by.
+// The HQ lane's policy as main sees it now; published beside the table.
+const hqLanePolicyNow = (): { open: boolean; hq: string | null } => {
+  const hq = getHqWorkspaceId();
+  return {
+    open: hq !== null && isMoaEnabled() && isHqApprovalPressEnabled() && hqPresence(hq) === 'present',
+    hq,
+  };
+};
+const hqAutoPress = createHqAutoPress({
+  facts: {
+    settled: () => workspaceFactsPublisher.settled(),
+    ackedSeq: () => workspaceFactsPublisher.ackedSeq(),
+    ackedLaneGeneration: () => workspaceFactsPublisher.ackedLaneGeneration(),
   },
+  getHq: () => getHqWorkspaceId(),
+  isMoaEnabled: () => isMoaEnabled(),
+  presence: (hq) => hqPresence(hq),
+  isOptedIn: () => isHqApprovalPressEnabled(),
+  ledger: () => getTaskLedger(),
+  modeOf: (ws) => loadWorkspaceMode(ws),
+  nameOf: (ws) => getWorkspaceMirror().getEntries()?.find((e) => e.id === ws)?.name,
+  getDaemonClient: () => daemonClient,
 });
+setHqAutoPress(hqAutoPress);
+const workspaceFactsPublisher = createWorkspaceFactsPublisher({
+  push: async (facts, seq, lane) => {
+    if (!daemonClient) throw new Error('Daemon not connected');
+    const result = (await daemonClient.rpc('daemon.workspaceFacts.set', { facts, seq, lane })) as
+      | { ok?: boolean; error?: string }
+      | undefined;
+    // Refused outright (not merely raced by a newer table): the daemon does
+    // not hold this, so the publisher must not count it as acknowledged.
+    if (result?.ok === false) throw new Error(result.error ?? 'workspace fact table refused');
+    void hqAutoPress.run();
+    return result;
+  },
+  lanePolicy: hqLanePolicyNow,
+});
+registerWorkspaceFactsPublisher(workspaceFactsPublisher);
+// Any change to the lane's own inputs reaches the daemon at once.
+onHqStoreWritten(() => workspaceFactsPublisher.publishIfLaneChanged());
+getWorkspaceMirror().onSnapshot(() => workspaceFactsPublisher.publishIfLaneChanged());
 getTaskLedger().onTransition(() => {
   workspaceFactsPublisher.schedule();
 });
@@ -1126,7 +1168,11 @@ onAutonomyWritten(() => {
   // The store this feed reads was just rewritten, so the cached copy is stale
   // before the debounce fires — invalidate first, then schedule.
   invalidateAutonomyCache();
-  workspaceFactsPublisher.schedule();
+  // Not debounced: a lowered mode must reach the daemon before the next
+  // automated approve is judged (and the publisher reads unsettled until it has).
+  void workspaceFactsPublisher.publishNow();
+  // An owner lowered after a fan-out lowers its open tasks too (taskAutonomy.ts).
+  void reconcileOwnerDowngrades(() => getTaskLedger().list({ openOnly: true }));
 });
 
 // Command Deck Phase 2 — the Commander brain. Renderer-only surface (same
@@ -1838,6 +1884,8 @@ app.on('ready', async () => {
       // Same for the Moa pane: the daemon drops it with its publisher, so a
       // fresh connection holds none until main says so again.
       void publishMoaPane({ force: true });
+      // A new approval, or one settled elsewhere: the lane re-lists.
+      client.on('approvals:changed', () => { void hqAutoPress.run(); });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

@@ -422,7 +422,11 @@ export interface ApprovalRegistryDeps {
    * classify this workspace, which refuses as `workspace-unknown`. Every branch
    * refuses; what differs is what an operator is told to go and fix.
    */
-  pressScope?: (workspaceId: string) => Pick<ApprovalPressFacts, 'isTaskWorkspace' | 'autonomyMode'> | null;
+  pressScope?: (
+    workspaceId: string,
+  ) => Pick<ApprovalPressFacts, 'isTaskWorkspace' | 'autonomyMode' | 'approvalPress' | 'ownerMode'> | null;
+  /** Main's published HQ lane policy (workspaceFacts.ts), or null. */
+  hqLane?: () => { open: boolean; generation: number } | null;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** Injected for test determinism. */
   now?: () => number;
@@ -699,6 +703,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     requestId?: string;
     /** Claude's AskUserQuestion as a `questions` form (see claudeQuestionsForm). */
     form?: DecisionForm;
+    attribution?: 'exact' | 'inexact';
   }): Promise<void> {
     // Snapshot BEFORE queuing. `mutate` runs the body after the chain drains,
     // which can be seconds later (a resolve ahead of it is holding the chain
@@ -716,6 +721,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       questionShape: input.questionShape,
       requestId: input.requestId,
       form: input.form && input.form.kind === 'questions' ? boundDecisionForm(input.form) : null,
+      attribution: input.attribution,
     };
     return this.mutate(() => {
       // A Codex pane whose approval is already up as a native decision: the
@@ -758,6 +764,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         ...(snapshot.choices && snapshot.choices.length > 0 ? { choices: snapshot.choices.map((c) => ({ ...c })) } : {}),
         ...(snapshot.questionShape ? { questionShape: snapshot.questionShape } : {}),
         ...(snapshot.requestId ? { hookRequestId: snapshot.requestId } : {}),
+        ...(snapshot.attribution ? { attribution: snapshot.attribution } : {}),
         ...(form
           ? {
               channel: 'fenced-keys' as const,
@@ -794,6 +801,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     workspaceId?: string;
     toolName: string;
     toolInputSummary?: string;
+    /** The ingest's verdict on the call's FULL input (the summary is cut). */
+    risk?: 'critical';
+    attribution?: 'exact' | 'inexact';
   }): string {
     const id = this.newId();
     const snapshot = {
@@ -804,6 +814,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       toolName: input.toolName,
       toolInputSummary: input.toolInputSummary,
     };
+    // The same pattern list every other record kind uses; the summary is
+    // scanned too so a caller that passed no verdict still gets one.
+    const critical = input.risk === 'critical' || hasCriticalRisk(input.toolInputSummary);
     this.mutate(() => {
       // One-pending-per-session holds for SCREEN-backed prompts: a pane shows
       // one question at a time, so a newer one replaced the older. Gates are
@@ -835,6 +848,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         kind: 'awaiting_permission',
         toolName: snapshot.toolName,
         ...(snapshot.toolInputSummary ? { toolInputSummary: snapshot.toolInputSummary } : {}),
+        ...(critical ? { risk: 'critical' as const } : {}),
+        ...(input.attribution ? { attribution: input.attribution } : {}),
         createdAt: this.now(),
         // No `deadlineAt` here on purpose. The record is created BEFORE the
         // broker arms its timer, and that timer runs for min(the bridge's own
@@ -3670,6 +3685,16 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // record's own existence is the origin evidence.
       origin: 'hook',
       stillOnScreen,
+      ...(record.risk === 'critical' ? { risk: 'critical' as const } : {}),
+      ...(record.attribution ? { attribution: record.attribution } : {}),
+      ...(params.lane === 'hq'
+        ? (() => {
+            // Read HERE, at release: a lane closed while this resolve waited
+            // in the chain is closed for it.
+            const policy = this.deps.hqLane?.() ?? null;
+            return { lane: 'hq' as const, laneOpen: policy?.open === true && policy.generation === params.laneGeneration };
+          })()
+        : {}),
     });
     if (!pressDecision.press && pressDecision.reason !== 'prompt-gone') {
       // NOT an expiry: the request is live and a human at the desktop can
