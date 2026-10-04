@@ -600,6 +600,7 @@ export function useNotificationListener() {
     });
     const gitBranchCoalescer = new FrameCoalescer<string, string>((ptyId, branch) => {
       const state = useStore.getState();
+      state.setSurfaceGitBranch(ptyId, branch);
       for (const ws of state.workspaces) {
         if (findSurfaceByPtyId(ws.rootPane, ptyId)) {
           state.updateWorkspaceMetadata(ws.id, { gitBranch: branch });
@@ -784,6 +785,11 @@ export function useNotificationListener() {
           if (rest.agentStatus === 'idle' && settled === true) {
             state.settleSurfaceTurn(ptyId);
           }
+        }
+        // The surface's own branch (Moa's view pointer): the workspace record
+        // above only follows the active pane, and only at the time it arrives.
+        if (typeof rest.gitBranch === 'string') {
+          state.setSurfaceGitBranch(ptyId, rest.gitBranch);
         }
         // Part A: stamp per-surface agent IDENTITY (name + status) keyed by
         // ptyId so a2a_discover / surface_list / pane_list can label each pane

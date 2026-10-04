@@ -38,7 +38,7 @@ import { getAccountStore } from '../account/accountStore';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../shared/commanderSurface';
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
-import { registerBrainPty, type BrainPtyHookBlock } from './brainPtyHookBus';
+import { registerBrainPty, type BrainPtyHookBlock, type BrainPtyHookContext } from './brainPtyHookBus';
 import { installBrainSkills } from './brainSkills';
 import type { StopGateVerdict } from './stopGate';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
@@ -399,7 +399,9 @@ export function buildBrainSettingsProfile(opts: {
       // verdict has to travel on this one round trip — a second, independent
       // Stop hook would fire in PARALLEL with this one, so the turn would
       // already have ended by the time the block landed.
-      const gateFlag = event === 'Stop' ? ' --gate' : '';
+      // `UserPromptSubmit` runs it in CONTEXT mode: it prints the response's
+      // `additionalContext` (the HQ brain's view pointer) as hook output.
+      const gateFlag = event === 'Stop' ? ' --gate' : event === 'UserPromptSubmit' ? ' --context' : '';
       hooks[event] = [
         {
           matcher: '',
@@ -580,6 +582,18 @@ export function flattenPromptForPty(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ').trim();
 }
 
+// The TUI treats a long write as a paste and reports part of it wrapped in
+// these markers, with line breaks around them that can fall mid-word
+// (measured on Claude Code 2.1.289: "…blo\n</pasted_content id=\"bc9f\">\n\ncked…").
+const PASTE_MARKER_RE = /<\/?pasted_content(?:\s[^>]*)?>/g;
+
+/** The form used to recognise our own prompt when Claude Code reports it back
+ *  through UserPromptSubmit: paste markers and ALL whitespace removed, since
+ *  the TUI inserts breaks inside words around a paste. */
+export function normalizeForPromptMatch(text: string): string {
+  return text.replace(PASTE_MARKER_RE, '').replace(/\s+/g, '');
+}
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 export interface ClaudePtyBrainAdapterDeps {
@@ -644,6 +658,10 @@ export interface ClaudePtyBrainAdapterDeps {
    *  rather than imported so the adapter never reaches into the WorkspaceMirror
    *  itself — the deck owns that lookup. */
   evaluateStopGate?: (workspaceId: string, consecutiveBlocks: number) => StopGateVerdict;
+  /** The context line for a prompt the human typed into this brain (which
+   *  workspace they were viewing), or null for none. Absent means never. The
+   *  deck owns the HQ / Moa / mirror lookup, like the Stop gate. */
+  viewContext?: (workspaceId: string) => string | null;
   sessionStartTimeoutMs?: number;
   turnTimeoutMs?: number;
   staleResumeWindowMs?: number;
@@ -728,6 +746,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   /** The open foreign turn's prompt text, for the repeat test in
    *  `onHookSignal`. Empty when the hook payload carried none. */
   private foreignTurnPrompt = '';
+  /** The flattened text of the prompt our own send() typed and has not yet
+   *  seen come back through UserPromptSubmit. The view pointer is withheld
+   *  only from a submission that matches it; every other one is the human's,
+   *  even one typed while our turn is open. */
+  private ownPromptPending: string | null = null;
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -805,7 +828,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  TUI keeps working. The turn stays open — `turnStop` is neither nulled nor
    *  resolved, so no `turn-end` is emitted and TURN_TIMEOUT_MS stays the
    *  backstop. */
-  private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock {
+  private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock | BrainPtyHookContext {
     if (signal.kind === 'agent.session_start') {
       this.sessionStartSeen = true;
       this.sessionStarted?.resolve();
@@ -815,12 +838,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // counts: during our own send() the hook fires for our keystroke too, and
     // that turn is already tracked by `turnStop`.
     if (signal.kind === 'agent.user_prompt_submit') {
+      const rawPrompt = typeof signal.payload['prompt'] === 'string' ? signal.payload['prompt'] : null;
+      // The view pointer goes on every submission that is not our own send().
+      // `turnStop` alone cannot say that: the human may type while our turn is
+      // open (or after ESC-interrupting it, which fires no Stop).
+      const context = this.isOwnPromptSubmit(rawPrompt) ? undefined : this.humanPromptContext();
       if (this.turnStop === null) {
         const now = Date.now();
-        const prompt =
-          typeof signal.payload['prompt'] === 'string'
-            ? signal.payload['prompt'].trim()
-            : '';
+        const prompt = rawPrompt !== null ? rawPrompt.trim() : '';
         // Two UserPromptSubmits with no Stop between them have two very
         // different causes, and folding both into one turn loses the second.
         //
@@ -849,7 +874,9 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         // stale-release deadline must measure from the latest submission.
         this.foreignTurnOpenedAt = now;
         this.foreignTurnPrompt = prompt;
-        if (repeat) return;
+        // A resubmission gets the pointer too: the model reads each prompt on
+        // its own.
+        if (repeat) return context;
         try {
           // Empty is still meaningful: older Claude hook payloads may omit the
           // prompt. The deck supplies a neutral fallback objective rather than
@@ -858,8 +885,9 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         } catch {
           /* work tracking is best-effort — never surface into a hook */
         }
+        return context;
       }
-      return;
+      return context;
     }
     if (signal.kind !== 'agent.stop') return;
     // A Stop no waiter claims is a FOREIGN turn's (or a superseded one from
@@ -916,6 +944,35 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     this.consecutiveStopBlocks = 0;
     this.turnStop = null;
     waiter.resolve(signal);
+  }
+
+  /**
+   * Whether this UserPromptSubmit is the one our pending send() typed: equal
+   * once both are normalized (see normalizeForPromptMatch). Consumed on a
+   * match, so the human sending the same words afterwards counts as the
+   * human. An older Claude Code with no `prompt` in the payload cannot be told
+   * apart: fall back to "our turn is open".
+   */
+  private isOwnPromptSubmit(rawPrompt: string | null): boolean {
+    const own = this.ownPromptPending;
+    if (rawPrompt === null) return this.turnStop !== null;
+    if (own === null) return false;
+    if (normalizeForPromptMatch(rawPrompt) !== own) return false;
+    this.ownPromptPending = null;
+    return true;
+  }
+
+  /** The view pointer for a human-typed prompt, if the deck has one. A
+   *  throwing lookup adds nothing: a prompt must never fail over it. */
+  private humanPromptContext(): BrainPtyHookContext | undefined {
+    const lookup = this.deps.viewContext;
+    if (!lookup || !this._workspaceId) return undefined;
+    try {
+      const line = lookup(this._workspaceId);
+      return line ? { additionalContext: line } : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Run the injected Stop gate. Returns the refusal reason, or null to allow.
@@ -1406,6 +1463,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // per-pty budget.
     this.consecutiveStopBlocks = 0;
     this.turnStop = waiter;
+    this.ownPromptPending = normalizeForPromptMatch(prompt) || null;
     try {
       // Two writes with a gap, never `prompt\r` in one chunk: the TUI's paste
       // detection would absorb the trailing Enter as pasted content and the

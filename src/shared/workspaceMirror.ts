@@ -109,4 +109,19 @@ export interface WorkspaceMirrorPushPayload {
    * which main reads as "nothing pinned".
    */
   pinnedIds?: string[];
+  /**
+   * What the human is looking at: the active workspace and its active pane.
+   * Feeds the HQ brain's context line (main/deck/viewContext.ts). An old
+   * renderer omits it, which main reads as "unknown" (no context line).
+   */
+  viewed?: ViewedPointer;
+}
+
+/** The viewed workspace, its active pane, and that pane's active surface's own
+ *  cwd and branch (absent when that surface never reported one). */
+export interface ViewedPointer {
+  workspaceId: string;
+  paneId: string | null;
+  cwd?: string;
+  branch?: string;
 }

@@ -35,6 +35,8 @@ export type MirrorSnapshotState = FleetSnapshotState & {
   orchestratorRoleBindings?: StoreState['orchestratorRoleBindings'];
   sessionRestored?: StoreState['sessionRestored'];
   sidebarPinnedIds?: StoreState['sidebarPinnedIds'];
+  activeWorkspaceId?: StoreState['activeWorkspaceId'];
+  surfaceGitBranch?: StoreState['surfaceGitBranch'];
 };
 
 /**
@@ -343,5 +345,28 @@ export function buildWorkspaceMirrorPayload(
     roleBindings: buildRoleBindings(state),
     sessionRestored: state.sessionRestored === true,
     pinnedIds: [...(state.sidebarPinnedIds ?? [])],
+    viewed: buildViewed(state),
+  };
+}
+
+/** The active workspace, its active pane, and that pane's ACTIVE surface's
+ *  own cwd and branch — what the human is looking at. Workspace metadata is
+ *  not used: it holds whichever surface reported last. A value this surface
+ *  never reported is omitted. Undefined when no workspace is active. */
+export function buildViewed(state: MirrorSnapshotState): WorkspaceMirrorPushPayload['viewed'] {
+  const ws = state.activeWorkspaceId
+    ? state.workspaces.find((w) => w.id === state.activeWorkspaceId)
+    : undefined;
+  if (!ws) return undefined;
+  const leaf = getWorkspaceLeafPanes(ws).find((p) => p.id === ws.activePaneId);
+  const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  const isTerminal = !!surface && (!surface.surfaceType || surface.surfaceType === 'terminal');
+  const cwd = isTerminal && surface.cwd ? surface.cwd : undefined;
+  const branch = isTerminal && surface.ptyId ? state.surfaceGitBranch?.[surface.ptyId] : undefined;
+  return {
+    workspaceId: ws.id,
+    paneId: ws.activePaneId || null,
+    ...(cwd ? { cwd } : {}),
+    ...(branch ? { branch } : {}),
   };
 }
