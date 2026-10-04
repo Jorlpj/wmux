@@ -145,6 +145,11 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   reserve for the traffic lights (centred in the 40px row, dropped in native
   fullscreen), the `wmux` wordmark, and a `+` that opens the new-workspace
   preset picker. A collapsed sidebar shrinks it to the rail's width.
+- **Page title:** right of the segment, the active workspace's name, its
+  task link and its branch (the shortcut to Git). These belong to the
+  Workspaces page: on a rail page (Git, Fleet, Schedules, Remote) the `+`
+  is hidden and the title is the page's name instead, with no branch.
+  Settings keeps the workspace's titlebar. Back on Workspaces, all return.
 - **Centre: the search pill.** A small filled pill, "Search & commands" with
   the palette shortcut, centred in the drag gap. It opens the command palette
   over whatever page is shown; it is not a page. Only the pill opts out of
@@ -191,7 +196,12 @@ navigates through it.
   `--hover-fill`; Fleet's needs-you count is a small number badge on the
   icon's corner. Every button is named, and the arrow keys move between
   them.
-- **A page fills the sheet.** The Workspaces page stays mounted at full size
+- **A page fills the sheet** (Git excepted: it fills the sheet beside the
+  tools dock, which stays in view and usable, so Moa is in reach while you
+  read issues and PRs; the page is inset off the dock by measuring it, never
+  by reflowing the sheet, whether the dock sits inline or floats as the
+  narrow-window overlay; the dock's toggle and Moa's titlebar icon open and
+  close it in place there). The Workspaces page stays mounted at full size
   and **inert** under any other page, so no terminal is resized or unmounted
   and PTYs, scrollback, the WebGL atlas and IME state survive the round trip.
   Showing a page drops focus left in the panes, and the focus self-heal runs
@@ -254,18 +264,30 @@ each part only when it has something to say.
 ### Git
 
 Opened from the rail (the branch icon under Remote) or by clicking the
-branch text in the titlebar. The sheet's full width with 28px sides, like
-Remote: the 20px title, the repo's name as a muted line, and a refresh
-button.
+branch text in the titlebar. It is about the **repo**, not its branches:
+the sheet beside the dock (see Rail and pages) with 28px sides; the header
+is the repo as `owner/repo` at the title size (the folder name without a
+GitHub remote), a small GitHub link icon beside it, a muted line with the
+open counts ("12 issues · 4 pull requests", "100+" at the read cap), and a
+refresh button. Nothing about branches or worktrees sits above the lists.
 
-- **Branch bar** on top, **folded by default** to one thin 26px line (a
-  chevron, the branch in mono, ↑↓ and the changed-file count, muted; the
-  page is for reading first). Opened, it is one line: the active
+- **Repo switcher:** the repo name is the switcher, a "Current repository"
+  listbox: a filter field, **All repos** on top, every repo of the open
+  workspaces grouped by remote (a checkout label when one remote has 2+
+  clones; the open counts only when already read), and **Follow active
+  workspace** at the bottom. Type to filter, arrows, Enter, Esc; focus
+  returns to the name. The default follows the active workspace; a picked
+  repo stays, across restarts too, until another is picked or Follow is
+  chosen, so switching workspaces never moves the page. A pick whose repo
+  has no open workspace left follows the active one with a muted line, and
+  comes back when a workspace reopens there. The picked repo's lists,
+  worktrees and hand-off owner come from its group.
+
+- **Branch bar:** at the top of the **Worktrees** tab, one line: the active
   workspace's branch in mono, ahead/behind, uncommitted files `+N −M`, the
   PR badge with its CI state, then Diff, Go to terminal and the **ship
-  button**, with a chevron that folds it again. A `--selection-subtle` fill,
-  no border. Folded or open is remembered. It trusts the pushed git status
-  only when that status is about this very worktree.
+  button**. A `--selection-subtle` fill, no border. It trusts the pushed git
+  status only when that status is about this very worktree.
 - **Ship button:** the one primary on the page. Its label is the branch's
   next step: Commit (a message box; commits every change, new files
   included), Push, Create PR (`gh pr create --fill` with an editable title)
@@ -274,13 +296,14 @@ button.
   cannot run is disabled with its reason in a muted line (a merge session,
   a detached HEAD, no upstream, behind the upstream, the default branch).
   Commit needs no upstream; Push and Create PR do. main re-checks each step.
-- **Tabs and scope:** text tabs **Pull requests · Issues · Worktrees** (the
-  active one carries the 2px accent bar; a first visit opens on Issues, then
-  the last tab is kept) on the left of a hairline, and the
-  This repo / All repos segmented control on the right. All repos groups
-  every open workspace by repo (the active repo first; clones of one remote
-  are one group). Only the shown list of the active repo polls; another
-  repo's group opens on demand and reads once.
+- **Tabs:** text tabs **Issues · Pull requests**, then **Worktrees** as a
+  quieter, secondary tab at the end (the active one carries the 2px accent
+  bar; a first visit opens on Issues, then the last tab is kept) over a
+  hairline. All repos (from the switcher) groups every open workspace by
+  repo (the active repo first; clones of one remote are one group). Only the
+  shown list of the shown repo polls; another repo's group opens on demand
+  and reads once. The branch bar shows on Worktrees only when the active
+  workspace is in the shown repo.
 - **List / detail:** Pull requests and Issues are a split, the list ~30%
   and the detail the rest, each scrolling on its own (the page itself does
   not scroll); stacked on a narrow sheet. A list row is two lines: mono
@@ -318,9 +341,9 @@ button.
   switches to it) or its folder, the PR, the diff stat (green/red), the
   accent dot only on the active pane's worktree, and Diff / Open / Merge /
   Remove floating over the faded right edge on hover.
-- **Remembered:** scope, tab, issue filter, selected item and list scroll
-  live in the UI store and survive leaving the page; the tab is also kept
-  per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
+- **Remembered:** the picked repo, tab, issue filter, selected item and list scroll
+  live in the UI store and survive leaving the page; the picked repo and
+  the tab are also kept per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
   to terminal, a workspace link) returns to Workspaces.
 - **PR review (detail pane):** under the facts row, in order:
   - **Checks:** a row per check (a green tick for pass, a red mark for fail, a
@@ -689,6 +712,9 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-04 | Owner decision (Moa, PR E): the right tool panel is always Moa's chat (pinned to the HQ, whatever workspace is active), and Moa's character is the one exception to two chrome rules. **Motion:** the mascot keeps its approved idle squish and blink (and the working / needs-you / done loops) — the only perpetual motion besides spinners and the cursor — and stops under `prefers-reduced-motion` or Moa's own Reduce motion setting. **Size:** the titlebar Moa icon is the mascot at 20px (chrome icons otherwise cap at 16px); at 28px and under only the body and face are drawn. The "needs you" bubble pops under that icon for ~6s (decisions and finished delegations only, one at a time, polite live region, never takes focus), then shrinks to a dot: yellow = a decision waits, grey = an unseen plain reply. While Moa is on, the Moa icon is the panel toggle (DeckToggle hides) | Owner-approved art (Mascot6, Closed) and spec; a character the owner chose to give the main bot a face, kept calm by the reduced-motion switches and the one-bubble rule |
 | 2026-10-04 | Git page reads first: Issues is the first tab, the branch bar folds to one thin line by default, issues and PRs drag onto an agent pane or a workspace row to hand them off (a confirm popover with an optional note), and signing in to GitHub is a full-page card with gh's device code shown in-app | Most visits are to read and route work, not to ship; the bar's controls stay one click away. Dropping on the agent you mean is quicker than copying a link, and the popover keeps a stray drop from sending anything. The agent gets a fixed reference to read with gh, never the item's text pasted in. The device code in-app removes the terminal round trip, which is the step most people stall on |
 | 2026-10-04 | PR review lives in the Git page's detail pane: checks with failed-run logs and an explicit Rerun failed jobs, review actions, squash merge with an editable subject and an empty body, changed files with line comments and threads, and who acts next from the PR's work link | Reading and routing PRs already happens on this page; leaving for the browser to approve, merge or read a CI failure broke the flow. Every write is pinned to the head commit shown, so a push that lands while you read can never be approved or merged unseen. Logs are untrusted text, shown plain. Rerun is never automatic: a flaky job is a decision, not a retry loop |
+| 2026-10-04 | The Git page leads with the repo: `owner/repo` with its open issue and PR counts, then Issues and Pull requests; branches and worktrees (the branch bar, the ship button) move into a secondary Worktrees tab. The Git page sits beside the tools dock instead of covering it, and an issue or PR dropped on the dock goes to Moa | The owner reads the repo's issues and PRs on this page and rarely its branches, so the branch chrome above the lists was noise. Covering the dock hid Moa exactly when work was being routed to it, and the jump from panes-plus-dock to one full-width page read as the window's proportions changing. Measuring the dock instead of reflowing keeps every terminal at its size |
+| 2026-10-04 | The repo name in the Git page header is a repo switcher (All repos, each open workspace's repo, Follow active workspace); it replaces the This repo / All repos control. A pick sticks across workspace switches and restarts | The owner asked how to move between repos on the page. A page that jumped whenever the active workspace changed made reading another repo's issues impossible, and one control in the place the eye already reads the repo name beats a second, separate scope control |
+| 2026-10-04 | On a rail page the titlebar names the page (Git, Fleet, Schedules, Remote) and hides `+` and the workspace's name and branch; Search & commands stays | Owner feedback: the workspace's title and New workspace read as part of the Git page while they act on the Workspaces page under it. Search & commands is global, so it stays |
 
 ### Desktop conversation view
 

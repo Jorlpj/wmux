@@ -75,3 +75,34 @@ describe('channel dock — wiring regression guard', () => {
     expect(uiSlice).not.toMatch(/toggleChannelDock/);
   });
 });
+
+describe('channel dock beside the Git page (Moa stays in reach)', () => {
+  it('the dock is its own region, outside the inert Workspaces page, and only the Git page leaves it live', () => {
+    const region = appLayout.slice(appLayout.indexOf('data-dock-region') - 200, appLayout.indexOf('data-dock-region'));
+    expect(region).toMatch(/inert=\{!dockShownOn\(appRoute\) && !inspectModeActive\}/);
+    // The one shared rule: the Workspaces page, and Git beside the dock.
+    const besideDock = read('components/Layout/pagesBesideDock.ts');
+    expect(besideDock).toMatch(/PAGES_BESIDE_DOCK[^=]*= new Set<AppRoute>\(\['git'\]\)/);
+    expect(besideDock).toMatch(/route === 'workspaces' \|\| PAGES_BESIDE_DOCK\.has\(route\)/);
+    // The dock is mounted inside that region, not inside a data-workspaces-page wrapper.
+    const dockAt = appLayout.indexOf('<ChannelDock />');
+    const regionAt = appLayout.indexOf('data-dock-region');
+    const lastPageWrapperBefore = appLayout.lastIndexOf('data-workspaces-page', dockAt);
+    expect(regionAt).toBeLessThan(dockAt);
+    expect(lastPageWrapperBefore).toBeLessThan(regionAt);
+    // The narrow-window overlay dock lives in the same region, so it too stays
+    // live beside Git and is what the page measures.
+    const overlayAt = appLayout.indexOf('data-dock-overlay');
+    const regionEnd = appLayout.indexOf('data-workspaces-page', regionAt);
+    expect(overlayAt).toBeGreaterThan(regionAt);
+    expect(overlayAt).toBeLessThan(regionEnd);
+  });
+
+  it('a Git page drag dropped on the dock opens the hand-off on Moa\'s HQ', () => {
+    expect(dock).toMatch(/isOurHandoffDrag\(dt\) && !!moaHqId\(/);
+    expect(dock).toMatch(/takeHandoffDrop\(e\.dataTransfer\)/);
+    expect(dock).toMatch(/setGitHandoff\(\{ item: taken\.item, workspaceId: hq, repo: taken\.repo/);
+    expect(dock).toMatch(/onDrop=\{onDrop\}/);
+  });
+});
+

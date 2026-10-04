@@ -841,6 +841,8 @@
  * sheet's own edge is the page's only boundary. */
 .wmux-page { position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-base); }
 .wmux-page[data-rail-page="fleet"] .wmux-fleet-panel { width: 100%; }
+/* The Git page sits beside the dock (Moa); a Git page drag held over the dock. */
+[data-channel-dock][data-handoff-over] { outline: 1px dashed var(--accent); outline-offset: -2px; }
 /* Fleet board: four columns of cards. A card is a fill tone (no outline),
  * the selected card a stronger tone; column heads are text. Amber is spent
  * only on status dots and the empty board's one call to action. */
@@ -2142,6 +2144,9 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-tab { height: 34px; padding: 0 12px; font-size: 13px; color: var(--text-muted); border-radius: 6px 6px 0 0; }
 .wmux-git-tab:hover { color: var(--text-main); background: var(--hover-fill); }
 .wmux-git-tab[aria-selected='true'] { color: var(--text-main); font-weight: var(--title-weight, 500); box-shadow: inset 0 -2px 0 var(--accent); }
+/* Worktrees: the secondary tab, set apart by a gap and a hairline, quieter at rest. */
+.wmux-git-tab-aside { position: relative; margin-left: 13px; font-size: 12px; }
+.wmux-git-tab-aside::before { content: ''; position: absolute; left: -8px; top: 10px; bottom: 10px; width: 1px; background: var(--line); }
 .wmux-git-toolbar .ui-segmented { margin-bottom: 4px; }
 .wmux-git-panel { display: flex; flex: 1; min-height: 0; }
 .wmux-git-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 0 32px; }
@@ -2184,7 +2189,6 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-wt-group .wmux-git-subhead { margin: 0; }
 .wmux-git-wt-caption { margin: 0 4px 4px; font-size: 11px; color: var(--text-muted); }
 .wmux-git-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.wmux-git-page-title { margin: 0; font-size: 20px; font-weight: 600; line-height: 28px; color: var(--text-main); outline: none; }
 .wmux-git-page-summary { margin: 2px 0 0; font-size: 13px; color: var(--text-sub); }
 .wmux-git-body { display: flex; flex-direction: column; gap: 12px; }
 .wmux-git-scope { display: flex; }
@@ -2380,15 +2384,7 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-gh-connect-cmd code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; color: var(--text-main); }
 .wmux-gh-connect-code { margin: 0; padding: 16px 0; border-radius: 12px; background: var(--selection-subtle); text-align: center; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 28px; font-weight: 500; line-height: 36px; letter-spacing: .12em; color: var(--text-main); user-select: all; }
 
-/* Git page — hand-off to agents and the thin branch bar */
-.wmux-git-barline {
-  display: flex; align-items: center; gap: 8px; width: 100%; height: 26px; padding: 0 8px;
-  border-radius: 6px; font-size: 12px; color: var(--text-muted); text-align: left; min-width: 0;
-}
-.wmux-git-barline:hover { background: var(--hover-fill); color: var(--text-main); }
-.wmux-git-barline-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.wmux-git-bar-collapse { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; color: var(--text-muted); flex-shrink: 0; }
-.wmux-git-bar-collapse:hover { background: var(--hover-fill); color: var(--text-main); }
+/* Git page — hand-off to agents */
 .wmux-handoff-layer { position: fixed; inset: 0; z-index: var(--z-dialog, 60); pointer-events: none; }
 .wmux-handoff { position: fixed; pointer-events: auto; display: flex; flex-direction: column; gap: 8px; }
 .wmux-handoff-title { margin: 0; font-size: 13px; font-weight: 500; color: var(--text-main); }
@@ -2456,3 +2452,22 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-next { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
 /* Newer commits than the pinned head: a muted line with one Reload, no wash. */
 .wmux-git-moved { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border-soft); font-size: 12px; color: var(--text-sub); }
+
+/* Git page — the header's repo switcher */
+.wmux-git-page-repo { display: flex; align-items: center; gap: 4px; }
+/* The hover fill reaches 6px past the text: the negative margin sits on the
+   wrapper so the trigger's own width is never cut short (that clipped the name). */
+.wmux-git-repo-switch { position: relative; min-width: 0; margin-left: -6px; }
+.wmux-git-repo-trigger { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 0 6px; border-radius: 6px; font-size: 20px; font-weight: 600; line-height: 28px; color: var(--text-main); }
+.wmux-git-repo-trigger:hover, .wmux-git-repo-trigger[aria-expanded='true'] { background: var(--hover-fill); }
+.wmux-git-repo-trigger-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-git-repo-trigger .wmux-git-chevron { color: var(--text-muted); transform: rotate(90deg); }
+.wmux-git-repo-trigger .wmux-git-chevron[data-open] { transform: rotate(-90deg); }
+.wmux-git-repo-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; display: flex; flex-direction: column; gap: 4px; width: 320px; max-width: calc(100vw - 32px); }
+.wmux-git-repo-filter { width: 100%; height: 28px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; font-size: 12px; color: var(--text-main); }
+.wmux-git-repo-list { max-height: 320px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.wmux-git-repo-option { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 6px; cursor: default; }
+.wmux-git-repo-option[data-active] { background: var(--hover-fill); }
+.wmux-git-repo-option[aria-selected='true'] .wmux-git-repo-option-label { font-weight: 500; }
+.wmux-git-repo-option-label { font-size: 13px; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-git-repo-option-sub { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
