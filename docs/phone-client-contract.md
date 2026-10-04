@@ -3220,13 +3220,42 @@ A new answer from Moa (or its dialog opening or closing) raises
 read its `/turns`, exactly as for any pane.
 
 **Moa's own permission dialog.** When Moa's terminal shows its own
-permission dialog ("Do you want to proceed?"), the phone cannot answer it:
-the dialog never becomes an approval record, so there is nothing for
-`/api/approvals` to answer, and it is answered on the desktop. While it is
-up:
+permission dialog ("Do you want to proceed?"), the daemon raises it as a
+`kind: "terminal_prompt"` approval record on the Moa pane — the same record,
+shape and rules as any pane's terminal prompt (see *`terminal_prompt` — the agent's own permission dialog* above),
+so a client needs nothing new to show it. The record is in `GET /api/approvals`
+and its `approval` events are on `GET /api/events`.
 
-- `/turns` reports `chat.blocked: {by: "terminal"}` (and `chat.blocked` /
-  `chat.unblocked` follow on `/api/events` as for any pane);
+**A device does not press it** — no answer, no decline — until the shared
+parser binds Moa's dialog shapes (a separate change). Today the parser binds
+the `<Tool> command` dialog shape (Bash) only, and Moa's brain cannot run
+Bash, so **Moa's prompts (WebFetch, WebSearch, reads outside its home, …)
+arrive as informational cards**. A device is shown **every** Moa-pane record
+that way, whatever the daemon could bind (an ExitPlanMode prompt included):
+no `choices`, no `promptFingerprint`, no `question` / `reason`, no
+decision-v2 `form` / `formFingerprint`, no `hasDetail` — only `kind`,
+`toolName`, `summary` (and `risk`) — so a client never draws a button that
+always fails. Show them with the existing informational copy, e.g. "Answer
+on the desktop". A press is refused and nothing is typed:
+
+| Request | Response |
+|---|---|
+| `POST /api/approvals/:id` (answer) | `501 {error:"answer-in-terminal", reason:"unsupported-shape"}` |
+| `POST /api/approvals/:id/answer` (`decision-v2`) | `501 {error:"answer-in-terminal", reason:"unsupported-shape"}` |
+| `POST /api/approvals/:id/decline`, within 1.5 s of the record's creation | `425 {error:"answer-too-soon", effect:"none"}` |
+| `POST /api/approvals/:id/decline`, after that | `409 {error:"prompt-unverified", effect:"none"}` |
+| `POST /api/approvals/:id/decline`, already answered on the desktop | `409 {error:"already-answered", effect:"none"}` |
+
+Both answer routes refuse with that `501` whatever the client declared. A
+decline meets the route's usual checks first: `501 {error:"answer-in-terminal",
+reason:"no-capability"}` without `terminal-prompt-decline`, `403` without the
+input grant. The desktop's Moa chat answers the record; its answer settles
+it for the phone too. While it is up:
+
+- `/turns` reports `chat.blocked` as `{by: "terminal"}` — never
+  `{by: "approval", approvalId}`, since a device cannot press it — before
+  and while the record is up; `chat.blocked` / `chat.unblocked` follow on
+  `/api/events`;
 - `POST …/chat/messages` answers `409 {error:"chat-blocked", result:"blocked",
   blockedBy:"terminal", effect:"none"}`, and a send already admitted is
   refused before Enter (`authorization-expired`);
@@ -3237,6 +3266,9 @@ up:
 
 Revocation: switching Moa off, changing the HQ, or the HQ going missing closes
 the Moa pane on the daemon at once — before the desktop's own lists catch up.
+Its pending prompt record expires with it (the `expire` event and
+`chat.unblocked` still reach a phone that was shown the card), and from then
+on the record and its routes answer `404` to a device, like any brain pane's.
 From then on every route above answers it as any brain pane: `404
 {error:"session not found"}` (`{error:"pane-not-found"}` on cancel, its
 receipt and dequeue).
