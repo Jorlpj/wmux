@@ -256,31 +256,53 @@ of the pane that started the server, possibly a closed pane or a pane of
 another wmux instance, not the pane whose turn finished. The payload names no
 pane either.
 
-So the notify bridge looks at the process that spawned it (skipping wrappers
-that re-run the bridge itself, such as a version-manager `node` shim). The
-notification is dropped — nothing is sent, nothing is spooled, and
-`codex-notify.log` records `refused-shared-server` — only when all of these
-hold:
+Both bridges inspect their spawning process, skipping wrappers that re-run
+an entry point, including sh, cmd and PowerShell command wrappers. A
+pane-side `SessionStart` with confirmed top-level rollout metadata records the thread's pane,
+workspace, surface, instance suffix and endpoint overrides under
+`$CODEX_HOME/wmux-thread-owners` (default `~/.codex/wmux-thread-owners`). The
+index is account-scoped because one app-server can serve several wmux
+instances. It contains routing metadata only, never tokens or conversation
+content. Writes are atomic. Starting or resuming another thread in the same
+pane invalidates its previous ownership record; attaching a thread in another
+pane transfers ownership there. Closing the pane removes its owner pointer.
+Relay records use the account the relay actually attached, even if pane
+environment variables name a different account.
 
-- `app-server` is that process's **subcommand**: the first word after the
-  executable and Codex's global options. `codex --cd app-server`, or a prompt
-  that mentions the word, is not a server.
-- The server is **shared**: `--managed-daemon`, or a `--listen` other than
-  `stdio://`. A stdio server serves the one client that started it; wmux's own
-  Chat composer runs one per pane, with that pane's environment.
-- The environment **claims a pane**: `WMUX_PTY_ID`, `WMUX_WORKSPACE_ID`,
-  `WMUX_SURFACE_ID` or `WMUX_DATA_SUFFIX` is set. A shared server that wmux
-  starts itself has every `WMUX_*` variable removed, so its notifications name
-  no pane and are sent as before, for wmux to place by cwd.
+For wmux-managed shared-server launches, the daemon also writes this index
+from the TUI relay's confirmed foreground selection, before forwarding the
+start/resume reply to the TUI. A live empty selection invalidates the old
+record even after a restart; a transport interruption retains it. Invalidation
+and publication failures abort selection forwarding. Old pointers are removed
+before publication, so a full disk cannot leave a stale pair valid. This covers builds whose hooks
+all run inside the shared server, without trusting those hooks' environment.
 
-A Codex that runs the turn itself — older builds, `--no-daemon` (how wmux's
-bash/zsh `codex` wrapper runs an interactive `codex`), `exec`, `review` — is
-unchanged, and so is a parent the bridge cannot inspect within its 900 ms
-budget. On WSL the bridge is a Windows process that cannot see the Linux
-Codex, so the WSL launcher hands it that process's argv
-(`WMUX_CODEX_NOTIFIER_ARGV`) and the same rules apply.
+Shared-server notifications resolve the thread through that index and replace
+all inherited routing fields with the recorded owner's fields. A missing owner
+gets one 75 ms re-lookup before the signal is dropped. An unknown,
+unreadable or invalidated owner is dropped without sending, logging under the
+inherited instance, or writing a resume spool. There is no cwd fallback. A
+shared-server hook cannot establish or overwrite ownership. A TUI launched outside the managed relay that only fires server-side hooks
+has no proven owner, so its signals remain dropped.
 
-The hooks bridge has the same exposure and does not check yet.
+A confirmed per-pane process (including a stdio app-server) always uses its own
+pane environment, ignoring older registry records. Without a pane id it is
+dropped, including a direct launch outside wmux. An uninspectable parent with
+a pane id retains the legacy environment fallback, including permission hooks.
+Hooks skip ancestor lookup when no identity is inherited; using an existing
+owner in that case requires confirming a clean shared-server parent first. On WSL the launcher supplies the Linux parent's argv through
+`WMUX_CODEX_NOTIFIER_ARGV`, and the same rules apply. This routing does not
+require the user to pass `--no-daemon`.
+
+Both entry points use `wmux-codex-thread.mjs` for rollout classification.
+Sub-agent Stop and SessionStart hooks emit `agent.subagent_stop` without an
+`agentSessionId` or transcript path; nested prompt and approval hooks are
+ignored. An unconfirmed SessionStart cannot record ownership, and only a Stop
+with confirmed top-level rollout metadata carries a resume-binding id. Each
+hook classifies its rollout once and reuses that result. Shared sub-agent
+notifications resolve the pane through the root
+thread's ownership. They never replace the pane's resume binding or spool.
+The shared module is shipped and installed beside both entry points.
 
 ## Identity on the main pipe (#1111)
 
