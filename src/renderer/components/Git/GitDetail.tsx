@@ -9,11 +9,17 @@
 // Each body is mounted per selected item (keyed by the page), so an answer for
 // a previous selection is dropped with its component; within one item, only
 // the newest read lands.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import { ListFreshness } from './ListFreshness';
+import { DetailError, useDetail } from './useDetail';
+import { PrChecks, usePrChecks } from './PrChecks';
+import { PrReviewActions } from './PrReviewActions';
+import { PrFiles } from './PrFiles';
+import type { PrPin } from './prReviewState';
+import { WhoActsNext } from './WhoActsNext';
 import { PrStepText, getGithubBridge } from './PrSection';
 import { getIssueBridge } from './IssueSection';
 import { relTime } from './useGitList';
@@ -46,53 +52,7 @@ function reviewWord(state: string, t: (k: string) => string): string {
   return word === key ? state.toLowerCase().replaceAll('_', ' ') : word;
 }
 
-type DetailAnswer<T> = { ok: true; value: T } | { ok: false; message: string; retryAt?: number };
-
-/** Reads `load` once per `dep` (and per retry), keeping only the newest
- *  answer. A rate-limited answer reads again by itself at its retry time. */
-function useDetail<T>(load: () => Promise<DetailAnswer<T>>, dep: string) {
-  const [state, setState] = useState<{ value: T | null; error: string | null; retryAt: number | null; loading: boolean }>(
-    { value: null, error: null, retryAt: null, loading: true },
-  );
-  const [attempt, setAttempt] = useState(0);
-  const req = useRef(0);
-  const loadRef = useRef(load);
-  loadRef.current = load;
-  useEffect(() => {
-    const mine = ++req.current;
-    setState((s) => ({ ...s, loading: true, error: null }));
-    void loadRef.current().then((res) => {
-      // Only the newest read for this item lands (its rate limit included).
-      if (mine !== req.current) return;
-      setState(res.ok
-        ? { value: res.value, error: null, retryAt: null, loading: false }
-        : { value: null, error: res.message, retryAt: res.retryAt ?? null, loading: false });
-    });
-    return () => { req.current++; };
-  }, [dep, attempt]);
-  useEffect(() => {
-    if (state.retryAt === null) return;
-    const id = window.setTimeout(() => setAttempt((n) => n + 1), Math.max(0, state.retryAt - Date.now()) + 500);
-    return () => window.clearTimeout(id);
-  }, [state.retryAt]);
-  const retry = useCallback(() => setAttempt((n) => n + 1), []);
-  return { ...state, retry };
-}
-
-/** A failed detail read: why, and a Retry. */
-function DetailError({ label, error, retry }: { label: string; error: string; retry: () => void }): React.ReactElement {
-  const t = useT();
-  return (
-    <div className="wmux-git-fresh break-words" role="status" data-git-detail-error>
-      <span>{label}: {error}</span>
-      <button type="button" className={`wmux-git-link-btn ${FOCUS_RING}`} onClick={retry} data-git-detail-retry>
-        {t('git.list.retry')}
-      </button>
-    </div>
-  );
-}
-
-function DetailHeader({ title, number, repo, url, state, author, handoff, repoContext }: {
+function DetailHeader({ title, number, repo, url, state, author, handoff, repoContext, next }: {
   title: string;
   number: number;
   repo: string;
@@ -102,6 +62,8 @@ function DetailHeader({ title, number, repo, url, state, author, handoff, repoCo
   /** The item to hand to an agent (the keyboard / a11y twin of dragging it). */
   handoff: HandoffRef | null;
   repoContext?: GitDragOwner;
+  /** Who acts next on the item (its work link), drawn in the reserved slot. */
+  next?: React.ReactNode;
 }): React.ReactElement {
   const t = useT();
   const open = () => {
@@ -112,8 +74,8 @@ function DetailHeader({ title, number, repo, url, state, author, handoff, repoCo
       <div className="wmux-git-detail-titlerow">
         <h2 className="wmux-git-detail-title">{title}</h2>
         <div className="wmux-git-detail-actions">
-          {/* Reserved for "who acts next" (the shared work-link model); empty until then. */}
-          <div className="wmux-git-detail-slot" data-git-detail-slot />
+          {/* Who acts next (the shared work-link model); empty when no work is linked. */}
+          <div className="wmux-git-detail-slot" data-git-detail-slot>{next}</div>
           {handoff && (
             <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={open} data-git-send-agent>
               {t('git.detail.sendToAgent')}
@@ -152,6 +114,25 @@ function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary;
     const res = await bridge.prDetail(repoPath, pr.number, pr.updatedAt);
     return res.ok ? { ok: true, value: res.detail.comments } : { ok: false, message: res.message };
   }, `${pr.updatedAt}\0${refreshKey}`);
+  const checks = usePrChecks(repoPath, pr, refreshKey);
+  // The head this detail is pinned to: the first one read, until Reload.
+  const latest = checks.data?.head.headRefOid ?? null;
+  const [pinned, setPinned] = useState<string | null>(null);
+  const [reloads, setReloads] = useState(0);
+  if (pinned === null && latest !== null) setPinned(latest);
+  const pinHead = pinned ?? latest;
+  const pin: PrPin | null = checks.data && pinHead ? {
+    head: pinHead,
+    moved: latest !== pinHead,
+    closed: checks.data.head.state === 'OPEN' ? null : checks.data.head.state,
+    stale: () => checks.latestHead.current !== null && checks.latestHead.current !== pinHead,
+  } : null;
+  const reload = () => {
+    setPinned(latest);
+    setReloads((n) => n + 1);
+    checks.reload(true);
+  };
+  const reread = () => checks.reload(true);
   return (
     <div className="wmux-git-detail-body" data-pr-detail>
       <div className="wmux-git-detail-facts">
@@ -159,6 +140,21 @@ function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary;
         {pr.reviewDecision && <span>{reviewWord(pr.reviewDecision, t)}</span>}
         {pr.checks && <span>{t(`workspace.prChecks.${pr.checks}`)}</span>}
       </div>
+      <PrChecks repoPath={repoPath} prUrl={pr.url} read={checks} />
+      {checks.data && pin && (
+        <>
+          {pin.moved && (
+            <div className="wmux-git-moved" role="status" data-pr-moved>
+              <span>{t('git.review.newCommits')}</span>
+              <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={reload} data-pr-reload>
+                {t('git.review.reload')}
+              </button>
+            </div>
+          )}
+          <PrReviewActions repoPath={repoPath} prUrl={pr.url} number={pr.number} head={checks.data.head} checks={checks.data.checks} pin={pin} onMoved={reread} />
+          <PrFiles repoPath={repoPath} prUrl={pr.url} number={pr.number} pin={pin} readKey={`${refreshKey}\0${reloads}`} onMoved={reread} />
+        </>
+      )}
       {detail.loading && <div className="wmux-git-note">{t('git.loading')}</div>}
       {!detail.loading && detail.error && <DetailError label={t('git.commentsFailed')} error={detail.error} retry={detail.retry} />}
       {!detail.loading && detail.value?.length === 0 && <div className="wmux-git-note">{t('git.noComments')}</div>}
@@ -269,6 +265,7 @@ export function GitDetail({ kind, repoPath, repoLabel, pr, issue, refreshKey = 0
           state={<PrStepText pr={pr} />}
           handoff={handoffRefOf('pr', pr)}
           repoContext={repo}
+          next={<WhoActsNext url={pr.url} />}
         />
         <PrBody key={`${repoPath}\0${pr.number}`} repoPath={repoPath} pr={pr} refreshKey={refreshKey} />
       </article>
