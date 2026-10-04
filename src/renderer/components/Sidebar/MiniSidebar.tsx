@@ -1,5 +1,5 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
-import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
@@ -7,6 +7,8 @@ import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUn
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { useGlanceBoardOrder } from './useGlanceBoardOrder';
+import { partitionWorkspaceSettle, workspaceSettleGroupOf } from './workspaceSettleGroups';
+import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection, expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir, IconGear } from '../icons';
@@ -52,8 +54,28 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   // rows stay draggable among themselves while the rest is sorted.
   const pinnedIds = useStore((s) => s.sidebarPinnedIds);
   // Same glance-board order and settle rule as the full sidebar.
-  const { ordered: orderedWorkspaces, onPointerEnter: onRailPointerEnter, onPointerLeave: onRailPointerLeave, onFocusCapture: onRailFocus, onBlurCapture: onRailBlur } =
+  const { ordered: boardWorkspaces, onPointerEnter: onRailPointerEnter, onPointerLeave: onRailPointerLeave, onFocusCapture: onRailFocus, onBlurCapture: onRailBlur } =
     useGlanceBoardOrder(workspaces);
+  // Snoozed and settled workspaces have no groups on the rail: they just move
+  // to the end of it, in the same order. Same placement rule as the sidebar:
+  // pinned wins, and a fan-out task goes where its live owner goes.
+  const settleStates = useStore((s) => s.workspaceSettle.states);
+  const missionByPaneGroup = useStore((s) => s.missionByPaneGroup);
+  const fanoutLineage = useStore((s) => s.fanoutLineage);
+  const fanoutSpawnOwner = useStore((s) => s.fanoutSpawnOwner);
+  const orderedWorkspaces = useMemo(() => {
+    const now = Date.now();
+    const liveIds = new Set(workspaces.map((w) => w.id));
+    const split = partitionWorkspaceSettle(boardWorkspaces, {
+      groupOf: (id) => workspaceSettleGroupOf(settleStates[id], now),
+      pinned: new Set(pinnedIds),
+      nestedOwnerOf: (id) => {
+        const link = resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id]);
+        return link && !link.detached && link.ownerId && link.ownerId !== id && liveIds.has(link.ownerId) ? link.ownerId : undefined;
+      },
+    });
+    return [...split.main, ...split.snoozed, ...split.settled];
+  }, [boardWorkspaces, workspaces, settleStates, pinnedIds, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const toggleSidebar = useStore((s) => s.toggleSidebar);

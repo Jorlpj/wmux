@@ -33,6 +33,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { usePaneTaskSplit } from './SidebarTaskGroup';
 import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
+import { WORKSPACE_SNOOZE_PRESETS, workspaceSnoozeUntil } from '../../../shared/workspaceSettle';
+import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -59,6 +61,12 @@ interface WorkspaceItemProps {
    * the drop math assumes flat siblings, and a task's place is its owner's.
    */
   taskRow?: boolean;
+  /**
+   * The row sits in the sidebar's Snoozed or Settled group, out of stored
+   * order, so a Ctrl+N hint would be out of sequence: none is drawn. The
+   * shortcut itself still follows the stored order.
+   */
+  shortcutHintHidden?: boolean;
   /**
    * 2026-09-27 — this workspace's fan-out tasks (owner rows only). Each one
    * nests under the roster row of the pane that requested it; the rest are
@@ -344,7 +352,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, nestedTaskIds, renderTask, onCloseTask }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -355,6 +363,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const [wdOpen, setWdOpen] = useState(false);
   const [owOpen, setOwOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  // Keyboard path into the Snooze submenu: focus its first preset once it
+  // mounts, and do not reopen it when Escape hands focus back to the trigger.
+  const snoozeTriggerRef = useRef<HTMLButtonElement>(null);
+  const snoozeFocusFirst = useRef(false);
+  const snoozeSkipFocusOpen = useRef(false);
   const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
   const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -414,6 +428,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
   const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
   const toggleSidebarPin = useStore((s) => s.toggleSidebarPin);
+  // Settle / snooze (main owns both; the menu only sends the verbs). Scalars,
+  // so a push about another workspace does not re-render this row.
+  const workspaceSettled = useStore((s) => !!s.workspaceSettle.states[workspaceId]?.settled);
+  const snoozedUntil = useStore((s) => s.workspaceSettle.states[workspaceId]?.snoozedUntil ?? 0);
+  // Main refuses to settle these (rules (b)/(c)); the item says so up front.
+  const settleBlocked = pinned || needsYou || agentStatus === 'running' || agentStatus === 'awaiting_input';
+  // The HQ workspace never settles or snoozes (rule (d)).
+  const isHq = useStore((s) => s.workspaceSettle.hqWorkspaceId === workspaceId);
   // Name first. At rest the row shows the workspace name and the signals that
   // change on their own (status dot, unread, idle, "needs you"); the project
   // badge, the agent count and the shortcut hint are chrome you only look for
@@ -833,6 +855,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       // the next time the menu is summoned. Resetting here covers every close
       // path at once rather than each menu item individually.
       setColorOpen(false);
+      setSnoozeOpen(false);
     };
   }, [menuPos]);
 
@@ -1124,7 +1147,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             sequence with the rows around it, so none is drawn — except on a
             pinned row: the pinned group leads the stored order and is shown
             as stored, so its numbers match the screen. */}
-        {!taskRow && (!sortPaused || pinned) && (
+        {!taskRow && !shortcutHintHidden && (!sortPaused || pinned) && (
           <span className={`text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_35%,transparent)] flex-shrink-0 mt-0.5 ${restHidden}`}>
             {index < 9 ? `^${index + 1}` : ''}
           </span>
@@ -1262,6 +1285,128 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               {pinned ? t('sidebar.unpin') : t('sidebar.pin')}
             </button>
           )}
+          {/* Settle / snooze: visibility only — the workspace moves to the
+              sidebar's Settled or Snoozed group, nothing is closed. A task row
+              rides with its owner, so it has no verbs of its own. */}
+          {!taskRow && (workspaceSettled ? (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => { setMenuPos(null); void sendWorkspaceSettleCommand({ op: 'unsettle', workspaceId }); }}
+              data-workspace-action="unsettle"
+            >
+              {t('workspaceSettle.unsettle')}
+            </button>
+          ) : (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:hover:bg-transparent"
+              style={{ color: 'var(--text-main)' }}
+              disabled={isHq || settleBlocked}
+              title={isHq ? t('workspaceSettle.settleHq') : settleBlocked ? t('workspaceSettle.settleBlocked') : undefined}
+              onClick={() => { setMenuPos(null); void sendWorkspaceSettleCommand({ op: 'settle', workspaceId }); }}
+              data-workspace-action="settle"
+            >
+              {t('workspaceSettle.settle')}
+            </button>
+          ))}
+          {!taskRow && (snoozedUntil > Date.now() ? (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => { setMenuPos(null); void sendWorkspaceSettleCommand({ op: 'unsnooze', workspaceId }); }}
+              data-workspace-action="unsnooze"
+            >
+              {t('workspaceSettle.unsnooze')}
+            </button>
+          ) : !pinned && !isHq && (
+            <div
+              className="relative"
+              onMouseEnter={() => setSnoozeOpen(true)}
+              onMouseLeave={() => setSnoozeOpen(false)}
+              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setSnoozeOpen(false); }}
+            >
+              <button
+                ref={snoozeTriggerRef}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                style={{ color: 'var(--text-main)' }}
+                aria-haspopup="menu"
+                aria-expanded={snoozeOpen}
+                onClick={() => setSnoozeOpen(true)}
+                onFocus={() => {
+                  if (snoozeSkipFocusOpen.current) snoozeSkipFocusOpen.current = false;
+                  else setSnoozeOpen(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && snoozeOpen) {
+                    // First Escape folds the submenu; the next one closes the menu.
+                    e.stopPropagation();
+                    setSnoozeOpen(false);
+                    return;
+                  }
+                  if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'ArrowRight') return;
+                  e.preventDefault();
+                  snoozeFocusFirst.current = true;
+                  setSnoozeOpen(true);
+                }}
+                data-workspace-action="snooze"
+              >
+                <span>{t('workspaceSettle.snooze')}</span>
+                <span className="text-[var(--text-muted)] ml-auto"><IconChevron /></span>
+              </button>
+              {snoozeOpen && (
+                <div
+                  ref={(el) => {
+                    if (!el || !snoozeFocusFirst.current) return;
+                    snoozeFocusFirst.current = false;
+                    el.querySelector<HTMLButtonElement>('[data-snooze-preset]')?.focus();
+                  }}
+                  role="menu"
+                  className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[140px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
+                  style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+                  onKeyDown={(e) => {
+                    const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[data-snooze-preset]')];
+                    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      const step = e.key === 'ArrowDown' ? 1 : -1;
+                      items[(at + step + items.length) % items.length]?.focus();
+                    } else if (e.key === 'Escape' || e.key === 'ArrowLeft') {
+                      // Close only the submenu: stop the event before the
+                      // document listener that dismisses the whole menu.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setSnoozeOpen(false);
+                      snoozeSkipFocusOpen.current = true;
+                      snoozeTriggerRef.current?.focus();
+                    }
+                  }}
+                >
+                  {WORKSPACE_SNOOZE_PRESETS.map((preset) => {
+                    // A preset that makes no sense now ("tonight" late in the
+                    // evening) is not offered. The end is taken again on
+                    // click, so a menu left open does not send a stale time.
+                    if (workspaceSnoozeUntil(preset, new Date()) === null) return null;
+                    return (
+                      <button
+                        key={preset}
+                        role="menuitem"
+                        className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                        style={{ color: 'var(--text-main)' }}
+                        onClick={() => {
+                          setMenuPos(null);
+                          const until = workspaceSnoozeUntil(preset, new Date());
+                          if (until !== null) void sendWorkspaceSettleCommand({ op: 'snooze', workspaceId, until });
+                        }}
+                        data-snooze-preset={preset}
+                      >
+                        {t(`workspaceSettle.preset.${preset}`)}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
           {/* Color tag — hover to reveal the swatch row. A single row of eight
               swatches plus "None" keeps the whole picker one click deep; a
               modal would be heavier than the decision it holds. */}
