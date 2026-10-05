@@ -3,6 +3,7 @@
 // Kept out of pty.handler.ts (which imports electron) so it can be tested.
 
 import { splitModelEnvMarker } from '../../shared/workerLaunch';
+import { stripPromptFileArgument } from '../../shared/promptFileArgument';
 import {
   envSetsKey,
   heldLaunchNotice,
@@ -39,7 +40,9 @@ export interface AccountQuotaGateDeps {
  * account (the vendor's config-dir key in the pane/profile env, or an inline
  * `KEY=… claude` prefix) is the user's choice and is left alone. A fan-out
  * worker line's model-env marker is wmux's own prefix, not a user command:
- * the checks run on the launch after it, and a hold keeps it. Never throws.
+ * the checks run on the launch after it, and a hold keeps it. Its prompt-file
+ * argument is wmux's own read of the task prompt, not a command chain, so it
+ * does not stop a hold. Never throws.
  */
 export async function withAccountQuota<T extends QuotaLaunchOptions>(
   options: T | undefined,
@@ -59,7 +62,7 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
     if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env } };
     if (decision.kind === 'hold') {
       // Holding replaces the launch; never drop commands chained after it.
-      if (isCompoundLine(command)) {
+      if (isCompoundLine(stripPromptFileArgument(command))) {
         console.warn(`[account-rotation] ${stem} accounts are all out of quota, but the launch line runs other commands too: launching unchanged`);
         return options;
       }
@@ -99,7 +102,7 @@ export async function withAgyAccountQuota<T extends QuotaLaunchOptions>(
     const prepare = deps.prepareLaunch ?? ((f: AgyModelFamily) => getAgyAccountService().prepareLaunch(f));
     const decision = await prepare(family);
     if (decision.ok) return options;
-    if (isCompoundLine(command)) {
+    if (isCompoundLine(stripPromptFileArgument(command))) {
       console.warn('[agy-accounts] agy accounts are all out of quota, but the launch line runs other commands too: launching unchanged');
       return options;
     }
