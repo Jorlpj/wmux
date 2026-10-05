@@ -116,6 +116,9 @@ export interface HandoffRecord {
   closedByHq?: boolean;
   /** Why the card asks instead of delivering on its own. */
   askReason?: HandoffAskReason;
+  /** The open task this card follows up (it answers that task's question):
+   *  the card is moot once that task ends, and only then. */
+  followsTaskId?: string;
   /** The worker was seen mid-turn (agent status) since its last turn end. */
   sawRunning?: boolean;
   /** wmux itself ended the task (not the operator): its pane closed or its
@@ -140,7 +143,7 @@ export type ProposeResult =
   | { ok: true; mode: 'auto'; id: string; taskId: string }
   | {
       ok: false;
-      error: 'moa_off' | 'not_hq' | 'busy' | 'target_is_hq' | 'no_target' | 'no_agent' | 'body_empty' | 'body_too_long' | 'error';
+      error: 'moa_off' | 'not_hq' | 'busy' | 'task_open' | 'target_is_hq' | 'no_target' | 'no_agent' | 'body_empty' | 'body_too_long' | 'error';
       message?: string;
     };
 
@@ -164,8 +167,10 @@ export interface MoaHandoffPorts {
   /** The pane's agent is mid-turn right now (mirror status), when known. */
   agentBusy?: (workspaceId: string, ptyId: string) => boolean | undefined;
   /** The same reading with the moment it was sampled (the mirror snapshot's
-   *  time), for the turn-end sweep. Absent: agentBusy, read as sampled now. */
-  agentSample?: (workspaceId: string, ptyId: string) => { busy: boolean; at: number } | undefined;
+   *  time), for the turn-end sweep. `blocked`: the agent sits on a permission
+   *  prompt, which is mid-turn, never a turn end. Absent: agentBusy, read as
+   *  sampled now. */
+  agentSample?: (workspaceId: string, ptyId: string) => { busy: boolean; blocked?: boolean; at: number } | undefined;
   /** The operator canceled a card (no task exists to say so): tell the HQ. */
   onOperatorCancel?: (r: HandoffRecord) => void;
   decisions: {
@@ -443,7 +448,8 @@ export class MoaHandoffService {
       targetPaneId: r.target.paneId,
       targetPtyId: r.target.ptyId,
       foldsNewlines: r.foldsNewlines,
-      willQueue: r.willQueue,
+      // Live: "working right now" is about this moment, not when Moa proposed.
+      willQueue: this.ports.agentBusy?.(r.target.workspaceId, r.target.ptyId) === true,
       ...(r.askReason ? { askReason: r.askReason } : {}),
     };
   }
@@ -498,7 +504,21 @@ export class MoaHandoffService {
     // A card in the HQ's own slot would stop Moa's own wake loop.
     if (t.workspaceId === hq || isBrainPtyId(t.ptyId)) return { ok: false, error: 'target_is_hq' };
     if (!t.agentName) return { ok: false, error: 'no_agent' };
+    // One hand-off at a time per pane: while the agent is still working on the
+    // last one, a second card would only repeat it. A task waiting on input is
+    // different: a follow-up is how its question gets answered.
+    // Another (former) HQ's open task blocks it outright: delivery would not
+    // replace it, and two open tasks make every turn end ambiguous.
+    const open = this.openTaskOnPty(t.ptyId);
+    if (open && (open.hqWorkspaceId !== hq || open.taskState !== 'input-required')) {
+      return {
+        ok: false,
+        error: 'task_open',
+        message: `the agent is still working on "${open.title}"; you are woken when its turn ends`,
+      };
+    }
     const now = this.now();
+    const follows = open?.taskId;
     const record: HandoffRecord = {
       id: randomUUID(),
       hqWorkspaceId: hq,
@@ -518,6 +538,7 @@ export class MoaHandoffService {
       state: 'pending',
       foldsNewlines: foldsNewlines(t.agentName),
       willQueue: t.agentStatus === 'running',
+      ...(follows ? { followsTaskId: follows } : {}),
       createdAt: now,
       at: now,
     };
@@ -771,6 +792,8 @@ export class MoaHandoffService {
     if (r.taskState !== state) {
       this.put({ ...r, taskState: state });
       void this.save();
+      // Ended any way (done, failed, canceled): a follow-up card for it is moot.
+      if (isEnded(state)) void this.closeMootCards(r.hqWorkspaceId, { taskId });
     }
     return this.hqForTask(taskId);
   }
@@ -894,6 +917,7 @@ export class MoaHandoffService {
     }
     this.put({ ...(this.get(r.id) ?? cur), taskState: 'completed', closedByHq: true });
     await this.save();
+    await this.closeMootCards(hqWorkspaceId, { taskId });
     this.notify();
     return { ok: true, result };
   }
@@ -916,9 +940,12 @@ export class MoaHandoffService {
       if (r.taskState === 'input-required') continue;
       if (this.openTasksOnPty(r.target.ptyId).length > 1) continue;
       const sample = this.ports.agentSample?.(r.target.workspaceId, r.target.ptyId)
-        ?? ((busy) => (busy === undefined ? undefined : { busy, at: this.now() }))(this.ports.agentBusy?.(r.target.workspaceId, r.target.ptyId));
+        ?? ((busy): { busy: boolean; blocked?: boolean; at: number } | undefined => (busy === undefined ? undefined : { busy, at: this.now() }))(this.ports.agentBusy?.(r.target.workspaceId, r.target.ptyId));
       if (!sample) continue;
-      if (sample.busy) {
+      // Waiting on a permission prompt is mid-turn: never a turn end, but
+      // evidence of a turn under way (the first sample after delivery can be
+      // the prompt itself).
+      if (sample.busy || sample.blocked) {
         // Running evidence older than the last turn end is about that turn.
         if (!r.sawRunning && (!r.lastStop || sample.at > r.lastStop.at)) { this.put({ ...r, sawRunning: true }); changed = true; }
         continue;
@@ -984,6 +1011,35 @@ export class MoaHandoffService {
     if (internal) this.put({ ...r, internalCancel: internal });
     await this.ports.release(r.linkId, r.taskId).catch(() => undefined);
     this.put({ ...(this.get(r.id) ?? r), taskState: 'canceled' });
+  }
+
+  /**
+   * Take down the HQ's unanswered hand-off cards: the follow-up cards of one
+   * task when that task ended (another job's card on the same pane stays), or
+   * all of them (`scope` absent) when the HQ finished the job
+   * (deck_complete_work). They would only sit in "Waiting on you". Returns
+   * how many were closed.
+   */
+  async closeMootCards(hqWorkspaceId: string, scope?: { taskId: string }): Promise<number> {
+    let closed = 0;
+    for (const r of Object.values(this.file.items)) {
+      if (r.hqWorkspaceId !== hqWorkspaceId || r.state !== 'pending' || r.notice || !r.decisionId) continue;
+      if (scope && r.followsTaskId !== scope.taskId) continue;
+      if (this.answering.has(r.decisionId)) continue;
+      const ws = r.target.workspaceId;
+      const d = this.ports.decisions.load(ws);
+      if (d && d.id === r.decisionId && d.status === 'pending') {
+        // Compare-and-clear: a click that won the race keeps its answer.
+        if (!(await this.ports.decisions.clearPendingIfUnchanged(ws, d).catch(() => false))) continue;
+      }
+      this.put({ ...r, state: 'expired', decisionId: undefined });
+      closed += 1;
+    }
+    if (closed > 0) {
+      await this.save();
+      this.notify();
+    }
+    return closed;
   }
 
   /**

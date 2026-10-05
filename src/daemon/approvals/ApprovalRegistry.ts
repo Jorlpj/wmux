@@ -1388,6 +1388,15 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     } catch (err) {
       this.deps.log?.('warn', `[approvals] transcript read failed for ${sessionId}: ${String(err)}`);
     }
+    // Parallel calls: the newest pending call need not be the one the dialog
+    // asks about. When the hook names another tool, the record takes the
+    // hook's name (it labelled a Grep dialog with the MCP call made beside it)
+    // but is never answerable: the hook's own evidence cannot be tied to a
+    // call by id while another unanswered call stands, and a re-proof would
+    // fail on that call and loop. The supersede path builds through here too.
+    if (pending && note.toolName && pending.name !== note.toolName) {
+      return { name: note.toolName, input: note.toolInput ?? {}, unbindable: true };
+    }
     if (pending) {
       return {
         id: pending.id,
