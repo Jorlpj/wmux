@@ -50,6 +50,17 @@ describe('withAgyAccountQuota', () => {
     expect(line.slice(MODEL_ENV_MARKER.length)).toMatch(/^echo "wmux: agy was not started/);
   });
 
+  it.each([
+    ['agy -i "fix it"', 'gemini'],
+    ['agy --model gemini-3.8-flash-low -i "x"', 'gemini'],
+    ['agy --model claude-sonnet-4-5 -i "x"', '3p'],
+    ['agy --model="gpt-oss-120b-medium"', '3p'],
+  ])('asks about the quota of the family %s launches', async (line, family) => {
+    const { prepareLaunch, run } = gate(OK, line);
+    await run;
+    expect(prepareLaunch).toHaveBeenCalledWith(family);
+  });
+
   it('launches unchanged when the service throws', async () => {
     const prepareLaunch = vi.fn(async () => { throw new Error('boom'); });
     const out = await withAgyAccountQuota<QuotaLaunchOptions>({ initialCommand: 'agy' }, { prepareLaunch });

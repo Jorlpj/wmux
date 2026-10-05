@@ -22,6 +22,7 @@ import {
   type AgyAccountQuotaSnapshot,
   type AgyAccountsSnapshot,
   type AgyLaunchDecision,
+  type AgyModelFamily,
 } from '../../shared/agyAccounts';
 import { AgyVault, getAgyVaultBackend } from './agyVault';
 
@@ -175,7 +176,8 @@ export class AgyAccountService {
     return this.deps.vault;
   }
 
-  snapshot(): AgyAccountsSnapshot {
+  /** Accounts with their state, judged on `family`'s quota (Settings shows the Gemini default). */
+  snapshot(family: AgyModelFamily = 'gemini'): AgyAccountsSnapshot {
     const file = this.file();
     const activeEmail = this.deps.vault?.activeEmail() ?? null;
     const now = this.now();
@@ -183,7 +185,7 @@ export class AgyAccountService {
       supported: this.supported,
       autoRotate: file.autoRotate,
       activeEmail,
-      accounts: file.accounts.map((a) => agyAccountRow(a, this.readSnapshot(a.email), activeEmail, now)),
+      accounts: file.accounts.map((a) => agyAccountRow(a, this.readSnapshot(a.email), activeEmail, now, family)),
     };
   }
 
@@ -328,9 +330,9 @@ export class AgyAccountService {
    * Gate for every agy launch wmux types. Never throws: an unsupported
    * platform or an empty registry lets the launch through unchanged.
    */
-  async prepareLaunch(): Promise<AgyLaunchDecision> {
+  async prepareLaunch(family: AgyModelFamily = 'gemini'): Promise<AgyLaunchDecision> {
     if (!this.deps.vault || this.login.pending) return { ok: true, account: null, switched: false };
-    const snap = this.snapshot();
+    const snap = this.snapshot(family);
     if (snap.accounts.length === 0) return { ok: true, account: null, switched: false };
     // Fold agy's own token refreshes back into the vault copy first.
     if (snap.activeEmail && snap.accounts.some((a) => a.active)) this.deps.vault.captureActive();
@@ -350,7 +352,7 @@ export class AgyAccountService {
         const a = file.accounts.find((x) => x.id === decision.account?.id);
         if (a) a.needsReauth = true;
       });
-      return this.prepareLaunch();
+      return this.prepareLaunch(family);
     }
     if (result !== 'ok') {
       // The live sign-in could not be saved (or the write failed): never replace it. An active account

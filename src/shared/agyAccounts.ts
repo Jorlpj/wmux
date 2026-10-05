@@ -63,10 +63,22 @@ export type AgyLaunchDecision =
   | { ok: true; account: AgyAccount | null; switched: boolean }
   | { ok: false; reason: 'all-exhausted'; availableAtMs: number | null };
 
-/** Buckets that gate an agy launch. agy reports both a 5-hour and a weekly
- *  window per model family; the Gemini family is what agy runs by default, the
- *  `3p-*` buckets (third-party models) are checked only when reported. */
-export const AGY_GATING_BUCKETS: readonly string[] = ['gemini-5h', 'gemini-weekly', '3p-5h', '3p-weekly'];
+/** Model families agy reports quota for: Gemini (what agy runs by default)
+ *  and third-party models (the `3p-*` buckets). */
+export type AgyModelFamily = 'gemini' | '3p';
+
+/** Buckets that gate an agy launch on `family`: its 5-hour and weekly windows.
+ *  The other family's buckets are kept in the snapshot for display only, so a
+ *  spent third-party allowance never holds a Gemini launch, or the reverse. */
+export function agyGatingBuckets(family: AgyModelFamily): readonly string[] {
+  return [`${family}-5h`, `${family}-weekly`];
+}
+
+/** Family a launch spends quota from, given its `--model` id (none = agy's Gemini default). */
+export function agyModelFamily(modelId: string | null | undefined): AgyModelFamily {
+  const id = modelId?.trim().toLowerCase();
+  return !id || id.startsWith('gemini') ? 'gemini' : '3p';
+}
 
 /** At or below this remaining fraction an account counts as out of quota. A
  *  hair above zero so a launch does not land on the last request of a window
@@ -104,13 +116,14 @@ function resetMs(bucket: AgyQuotaBucket, capturedAtMs: number | undefined): numb
 export function evaluateAgyQuota(
   snapshot: AgyAccountQuotaSnapshot | null,
   now: number,
+  family: AgyModelFamily = 'gemini',
   floor: number = AGY_QUOTA_FLOOR,
 ): { usable: boolean; remaining: number | null; availableAtMs: number | null } {
   const quota = snapshot?.quota;
   if (!quota || typeof quota !== 'object') return { usable: true, remaining: null, availableAtMs: null };
   let remaining: number | null = null;
   let blockedUntil: number | null = null;
-  for (const name of AGY_GATING_BUCKETS) {
+  for (const name of agyGatingBuckets(family)) {
     const bucket = quota[name];
     if (!bucket || typeof bucket.remaining_fraction !== 'number' || !Number.isFinite(bucket.remaining_fraction)) continue;
     const reset = resetMs(bucket, snapshot?.quotaCapturedAtMs);
@@ -133,10 +146,11 @@ export function agyAccountRow(
   snapshot: AgyAccountQuotaSnapshot | null,
   activeEmail: string | null,
   now: number,
+  family: AgyModelFamily = 'gemini',
 ): AgyAccountRow {
   // Only the sensor snapshot marks an account out of quota. Pane text is not used: output that merely
   // mentions a quota error would otherwise lock a healthy account with nothing to lift it.
-  const verdict = evaluateAgyQuota(snapshot, now);
+  const verdict = evaluateAgyQuota(snapshot, now, family);
   const availableAtMs = verdict.availableAtMs;
   const active = activeEmail !== null && normalizeAgyEmail(account.email) === activeEmail;
   let state: AgyAccountState;
