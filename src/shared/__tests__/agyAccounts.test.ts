@@ -50,6 +50,21 @@ describe('evaluateAgyQuota', () => {
     expect(v.availableAtMs).toBe(NOW - 60_000 + AGY_DEFAULT_COOLDOWN_MS);
   });
 
+  it('uses reset_in_seconds from the capture time when no reset_time is reported', () => {
+    const captured = NOW - 60_000;
+    const s: AgyAccountQuotaSnapshot = { quota: { 'gemini-5h': { remaining_fraction: 0, reset_in_seconds: 600 } }, quotaCapturedAtMs: captured };
+    expect(evaluateAgyQuota(s, NOW)).toMatchObject({ usable: false, availableAtMs: captured + 600_000 });
+    expect(evaluateAgyQuota(s, captured + 601_000).usable).toBe(true);
+  });
+
+  it('keeps a weekly reset_in_seconds held past the default 5-hour window', () => {
+    const captured = NOW - 60_000;
+    const twoDays = 2 * 24 * 3600;
+    const s: AgyAccountQuotaSnapshot = { quota: { 'gemini-weekly': { remaining_fraction: 0, reset_in_seconds: twoDays } }, quotaCapturedAtMs: captured };
+    const v = evaluateAgyQuota(s, captured + AGY_DEFAULT_COOLDOWN_MS + 1000);
+    expect(v).toMatchObject({ usable: false, availableAtMs: captured + twoDays * 1000 });
+  });
+
   it('ignores buckets that do not gate a launch', () => {
     expect(evaluateAgyQuota(snap({ 'image-daily': [0, LATER] }), NOW).usable).toBe(true);
   });
