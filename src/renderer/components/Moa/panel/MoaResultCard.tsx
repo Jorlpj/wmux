@@ -1,6 +1,6 @@
-// A result card in Moa's chat: when a task Moa delegated finishes, the chat
-// shows its title, the result summary, how many checks wmux verified, the
-// changed files when known, and a jump to the agent. The card sits in the
+// The report card in Moa's chat: when a task Moa delegated finishes, the chat
+// shows its title, whether Moa checked the result itself, the agent's own
+// report (folded), the changed files when known, and a jump to the agent. The card sits in the
 // conversation at the moment the task finished: Moa inserts a synthetic meta
 // event there, and draws it through ChatRowRendererContext.
 //
@@ -11,6 +11,8 @@ import type { WorkLink } from '../../../../shared/workLink';
 import type { TurnEvent } from '../../../../shared/transcript/turnEvents';
 import { resultFromWorkLink, type MoaTaskResult } from '../../../../shared/moaResult';
 import Button from '../../ui/Button';
+import { renderBrainMarkdown } from '../../Deck/BrainMarkdown';
+import type { MoaReport } from './moaChatShape';
 
 const RESULT_EVENT_PREFIX = 'moa-result:';
 /** Changed files listed before "+N more". */
@@ -20,14 +22,35 @@ export interface MoaTaskResultApi {
   taskResult: (args: { workspaceId: string; taskId: string }) => Promise<{ result: MoaTaskResult | null }>;
 }
 
+/** When each done link was first seen done, for links whose report carries
+ *  no time of its own. updatedAt only grows, so the first sighting is the
+ *  earliest it can say. */
+const firstSeenDone = new Map<string, number>();
+
+/**
+ * When a done link finished: its stored result's time, else the first time
+ * this renderer saw it done. Never `updatedAt` as it is now: main rewrites it
+ * on links that are already done (a decision attached, a task state
+ * recorded), which would move the result past the turn that closed the job.
+ */
+export function finishedAt(link: WorkLink): number {
+  if (link.result?.at) return link.result.at;
+  const seen = firstSeenDone.get(link.id);
+  if (seen !== undefined) return seen;
+  firstSeenDone.set(link.id, link.updatedAt);
+  return link.updatedAt;
+}
+
 /** Delegated work that finished, as one synthetic event per task, at the
  *  moment it finished. Only tasks that finished within the loaded
  *  conversation, so an old result never lands in a fresh one. */
 export function moaResultEvents(links: readonly WorkLink[], since: number | undefined): TurnEvent[] {
   if (since === undefined) return [];
   return links
-    .filter((l) => (l.origin === 'moa' || l.origin === 'moa-auto') && l.state === 'done' && !!l.a2aTaskId && l.updatedAt >= since)
-    .map((l) => ({ id: `${RESULT_EVENT_PREFIX}${l.id}`, kind: 'meta' as const, subtype: 'unknown' as const, label: l.title ?? '', ts: l.updatedAt }));
+    .filter((l) => (l.origin === 'moa' || l.origin === 'moa-auto') && l.state === 'done' && !!l.a2aTaskId)
+    .map((l) => ({ link: l, at: finishedAt(l) }))
+    .filter(({ at }) => at >= since)
+    .map(({ link: l, at }) => ({ id: `${RESULT_EVENT_PREFIX}${l.id}`, kind: 'meta' as const, subtype: 'unknown' as const, label: l.title ?? '', ts: at }));
 }
 
 /** The transcript with the result events placed by time (after every event
@@ -83,9 +106,17 @@ function useTaskResult(link: WorkLink, api: MoaTaskResultApi | undefined): MoaTa
   return own ?? result;
 }
 
-export function MoaResultCard({ link, workspaceName, api, onOpen, t }: {
+/** The agent's display name from its slug ('claude' → 'Claude'). */
+const agentName = (slug: string | undefined): string | undefined =>
+  slug ? (slug === 'claude' ? 'Claude Code' : slug.charAt(0).toUpperCase() + slug.slice(1)) : undefined;
+
+/** One finished delegation inside a report: what the agent said it did
+ *  (its own words, folded), the files it named, and the jump to it. */
+function AgentReport({ link, workspace, many, api, onOpen, t }: {
   link: WorkLink;
-  workspaceName?: string;
+  workspace: string;
+  /** One of several delegations in the report: it names its task and its jump. */
+  many: boolean;
   api?: MoaTaskResultApi;
   onOpen?: (workspaceId: string, paneId?: string) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
@@ -93,30 +124,66 @@ export function MoaResultCard({ link, workspaceName, api, onOpen, t }: {
   const result = useTaskResult(link, api);
   const files = result?.files ?? [];
   return (
-    <div className="my-2 rounded-[10px] px-3 py-2.5 bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]" data-moa-result-card={link.id}>
-      <div className="text-[11px] text-[var(--text-sub)] truncate">
-        {t('moa.result.done', { workspace: workspaceName || t('moa.panel.unknownWorkspace') })}
-      </div>
-      <p className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">{link.title}</p>
-      {result?.summary && (
-        <p className="m-0 mt-1 text-[13px] leading-snug text-[var(--text-main)] break-words whitespace-pre-wrap" data-moa-result-summary>{result.summary}</p>
-      )}
-      {result && (
-        <p className="m-0 mt-1 text-[11px] tabular-nums text-[var(--text-sub)]" data-moa-result-checks>
-          {result.checks > 0 ? t('moa.result.checks', { verified: result.verified, total: result.checks }) : t('moa.result.noChecks')}
+    <div className="mt-1.5" data-moa-result-card={link.id}>
+      {many && (
+        <p className="m-0 mt-1 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words" data-moa-result-title>
+          {link.title || t('moa.panel.untitledTask')}
         </p>
       )}
+      {result?.summary && (
+        <details className="text-[13px] text-[var(--text-main)]" data-moa-result-details>
+          <summary className="cursor-pointer text-[var(--text-sub)]">{t('moa.report.agentReport')}</summary>
+          {/* Agent text, rendered as markdown (the renderer emits no raw HTML). */}
+          <div className="wmux-moa-report-md mt-1 break-words" data-moa-result-summary>{renderBrainMarkdown(result.summary)}</div>
+        </details>
+      )}
       {files.length > 0 && (
-        <ul className="m-0 mt-1 p-0 list-none font-mono text-[11px] text-[var(--text-sub)]" data-moa-result-files>
+        <ul className="m-0 mt-1 p-0 list-none font-mono text-[12px] text-[var(--text-sub)]" data-moa-result-files>
           {files.slice(0, FILES_SHOWN).map((f) => <li key={f} className="break-all">{f}</li>)}
           {files.length > FILES_SHOWN && <li>{t('moa.result.moreFiles', { count: files.length - FILES_SHOWN })}</li>}
         </ul>
       )}
       {onOpen && (
         <Button variant="secondary" size="sm" className="mt-2" data-moa-result-open onClick={() => onOpen(link.owner.workspaceId, link.owner.paneId)}>
-          {t('moa.result.open')}
+          {many ? t('moa.report.openIn', { agent: agentName(link.agent) ?? t('moa.report.agent'), workspace }) : t('moa.panel.openPane')}
         </Button>
       )}
+    </div>
+  );
+}
+
+/**
+ * The one final report of a job: Moa's own reply (or its summary), what Moa
+ * checked itself, and each finished delegation's report. Without a report
+ * (a delegation finished but Moa has not closed the work) it is that
+ * delegation's card alone, saying Moa has not checked it.
+ */
+export function MoaReportCard({ report, links, workspaceName, api, onOpen, t }: {
+  report?: MoaReport;
+  links: readonly WorkLink[];
+  workspaceName: (workspaceId: string) => string | undefined;
+  api?: MoaTaskResultApi;
+  onOpen?: (workspaceId: string, paneId?: string) => void;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}): React.ReactElement {
+  const one = links.length === 1 ? links[0] : undefined;
+  const title = one?.title || report?.summary;
+  const plain = !report?.reply && report?.summary && report.summary !== title ? report.summary : undefined;
+  return (
+    <div className="my-2 rounded-[10px] px-3 py-2.5 bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]" data-moa-report>
+      <div className="text-[11px] text-[var(--text-sub)] truncate">
+        {one ? t('moa.result.done', { workspace: workspaceName(one.owner.workspaceId) || t('moa.panel.unknownWorkspace') }) : t('moa.report.done')}
+      </div>
+      {title && <p className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words" data-moa-report-title>{title}</p>}
+      {report?.reply && <div className="wmux-moa-report-md mt-1 text-[13px] text-[var(--text-main)] break-words" data-moa-report-reply>{renderBrainMarkdown(report.reply)}</div>}
+      {plain && <p className="m-0 mt-1 text-[13px] leading-snug text-[var(--text-main)] break-words">{plain}</p>}
+      <p className="m-0 mt-1 text-[13px] leading-snug text-[var(--text-sub)] break-words" data-moa-report-checked={report?.verification ? 'moa' : 'agent'}>
+        {report?.verification ? t('moa.report.checked', { text: report.verification }) : t('moa.report.notChecked')}
+      </p>
+      {links.map((link) => (
+        <AgentReport key={link.id} link={link} many={links.length > 1} api={api} onOpen={onOpen} t={t}
+          workspace={workspaceName(link.owner.workspaceId) || t('moa.panel.unknownWorkspace')} />
+      ))}
     </div>
   );
 }

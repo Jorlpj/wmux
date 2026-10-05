@@ -17,7 +17,8 @@ import { ChatCodeBlockContext, ChatPtyContext, ChatRowRendererContext, UserText 
 import type { ChatRow } from '../../Chat/chatMessages';
 import { useMoaDecisions, useWorkLinks, type MoaDecisionsApi, type WorkLinksApi } from './useMoaPanelData';
 import { MoaPurposeCard, isPurposeEventId, liftPurposeEvents, purposeWaits } from './MoaPurposeCard';
-import { MoaResultCard, moaResultEvents, resultLinkId, withResultEvents, type MoaTaskResultApi } from './MoaResultCard';
+import { MoaReportCard, moaResultEvents, resultLinkId, withResultEvents, type MoaTaskResultApi } from './MoaResultCard';
+import { foldMoaReports, foldNarration, reportIdOf } from './moaChatShape';
 import { openMoaPane } from './MoaPanelTop';
 import { Thread } from '../../Chat/assistant-ui/Thread';
 import { useComposerDraft } from '../../Chat/chatDrafts';
@@ -38,6 +39,10 @@ export type MoaApprovalApi = Pick<MoaPreload, 'approval' | 'approvalAnswer'> & P
 
 /** While Moa waits on its prompt: how often its record is read again (it trails the hook by ~1 s). */
 const APPROVAL_POLL_MS = 2_000;
+/** A turn the store opened this recently, while no chat was mounted, is the operator's send. */
+const FIRST_SEND_WINDOW_MS = 60_000;
+/** Pages read back on open to reach the operator's first message. */
+const AUTO_PAGES = 6;
 
 /**
  * deck.moa.transcript in the shape useTranscript reads. Keyed by the brain's
@@ -135,7 +140,25 @@ export interface MoaTranscriptChatProps {
   decisionsApi?: MoaDecisionsApi;
 }
 
-interface Pending { id: string; text: string; before: ReadonlySet<string> }
+/** A sent bubble; `failed` holds the reason once main refused it late (after
+ *  the composer had already taken the send as accepted). */
+interface Pending { id: string; text: string; before: ReadonlySet<string>; failed?: string }
+
+/**
+ * The bubbles left when a turn ends without the transcript recording them.
+ * A send main refused after the composer's verdict window closes the store's
+ * open turn with an error: that bubble stays, marked not sent with its reason,
+ * so the message is never lost silently. Any other leftover goes.
+ */
+export function settleOnTurnEnd(pending: readonly Pending[], thread: { messages: ReadonlyArray<{ role: string; text: string; status?: string; errorText?: string }> } | undefined): Pending[] {
+  const messages = thread?.messages ?? [];
+  return pending.flatMap((p) => {
+    if (p.failed) return [p];
+    const at = messages.map((m) => m.role === 'user' && m.text === p.text).lastIndexOf(true);
+    const reply = at >= 0 ? messages[at + 1] : undefined;
+    return reply?.status === 'error' ? [{ ...p, failed: reply.errorText || '' }] : [];
+  });
+}
 
 export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi, linksApi, resultApi, decisionsApi }: MoaTranscriptChatProps) {
   const t = useT();
@@ -163,23 +186,53 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   // cards, lifted out before the chat folds tool rows.
   const lifted = useMemo(() => liftPurposeEvents(hideMoaWakes(data.events)), [data.events]);
   const { decisions: pendingDecisions } = useMoaDecisions(true, decisionsApi);
-  const shownEvents = useMemo(() => withResultEvents(lifted.events, moaResultEvents(links, since)), [lifted.events, links, since]);
+  // One report per finished job, and only each turn's last reply as a
+  // message: narration folds into the activity (moaChatShape).
+  const folded = useMemo(() => foldMoaReports(withResultEvents(lifted.events, moaResultEvents(links, since)), lifted.purposes), [lifted, links, since]);
+  const shownEvents = useMemo(() => foldNarration(folded.events), [folded.events]);
   const messages = useMemo(() => transcriptMessages(shownEvents, true), [shownEvents]);
   const results = resultApi ?? window.electronAPI?.deck?.moa;
   const wsNames = useStore((s) => s.workspaces);
+  // Tool activity (folded tool rows, "The agent is working…") is hidden: the
+  // chat reads as messages. While Moa works, a small control beside its name
+  // in the panel header says so, and opens the activity on demand.
+  const [showActivity, setShowActivity] = useState(false);
   const renderRow = useCallback((row: ChatRow) => {
     if (row.event.id.startsWith(WAKE_PREFIX)) return <></>;
     if (isPurposeEventId(row.event.id)) {
       const purpose = lifted.purposes.get(row.event.id);
-      return purpose ? <MoaPurposeCard purpose={purpose} waiting={purposeWaits(purpose, pendingDecisions)} t={t} /> : null;
+      // A call that did not go through is Moa's own retry, not news: it shows
+      // with the rest of the activity.
+      if (!purpose || (purpose.ok === false && !showActivity)) return <></>;
+      return <MoaPurposeCard purpose={purpose} waiting={purposeWaits(purpose, pendingDecisions)} t={t} />;
+    }
+    const workspaceName = (id: string) => wsNames.find((w) => w.id === id)?.name;
+    const api = results as MoaTaskResultApi | undefined;
+    const reportId = reportIdOf(row.event.id);
+    if (reportId) {
+      const report = folded.reports.get(reportId);
+      if (!report) return <></>;
+      const reported = report.linkIds.flatMap((id) => links.filter((l) => l.id === id));
+      return <MoaReportCard report={report} links={reported} workspaceName={workspaceName} api={api} onOpen={openMoaPane} t={t} />;
     }
     const id = resultLinkId(row.event.id);
     const link = id ? links.find((l) => l.id === id) : undefined;
-    if (!link) return null;
-    const workspaceName = wsNames.find((w) => w.id === link.owner.workspaceId)?.name;
-    return <MoaResultCard link={link} workspaceName={workspaceName} api={results as MoaTaskResultApi | undefined} onOpen={openMoaPane} t={t} />;
-  }, [lifted, pendingDecisions, links, wsNames, results, t]);
+    if (!link) return id ? <></> : null;
+    return <MoaReportCard links={[link]} workspaceName={workspaceName} api={api} onOpen={openMoaPane} t={t} />;
+  }, [lifted, folded, pendingDecisions, links, wsNames, results, showActivity, t]);
   const [pending, setPending] = useState<Pending[]>([]);
+  // The first page is a byte window of the brain's transcript; one exchange
+  // with Moa's context and tool output can fill it, which hid the operator's
+  // own first message behind "Load earlier messages". Page back on our own
+  // until an operator message is in view (bounded).
+  const autoPages = useRef(0);
+  const { hasMore, loading, loadingEarlier, loadEarlier } = data;
+  const operatorShown = useMemo(() => data.events.some((e) => e.kind === 'user_text' && !MOA_WAKE_TEXT.test(e.text)), [data.events]);
+  useEffect(() => {
+    if (operatorShown || !hasMore || loading || loadingEarlier || autoPages.current >= AUTO_PAGES) return;
+    autoPages.current += 1;
+    void loadEarlier();
+  }, [operatorShown, hasMore, loading, loadingEarlier, loadEarlier]);
   // The latest events, for onNew to read after its await: the closure's copy
   // is from the render that started the send.
   const eventsRef = useRef(data.events);
@@ -191,31 +244,85 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   useEffect(() => {
     setPending((current) => {
       if (current.length === 0) return current;
-      const fresh = data.events.filter((e) => e.kind === 'user_text' && !current[0].before.has(e.id));
-      return fresh.length ? current.slice(fresh.length) : current;
+      const live = current.filter((p) => !p.failed);
+      if (live.length === 0) return current;
+      const fresh = data.events.filter((e) => e.kind === 'user_text' && !live[0].before.has(e.id));
+      if (!fresh.length) return current;
+      const settled = new Set(live.slice(0, fresh.length).map((p) => p.id));
+      return current.filter((p) => !settled.has(p.id));
     });
   }, [data.events]);
   useEffect(() => {
-    if (!busy) setPending([]);
-  }, [busy]);
+    if (busy) return;
+    const thread = hqId ? useStore.getState().brainThreads[hqId] : undefined;
+    setPending((current) => {
+      const next = settleOnTurnEnd(current, thread);
+      return next.length === 0 && current.length === 0 ? current : next;
+    });
+  }, [busy, hqId]);
+  // The first message is sent from the panel's bare composer, before Moa's
+  // brain (and so this chat) exists: its words are the open turn main's send
+  // recorded in the store. Shown once as the sent bubble, so the panel does not
+  // sit blank (or on the first-run guidance) while the brain starts.
+  const openTurnText = useStore((s) => {
+    if (!hqId) return null;
+    const last = s.brainThreads[hqId]?.messages.findLast((m) => m.role === 'user');
+    return last && Date.now() - (last.ts ?? 0) < FIRST_SEND_WINDOW_MS ? last.text : null;
+  });
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current || !busy || data.loading || !openTurnText?.trim() || MOA_WAKE_TEXT.test(openTurnText)) return;
+    seeded.current = true;
+    const users = data.events.filter((e) => e.kind === 'user_text');
+    if (users.some((e) => e.kind === 'user_text' && e.text.trim() === openTurnText.trim())) return;
+    setPending((current) => (current.length ? current
+      : [{ id: crypto.randomUUID(), text: openTurnText, before: new Set(users.map((e) => e.id)) }]));
+  }, [busy, data.loading, data.events, openTurnText]);
 
   const onNew = useCallback(async (message: AppendMessage) => {
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     if (!text.trim()) return;
     if (busy) throw new MessageNotSentError(t('moa.panel.busy'));
+    // Sending again settles an earlier refusal of the same words.
+    setPending((current) => current.filter((p) => !(p.failed !== undefined && p.text === text)));
     const before = new Set(data.events.filter((e) => e.kind === 'user_text').map((e) => e.id));
-    const result = await onSend(text).catch(() => ({ ok: false }));
-    if (!result.ok) throw new MessageNotSentError(t('moa.panel.sendFailed'));
     // /clear and /reset are commands, not messages: nothing to wait for.
-    if (/^\/(clear|reset)$/.test(text.trim())) return;
-    // The transcript may have recorded the prompt while onSend was in flight.
-    // The settle effect already ran then, with nothing pending to clear, so a
-    // bubble added now would sit beside the real row until the next event.
-    if (eventsRef.current.some((e) => e.kind === 'user_text' && !before.has(e.id))) return;
-    setPending((current) => [...current, { id: crypto.randomUUID(), text, before }].slice(-4));
+    const command = /^\/(clear|reset)$/.test(text.trim());
+    // The bubble shows the moment the operator sends, not when the brain's
+    // transcript records the prompt (seconds later). The settle effect drops
+    // it once that row lands, even while onSend is still in flight.
+    const id = crypto.randomUUID();
+    if (!command) setPending((current) => [...current, { id, text, before }].slice(-4));
+    const result = await onSend(text).catch(() => ({ ok: false }));
+    if (!result.ok) {
+      setPending((current) => current.filter((p) => p.id !== id));
+      throw new MessageNotSentError(t('moa.panel.sendFailed'));
+    }
+    // The prompt landed while onSend was in flight: no bubble beside the row.
+    if (eventsRef.current.some((e) => e.kind === 'user_text' && !before.has(e.id))) {
+      setPending((current) => current.filter((p) => p.id !== id));
+    }
   }, [busy, data.events, onSend, t]);
 
   const runtime = useExternalStoreRuntime({ messages, isRunning: false, isLoading: data.loading, isSendDisabled: busy, onNew });
+  // A late refusal puts the words back in the composer (when it is empty),
+  // so a retry is one Enter away even if the bubble is dismissed.
+  const restored = useRef(new Set<string>());
+  useEffect(() => {
+    for (const p of pending) {
+      if (p.failed === undefined || restored.current.has(p.id)) continue;
+      restored.current.add(p.id);
+      const composer = runtime.thread.composer;
+      if (!composer.getState().text.trim()) composer.setText(p.text);
+    }
+  }, [pending, runtime]);
+  const retrySend = useCallback((item: Pending) => {
+    runtime.thread.composer.setText('');
+    void onNew({ content: [{ type: 'text', text: item.text }] } as unknown as AppendMessage).catch(() => {
+      // Refused at once: the bubble is gone, so put the words back.
+      runtime.thread.composer.setText(item.text);
+    });
+  }, [onNew, runtime]);
   // The chat unmounts for the terminal view and with the panel: keep the draft.
   useComposerDraft(runtime, `moa:${hqId ?? ''}:${data.status.agentSessionId ?? 'new'}`);
 
@@ -260,27 +367,37 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
       void readApproval();
     }
   }, [approval, prompts, readApproval]);
-  const empty = messages.length === 0 && pending.length === 0;
+  // Hidden wakes and bare markers are rows too: the conversation is empty
+  // until something the operator can read is in it.
+  const empty = pending.length === 0 && !shownEvents.some((e) => e.kind === 'user_text' || (e.kind === 'assistant_text' && !e.thinking)
+    || isPurposeEventId(e.id) || !!reportIdOf(e.id) || !!resultLinkId(e.id));
   // A callback ref: the dock mounts with the composer's footer.
   const [dockEl, setDockEl] = useState<HTMLDivElement | null>(null);
-  // Tool activity (folded tool rows, "The agent is working…") is hidden: the
-  // chat reads as messages. While Moa works, a small control beside its name
-  // in the panel header says so, and opens the activity on demand.
-  const [showActivity, setShowActivity] = useState(false);
   const headerSlot = useDeckHeaderSlot();
   // Shown while Moa works and whenever there is folded activity to open, so a
   // finished turn's steps stay reachable.
   const hasActivity = useMemo(
-    () => messages.some((m) => !!(m.metadata?.custom as { row?: ChatRow } | undefined)?.row?.activity),
-    [messages],
+    () => messages.some((m) => {
+      const row = (m.metadata?.custom as { row?: ChatRow } | undefined)?.row;
+      if (!row) return false;
+      if (row.activity) return true;
+      // A failed call sits outside the fold but is activity all the same.
+      const { event } = row;
+      return event.kind === 'tool_use' ? row.result?.ok === false
+        : event.kind === 'tool_result' ? !event.ok
+        : isPurposeEventId(event.id) && lifted.purposes.get(event.id)?.ok === false;
+    }),
+    [messages, lifted],
   );
+  // Idle, the control only opens what Moa did: it never says Moa is working.
+  const activityLabel = t(showActivity ? 'moa.panel.activityHide' : busy ? 'moa.panel.activityShow' : 'moa.panel.activityShowIdle');
   const activityToggle = (busy || showActivity || hasActivity) && headerSlot ? createPortal(
     <button
       type="button"
       onClick={() => setShowActivity((v) => !v)}
       aria-expanded={showActivity}
-      aria-label={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
-      title={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
+      aria-label={activityLabel}
+      title={activityLabel}
       // A dot, not a word: the header row has no room beside "Main bot" at
       // the dock's width. The label and tooltip say what it is.
       className={`wmux-moa-working order-first inline-flex items-center justify-center w-6 h-6 rounded-[6px] hover:bg-[var(--hover-fill)] ${showActivity ? 'bg-[var(--selection-emphasis)]' : ''} ${FOCUS_RING}`}
@@ -325,7 +442,14 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
             pending={pending.map((item) => (
               <div key={item.id} className="wmux-chat-message wmux-chat-user wmux-chat-pending" data-moa-chat-pending>
                 <UserText>{item.text}</UserText>
-                <p className="wmux-chat-pending-caption">{t('chat.pendingSent')}</p>
+                {item.failed === undefined
+                  ? <p className="wmux-chat-pending-caption">{t('chat.pendingSent')}</p>
+                  : <p className="wmux-chat-pending-caption" role="alert" data-moa-chat-not-sent>
+                      {item.failed ? t('moa.panel.notSentReason', { reason: item.failed }) : t('moa.panel.notSent')}{' '}
+                      <button type="button" className="underline underline-offset-2" disabled={busy} onClick={() => retrySend(item)} data-moa-chat-retry>
+                        {t('moa.panel.retrySend')}
+                      </button>
+                    </p>}
               </div>
             ))}
             stop={busy && (

@@ -60,7 +60,12 @@ export function MoaPanelTop({
   const delegatedApprovals = useDelegatedApprovals(approvalsApi);
   const links = useWorkLinks(true, linksApi ?? window.electronAPI?.workLinks);
   const pendingIds = useMemo(() => new Set(decisions.map((d) => d.decision.id)), [decisions]);
-  const cards = useMemo(() => selectTaskCards(links, pendingIds), [links, pendingIds]);
+  // A job Moa handed out that is done is told once, by its report card in the
+  // chat; Delegated work keeps what is still under way.
+  const cards = useMemo(
+    () => selectTaskCards(links, pendingIds).filter((l) => !(l.state === 'done' && (l.origin === 'moa' || l.origin === 'moa-auto'))),
+    [links, pendingIds],
+  );
   const names = useStore(useShallow((s) => s.workspaces.map((w) => `${w.id}\u0000${w.name}`)));
   const workspaceName = useMemo(() => {
     const map = new Map(names.map((pair) => pair.split('\u0000') as [string, string]));
@@ -83,6 +88,13 @@ export function MoaPanelTop({
   }, [handoffResolve, onResolved]);
   const receipts = useMemo(() => receiptsApi ?? defaultReceiptsApi(), [receiptsApi]);
   const dock = useContext(MoaDockContext);
+  // Before Moa's first turn there is no brain and so no chat: the panel would
+  // be a bare composer. Say what to ask, once, until the first send.
+  const noBrain = useStore((s) => {
+    const hq = s.moa?.hq.workspaceId;
+    return !!hq && !s.brainPtyIds[hq];
+  });
+  const firstRun = noBrain && !dock && decisions.length === 0 && cards.length === 0 && delegatedApprovals.length === 0;
   // Main names a decision's workspace when it knows it; fall back to ours.
   const named = useMemo(
     () => decisions.map((d) => (d.workspaceName ? d : { ...d, workspaceName: workspaceName(d.workspaceId) })),
@@ -91,6 +103,12 @@ export function MoaPanelTop({
   return (
     // Focusable so an answer that empties the list has somewhere to put focus.
     <div data-moa-panel-top tabIndex={-1} className="shrink-0 outline-none">
+      {firstRun && (
+        <div className="px-3 pt-3 pb-1 flex flex-col gap-1" data-moa-first-run>
+          <p className="m-0 text-[13px] font-medium text-[var(--text-main)]">{t('moa.panel.chatEmpty')}</p>
+          <p className="m-0 text-[13px] leading-snug text-[var(--text-sub)]">{t('moa.panel.chatEmptyHint')}</p>
+        </div>
+      )}
       <MoaHandoffReceipts api={receipts} workspaceName={workspaceName} onOpenPane={onOpenPane} t={t} />
       {(() => {
         const waiting = (
