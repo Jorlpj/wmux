@@ -7,17 +7,25 @@
 // Loaded lazily (like ChatView): assistant-ui stays out of the main bundle
 // until Moa's panel actually shows a conversation.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AssistantRuntimeProvider, MessageNotSentError, useExternalStoreRuntime, type AppendMessage } from '@assistant-ui/react';
 import { useT } from '../../../hooks/useT';
 import { useStore } from '../../../stores';
 import { useTranscript } from '../../Chat/useTranscript';
 import { transcriptMessages } from '../../Chat/chatMessages';
-import { ChatCodeBlockContext, ChatPtyContext, UserText } from '../../Chat/ChatMessage';
+import { ChatCodeBlockContext, ChatPtyContext, ChatRowRendererContext, UserText } from '../../Chat/ChatMessage';
+import type { ChatRow } from '../../Chat/chatMessages';
+import { useMoaDecisions, useWorkLinks, type MoaDecisionsApi, type WorkLinksApi } from './useMoaPanelData';
+import { MoaPurposeCard, isPurposeEventId, liftPurposeEvents, purposeWaits } from './MoaPurposeCard';
+import { MoaResultCard, moaResultEvents, resultLinkId, withResultEvents, type MoaTaskResultApi } from './MoaResultCard';
+import { openMoaPane } from './MoaPanelTop';
 import { Thread } from '../../Chat/assistant-ui/Thread';
 import { useComposerDraft } from '../../Chat/chatDrafts';
 import Button from '../../ui/Button';
 import { MoaDockContext, NEEDS_YOU_ROW } from './MoaWaitingOnYou';
-import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
+import { useDeckHeaderSlot } from '../../Deck/deckHeaderSlot';
+import { FOCUS_RING } from '../../focusRing';
+import type { ChatBridgeApi, TurnEvent } from '../../../../shared/transcript/turnEvents';
 import type { MoaApproval } from '../../../../shared/moa';
 import '../moa.css';
 
@@ -49,6 +57,31 @@ export function tidyMoaUserText<E extends { kind: string; text?: string }>(event
     e.kind === 'user_text' && typeof e.text === 'string' && e.text.includes('<pasted_content')
       ? { ...e, text: instructionsLabel }
       : e);
+}
+
+/**
+ * The prompts main types for Moa itself (pane events, a fleet snapshot, the
+ * decision resume lines, Wake, a loop's kickoff, the startup reconcile) are not
+ * the operator's words: they never draw as a user bubble. Each becomes an
+ * invisible turn start, so the turn still begins there.
+ */
+// Start-anchored, and only openings main itself writes: an operator prompt
+// (even one main prefixed with context blocks) never matches.
+const MOA_WAKE_TEXT = new RegExp('^\\s*(?:' + [
+  String.raw`\[pane-events\]`,
+  String.raw`\[fleet-snapshot\]`,
+  String.raw`The operator (?:just resolved|DISMISSED) the decision you raised`,
+  String.raw`A decision you (?:SELF-RESOLVED|raised has been pending too long)`,
+  String.raw`The operator pressed the Wake button`,
+  String.raw`The loop above has just started`,
+  String.raw`A human request is still active after wmux startup`,
+].join('|') + ')');
+const WAKE_PREFIX = 'moa-wake:';
+
+export function hideMoaWakes(events: readonly TurnEvent[]): TurnEvent[] {
+  return events.map((e) => (e.kind === 'user_text' && MOA_WAKE_TEXT.test(e.text)
+    ? { id: `${WAKE_PREFIX}${e.id}`, kind: 'meta' as const, subtype: 'turn_started' as const, label: '', ...(e.ts !== undefined ? { ts: e.ts } : {}) }
+    : e));
 }
 
 export function moaTranscriptBridge(
@@ -96,11 +129,15 @@ export interface MoaTranscriptChatProps {
   api?: MoaTranscriptApi;
   /** Injected in tests; defaults to the preload. */
   approvalApi?: MoaApprovalApi;
+  /** Injected in tests; default to the preload. */
+  linksApi?: WorkLinksApi;
+  resultApi?: MoaTaskResultApi;
+  decisionsApi?: MoaDecisionsApi;
 }
 
 interface Pending { id: string; text: string; before: ReadonlySet<string> }
 
-export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi }: MoaTranscriptChatProps) {
+export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi, linksApi, resultApi, decisionsApi }: MoaTranscriptChatProps) {
   const t = useT();
   const source = api ?? window.electronAPI?.deck?.moa?.transcript;
   const prompts = approvalApi ?? window.electronAPI?.deck?.moa;
@@ -119,7 +156,29 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     firstHq.current = hqId;
     retry();
   }, [hqId, retry]);
-  const messages = useMemo(() => transcriptMessages(data.events, true), [data.events]);
+  // Delegated work that finished shows as a result card where it finished.
+  const links = useWorkLinks(true, linksApi ?? window.electronAPI?.workLinks);
+  const since = useMemo(() => data.events.find((e) => typeof e.ts === 'number')?.ts, [data.events]);
+  // Moa's own hand-offs, decisions, completions and fan-outs read as purpose
+  // cards, lifted out before the chat folds tool rows.
+  const lifted = useMemo(() => liftPurposeEvents(hideMoaWakes(data.events)), [data.events]);
+  const { decisions: pendingDecisions } = useMoaDecisions(true, decisionsApi);
+  const shownEvents = useMemo(() => withResultEvents(lifted.events, moaResultEvents(links, since)), [lifted.events, links, since]);
+  const messages = useMemo(() => transcriptMessages(shownEvents, true), [shownEvents]);
+  const results = resultApi ?? window.electronAPI?.deck?.moa;
+  const wsNames = useStore((s) => s.workspaces);
+  const renderRow = useCallback((row: ChatRow) => {
+    if (row.event.id.startsWith(WAKE_PREFIX)) return <></>;
+    if (isPurposeEventId(row.event.id)) {
+      const purpose = lifted.purposes.get(row.event.id);
+      return purpose ? <MoaPurposeCard purpose={purpose} waiting={purposeWaits(purpose, pendingDecisions)} t={t} /> : null;
+    }
+    const id = resultLinkId(row.event.id);
+    const link = id ? links.find((l) => l.id === id) : undefined;
+    if (!link) return null;
+    const workspaceName = wsNames.find((w) => w.id === link.owner.workspaceId)?.name;
+    return <MoaResultCard link={link} workspaceName={workspaceName} api={results as MoaTaskResultApi | undefined} onOpen={openMoaPane} t={t} />;
+  }, [lifted, pendingDecisions, links, wsNames, results, t]);
   const [pending, setPending] = useState<Pending[]>([]);
   // The latest events, for onNew to read after its await: the closure's copy
   // is from the render that started the send.
@@ -204,12 +263,42 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   const empty = messages.length === 0 && pending.length === 0;
   // A callback ref: the dock mounts with the composer's footer.
   const [dockEl, setDockEl] = useState<HTMLDivElement | null>(null);
+  // Tool activity (folded tool rows, "The agent is working…") is hidden: the
+  // chat reads as messages. While Moa works, a small control beside its name
+  // in the panel header says so, and opens the activity on demand.
+  const [showActivity, setShowActivity] = useState(false);
+  const headerSlot = useDeckHeaderSlot();
+  // Shown while Moa works and whenever there is folded activity to open, so a
+  // finished turn's steps stay reachable.
+  const hasActivity = useMemo(
+    () => messages.some((m) => !!(m.metadata?.custom as { row?: ChatRow } | undefined)?.row?.activity),
+    [messages],
+  );
+  const activityToggle = (busy || showActivity || hasActivity) && headerSlot ? createPortal(
+    <button
+      type="button"
+      onClick={() => setShowActivity((v) => !v)}
+      aria-expanded={showActivity}
+      aria-label={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
+      title={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
+      // A dot, not a word: the header row has no room beside "Main bot" at
+      // the dock's width. The label and tooltip say what it is.
+      className={`wmux-moa-working order-first inline-flex items-center justify-center w-6 h-6 rounded-[6px] hover:bg-[var(--hover-fill)] ${showActivity ? 'bg-[var(--selection-emphasis)]' : ''} ${FOCUS_RING}`}
+      data-moa-working-toggle
+      data-busy={busy ? 'true' : undefined}
+    >
+      <span aria-hidden="true" className={`w-2 h-2 rounded-full ${busy ? 'bg-[var(--text-sub)]' : 'border border-[var(--text-sub)]'}`} />
+    </button>,
+    headerSlot,
+  ) : null;
   return (
     <MoaDockContext.Provider value={dockEl}>
     <ChatPtyContext.Provider value={ptyId}>
       <ChatCodeBlockContext.Provider value={bridge?.codeBlock ?? null}>
+      <ChatRowRendererContext.Provider value={renderRow}>
       <AssistantRuntimeProvider runtime={runtime}>
-        <div className="flex flex-col flex-1 min-h-0" data-moa-chat>
+        {activityToggle}
+        <div className="flex flex-col flex-1 min-h-0" data-moa-chat data-activity={showActivity ? 'shown' : 'hidden'}>
           <Thread
             composer={runtime.thread.composer}
             empty={empty}
@@ -290,6 +379,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
           />
         </div>
       </AssistantRuntimeProvider>
+      </ChatRowRendererContext.Provider>
       </ChatCodeBlockContext.Provider>
     </ChatPtyContext.Provider>
     </MoaDockContext.Provider>

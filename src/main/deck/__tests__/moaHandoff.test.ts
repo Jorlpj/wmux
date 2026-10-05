@@ -107,6 +107,32 @@ const propose = (r: Rig, body = 'Run a security audit of the auth module.', extr
   r.svc.propose(HQ, { ptyId: 'pty-1', body, ...extra });
 
 describe('moa hand-off — the card', () => {
+  it('a card says why it asks: outside danger mode, outside text, auto off, or this hour\'s cap', async () => {
+    const r = rig();
+    await propose(r);
+    expect(r.svc.cardInfo(r.slots.get(SEAL)!.id)?.askReason).toBe('not-danger');
+    r.slots.clear();
+    r.modes[HQ] = 'danger';
+    r.modes[SEAL] = 'danger';
+    r.state.auto = false;
+    await propose(r, 'Second task.');
+    expect(r.svc.cardInfo(r.slots.get(SEAL)!.id)?.askReason).toBe('auto-off');
+    r.slots.clear();
+    r.state.auto = true;
+    await propose(r, 'Third task.', { externalSource: true });
+    expect(r.svc.cardInfo(r.slots.get(SEAL)!.id)?.askReason).toBe('external');
+    expect(r.svc.cardInfo(r.slots.get(SEAL)!.id)?.id).toEqual(expect.any(String));
+  });
+
+  it('a card left over after Moa moved workspaces says so, not that the hourly cap was reached', async () => {
+    let hq = HQ;
+    const r = rig({ hqWorkspaceId: () => hq });
+    await propose(r);
+    const record = r.svc.byDecision(r.slots.get(SEAL)!.id)!;
+    hq = 'ws-new-hq';
+    expect((r.svc as unknown as { askReasonOf: (x: unknown) => string }).askReasonOf(record)).toBe('hq-moved');
+  });
+
   it('raises a main-owned card in the TARGET slot and delivers nothing', async () => {
     const r = rig();
     const res = await propose(r);

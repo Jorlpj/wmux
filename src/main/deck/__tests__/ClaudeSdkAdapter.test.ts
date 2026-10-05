@@ -360,6 +360,22 @@ describe('ClaudeSdkAdapter', () => {
     expect(prompt).toContain('If the operator corrects an escalation you raised');
   });
 
+  it('replies read like chat: 1-3 sentences, lists only when due, one line per hand-off', () => {
+    const flat = buildCommanderSystemPrompt().replace(/\s+/g, ' ');
+    expect(flat).toContain('REPLY STYLE: write like a chat message, 1-3 conversational sentences.');
+    expect(flat).toContain('Use a list only when the operator asked for one or there are 3+ parallel items; no bold headings.');
+    expect(flat).toContain('When you hand work off, say one line ("Handed to <agent> in <workspace>."; for a card the operator still has to approve, "Asked to hand this to <agent> in <workspace>.") and nothing more until the result.');
+    expect(flat).toContain('Never narrate your steps between tool calls.');
+  });
+
+  it('a hand-off body is the request, its scope and how to verify, with no checkout ceremony', () => {
+    const flat = buildCommanderSystemPrompt().replace(/\s+/g, ' ');
+    expect(flat).toContain("DELEGATION CONTRACT — a dispatch or hand-off body is the operator's request in plain words, its SCOPE (what the worker must NOT do) and HOW TO VERIFY it.");
+    expect(flat).toContain("Follow the target agent's own checkout and conventions: no worktree, branch, result file or DONE marker unless the operator asks for one, or another agent works the same checkout at the same time.");
+    expect(flat).not.toContain('ARTIFACT PATH');
+    expect(flat).not.toContain('COMPLETION MARKER');
+  });
+
   it('pins the chief-of-staff escalation policy: lookups first, a closed list of asks, one final report', () => {
     const prompt = buildCommanderSystemPrompt().replace(/'\s*\n\s*'/g, ' ');
     const flat = prompt.replace(/\s+/g, ' ');
@@ -367,6 +383,7 @@ describe('ClaudeSdkAdapter', () => {
     expect(flat).toContain('decide by production impact');
     expect(flat).toContain('ONLY for: taste, a release, an irreversible action outside wmux, a security-boundary change, or a real fork where the operator\'s intent is ambiguous.');
     expect(flat).toContain('Every question carries your recommended option, listed first.');
+    expect(flat).toContain('Its context says why you are asking: what blocks you and what each answer changes.');
     expect(flat).toContain('ONCE per job with the FINAL result (what changed, how it was verified)');
     expect(flat).toContain('No progress chatter');
     expect(flat).not.toContain('short PROGRESS update');

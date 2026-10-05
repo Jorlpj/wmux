@@ -57,6 +57,7 @@ import {
   HANDOFF_PREVIEW_CHARS,
   buildHandoffText,
   handoffBodyRefusal,
+  type HandoffAskReason,
   type MoaAutoHandoffReceipt,
   type MoaHandoffCardInfo,
   type MoaHandoffResolveResult,
@@ -113,6 +114,8 @@ export interface HandoffRecord {
   lastStop?: { at: number; text: string };
   /** The HQ closed the task itself (requesterComplete). */
   closedByHq?: boolean;
+  /** Why the card asks instead of delivering on its own. */
+  askReason?: HandoffAskReason;
   /** The worker was seen mid-turn (agent status) since its last turn end. */
   sawRunning?: boolean;
   /** wmux itself ended the task (not the operator): its pane closed or its
@@ -371,6 +374,17 @@ export class MoaHandoffService {
     return Object.values(this.file.items).find((r) => r.taskId === taskId) ?? null;
   }
 
+  /** Panes holding an open hand-off task: ptyId → where, and the agent. */
+  openTargets(): Map<string, { workspaceId: string; agentName: string }> {
+    const out = new Map<string, { workspaceId: string; agentName: string }>();
+    for (const r of Object.values(this.file.items)) {
+      if (r.state === 'delivered' && r.taskId && !isEnded(r.taskState)) {
+        out.set(r.target.ptyId, { workspaceId: r.target.workspaceId, agentName: r.target.agentName });
+      }
+    }
+    return out;
+  }
+
   /** The HQ closed this hand-off task itself (requesterComplete). */
   closedByHq(taskId: string): boolean {
     return this.byTask(taskId)?.closedByHq === true;
@@ -422,6 +436,7 @@ export class MoaHandoffService {
     const r = this.byDecision(decisionId);
     if (!r || r.state !== 'pending' || r.notice) return null;
     return {
+      id: r.id,
       body: r.body,
       title: r.title,
       agentName: r.target.agentName,
@@ -429,6 +444,7 @@ export class MoaHandoffService {
       targetPtyId: r.target.ptyId,
       foldsNewlines: r.foldsNewlines,
       willQueue: r.willQueue,
+      ...(r.askReason ? { askReason: r.askReason } : {}),
     };
   }
 
@@ -518,6 +534,9 @@ export class MoaHandoffService {
       // The failed try is kept as what it was (a canceled task, no receipt)
       // under its own id; the card below is a new record.
       record.id = randomUUID();
+      record.askReason = 'delivery-failed';
+    } else {
+      record.askReason = this.askReasonOf(record);
     }
     return this.raiseCard(record);
   }
@@ -551,6 +570,17 @@ export class MoaHandoffService {
       && this.ports.modeOf(r.target.workspaceId) === 'danger'
       && this.ports.modeOf(r.hqWorkspaceId) === 'danger'
     );
+  }
+
+  /** Which part of the auto rule sends this hand-off to a card. */
+  private askReasonOf(r: HandoffRecord): HandoffAskReason {
+    // Moa moved to another workspace since this was proposed.
+    if (this.ports.hqWorkspaceId() !== r.hqWorkspaceId) return 'hq-moved';
+    // The most basic reason first: outside danger mode nothing goes on its own.
+    if (this.ports.modeOf(r.target.workspaceId) !== 'danger' || this.ports.modeOf(r.hqWorkspaceId) !== 'danger') return 'not-danger';
+    if (!this.ports.autoHandoffEnabled()) return 'auto-off';
+    if (r.externalSource) return 'external';
+    return 'hourly-cap';
   }
 
   private autoAllowed(r: HandoffRecord): boolean {
