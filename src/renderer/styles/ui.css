@@ -191,6 +191,14 @@
   .wmux-nav-button, .wmux-sidebar .sidebar-row { transition: none; }
 }
 
+/* Sidebar collapse/expand (SidebarSlot). The transition exists only while a
+ * toggle runs ([data-animating]), so a drag-resize of the width never eases.
+ * The duration must match SIDEBAR_TOGGLE_MS. */
+.wmux-sidebar-slot[data-animating] { transition: width 190ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .wmux-sidebar-slot[data-animating] { transition: none; }
+}
+
 /* ─── Buttons: shared base ──────────────────────────────────────────────── */
 .ui-btn {
   display: inline-flex;
@@ -825,17 +833,6 @@
 .wmux-ws-filter-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 18px; font-size: 12px; color: var(--text-sub); }
 .wmux-ws-filter-empty p { margin: 0; }
 
-/* Titlebar search & command pill: a faint fill, no outline (one boundary).
- * Its lane is the titlebar's drag gap; under ~260px the label folds away and
- * the icon and shortcut remain. */
-.wmux-command-pill-lane { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; justify-content: center; padding: 0 12px; container-type: inline-size; }
-.wmux-command-pill { display: inline-flex; align-items: center; gap: 8px; height: 26px; max-width: 320px; min-width: 0; padding: 0 8px 0 10px; border-radius: 8px; background: var(--selection-subtle); color: var(--text-sub); font-size: 12px; line-height: 1; white-space: nowrap; transition: background-color 120ms, color 120ms; }
-.wmux-command-pill:hover { background: var(--selection); color: var(--text-main); }
-.wmux-command-pill > svg { flex: none; }
-.wmux-command-pill-label { overflow: hidden; text-overflow: ellipsis; }
-.wmux-command-pill-kbd { flex: none; margin-left: 4px; font-family: inherit; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-@container (max-width: 260px) { .wmux-command-pill-label { display: none; } .wmux-command-pill-kbd { margin-left: 0; } }
-
 /* A rail page fills the sheet over the Workspaces page, which stays mounted
  * underneath at full size, so a page never changes terminal geometry. The
  * sheet's own edge is the page's only boundary. */
@@ -984,6 +981,9 @@
 .wmux-fleet-editor input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--border-soft); border-radius: 5px; background: var(--bg-mantle); color: var(--text-main); font-size: 12px; outline: none; }
 .wmux-fleet-editor input:focus-visible { border-color: var(--accent-blue); }
 .wmux-fleet-editor-text { flex: 1; min-width: 0; font-size: 12px; color: var(--text-main); }
+/* Role picker: the roles wrap, and the pane's current role is the selected one. */
+.wmux-fleet-editor[data-fleet-editor="role"] { flex-wrap: wrap; }
+.wmux-fleet-editor button[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
 .wmux-fleet-editor button { min-height: 28px; padding: 2px 10px; border: 1px solid var(--border-soft); border-radius: 5px; font-size: 12px; color: var(--text-main); }
 .wmux-fleet-editor button.is-destructive { color: var(--accent-red); }
 .wmux-fleet-card:hover, .wmux-fleet-card[aria-selected="true"] { background: var(--bg-surface); }
@@ -1771,6 +1771,14 @@
 .wmux-panel-toggle[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
 /* Titlebar right end: icon-only, one 28px square each (tools panel, Settings). */
 .wmux-titlebar .wmux-panel-toggle { width: 28px; padding: 0; gap: 0; }
+/* The titlebar's panel toggles (sidebar at the left, Moa / tools panel at the
+   right) are a matched pair of bare icons: no fill at rest or when on — the
+   icon's filled bar and aria-pressed/aria-expanded carry the state — and only
+   the hover fill and the focus ring. */
+.wmux-titlebar .wmux-panel-toggle,
+.wmux-titlebar .wmux-panel-toggle[aria-expanded="true"],
+.wmux-titlebar .wmux-panel-toggle[aria-pressed="true"] { background: transparent; }
+.wmux-titlebar .wmux-panel-toggle:hover { background: var(--hover-fill); color: var(--text-main); }
 .wmux-chat-toggle button { border-radius: 6px; color: color-mix(in srgb, var(--text-main) 50%, transparent); }
 .wmux-chat-toggle button[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
 .wmux-deck-tabs { min-height: 40px; padding: 0 12px; gap: 4px; border-bottom: 0; }
@@ -2085,6 +2093,9 @@ html[data-fullscreen] .wmux-shell-body {
 /* Dock: Briefing is set off by space; the Assist box is the wrapper's one
  * hairline (its inner form draws none); composers carry no extra shadow. */
 [data-commander-layout="chat"] [data-deck-briefing] { border-bottom: 0; }
+/* Moa's top runs edge to edge (its cards carry their own inset), so the
+   briefing in it takes the cards' 12px inset. */
+[data-moa-top] [data-deck-briefing], .wmux-moa-chat-top [data-deck-briefing] { padding-left: 12px; padding-right: 12px; }
 [data-commander-composer] form[data-channel-composer].wmux-chat-composer { border: 0; box-shadow: none; }
 [data-commander-layout="chat"] [data-commander-composer] { background: transparent; border-color: var(--line); }
 :root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) form[data-channel-composer].wmux-chat-composer,
