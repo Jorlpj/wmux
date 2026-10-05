@@ -352,17 +352,31 @@ export class AgyAccountService {
    */
   async prepareLaunch(family: AgyModelFamily = 'gemini'): Promise<AgyLaunchDecision> {
     if (!this.deps.vault || this.login.pending) return { ok: true, account: null, switched: false };
-    const snap = this.snapshot(family);
+    let snap = this.snapshot(family);
     if (snap.accounts.length === 0) return { ok: true, account: null, switched: false };
-    // Fold agy's own token refreshes back into the vault copy first.
-    if (snap.activeEmail && snap.accounts.some((a) => a.active)) this.deps.vault.captureActive();
+    // Fold agy's own token refreshes back into the vault copy first. A confirmed copy of the active
+    // account also means it is signed in again (the user may have done that outside wmux), so a
+    // needs-reauth flag on it is cleared.
+    const liveRow = snap.accounts.find((a) => a.active);
+    if (liveRow) {
+      const captured = this.deps.vault.captureActive();
+      if (liveRow.needsReauth && captured === liveRow.email && this.deps.vault.hasCopy(captured)) {
+        await this.mutate((file) => {
+          const a = file.accounts.find((x) => x.email === captured);
+          if (a) delete a.needsReauth;
+        });
+        snap = this.snapshot(family);
+      }
+    }
     const manual = this.file().manualEmail;
     if (!snap.autoRotate || (manual && snap.activeEmail === manual)) {
       // Rotation off, or the active account is the user's own pick: never swap, but still refuse an
-      // active account that is out.
+      // active account that is out of quota. Only quota holds a launch: an account that needs signing
+      // in again starts agy as it is, so agy can ask for the sign-in.
       const active = snap.accounts.find((a) => a.active);
-      if (!active || active.state === 'active') return { ok: true, account: active ?? null, switched: false };
-      return { ok: false, reason: 'all-exhausted', availableAtMs: active.availableAtMs };
+      if (active?.state === 'exhausted') return { ok: false, reason: 'all-exhausted', availableAtMs: active.availableAtMs };
+      if (active?.state === 'needs-reauth') console.warn(`[agy-accounts] agy account ${active.id} needs signing in again; launching unchanged`);
+      return { ok: true, account: active ?? null, switched: false };
     }
     const decision = chooseAgyAccount(snap.accounts);
     if (!decision.ok || !decision.switched || !decision.account) return decision;

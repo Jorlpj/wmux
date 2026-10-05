@@ -166,8 +166,9 @@ export function agyAccountRow(
  * sessions is avoided unless it is needed. Otherwise the usable account with
  * the most remaining quota wins (unknown quota ranks below any known value, so
  * a never-measured account is tried only after measured ones). When none is
- * usable the decision says so and carries the earliest time one frees up —
- * the caller must stop there, never retry in a loop.
+ * usable and at least one is out of quota, the decision says so and carries
+ * the earliest time one frees up — the caller must stop there, never retry in
+ * a loop.
  */
 export function chooseAgyAccount(rows: readonly AgyAccountRow[]): AgyLaunchDecision {
   if (rows.length === 0) return { ok: true, account: null, switched: false };
@@ -175,6 +176,9 @@ export function chooseAgyAccount(rows: readonly AgyAccountRow[]): AgyLaunchDecis
   const active = usable.find((r) => r.active);
   if (active) return { ok: true, account: active, switched: false };
   if (usable.length === 0) {
+    // Only quota holds a launch. With no account out of quota (they all need signing in again), agy
+    // starts on whatever is signed in and asks for the sign-in itself.
+    if (!rows.some((r) => r.state === 'exhausted')) return { ok: true, account: null, switched: false };
     const times = rows
       .filter((r) => r.state === 'exhausted' && r.availableAtMs !== null)
       .map((r) => r.availableAtMs as number);
