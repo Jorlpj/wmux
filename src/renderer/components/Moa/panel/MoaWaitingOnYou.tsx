@@ -4,7 +4,7 @@
 // wears the needs-you grammar (content-20% fill, dashed content-30% border,
 // the yellow eyebrow as its one state mark). Answers go to the decision's own
 // workspace, not to Moa's.
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useEffect, useRef, useState } from 'react';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
@@ -12,7 +12,12 @@ import { FOCUS_RING } from '../../focusRing';
 import { MoaMemoryCard, type MoaMemoryCardApi } from '../MoaMemoryCard';
 import { MoaHandoffCard, type HandoffResolve } from './MoaHandoffCard';
 
-export type ResolveDecision = (args: { workspaceId: string; id: string; resolution: string }) => Promise<{ ok: boolean; code?: string }>;
+/** Where Waiting on you docks: right above the chat's composer, so a card
+ *  stays in view however far the chat is scrolled. Null (no chat on screen)
+ *  draws it inline at the top of the panel. */
+export const MoaDockContext = createContext<HTMLElement | null>(null);
+
+export type ResolveDecision = (args: { workspaceId: string; id: string; resolution: string; dismiss?: boolean }) => Promise<{ ok: boolean; code?: string }>;
 
 /** Main's refusal for a decision that is no longer pending: it was answered
  *  elsewhere (the phone, another window) a moment before this click. */
@@ -78,11 +83,11 @@ export function MoaWaitingOnYou({
   // mounted (hidden) only so the memory card can learn of a new card.
   const total = visible.length + (memoryPending ? 1 : 0);
 
-  const resolve = async (d: MoaPendingDecision, resolution: string): Promise<boolean> => {
+  const resolve = async (d: MoaPendingDecision, resolution: string, dismiss = false): Promise<boolean> => {
     const text = resolution.trim();
-    if (!text) return false;
+    if (!text && !dismiss) return false;
     try {
-      const r = await onResolve({ workspaceId: d.workspaceId, id: d.decision.id, resolution: text });
+      const r = await onResolve({ workspaceId: d.workspaceId, id: d.decision.id, resolution: text, ...(dismiss ? { dismiss: true } : {}) });
       // Already answered elsewhere: the row is stale, not failed, so it leaves
       // like an answered one and shows no error.
       if (!r.ok && !answeredElsewhere(r)) return false;
@@ -98,7 +103,14 @@ export function MoaWaitingOnYou({
     if (total === 1) {
       // The last one: the section goes away, so focus moves to the panel's
       // top region (it is focusable for exactly this) rather than the page.
-      listRef.current?.closest<HTMLElement>('[data-moa-panel-top]')?.focus();
+      // Docked above the composer, the section is portalled out of that
+      // region, so it is found through the chat. Not the composer: a resumed
+      // turn disables it at once, which would drop focus to the page.
+      const docked = listRef.current?.closest('[data-moa-dock]');
+      const top = docked
+        ? docked.closest('[data-moa-chat]')?.querySelector<HTMLElement>('[data-moa-panel-top]')
+        : listRef.current?.closest<HTMLElement>('[data-moa-panel-top]');
+      top?.focus({ preventScroll: true });
     } else {
       refocusAt.current = visible.findIndex((v) => v.decision.id === d.decision.id);
     }
@@ -134,6 +146,7 @@ export function MoaWaitingOnYou({
             key={d.decision.id}
             item={d}
             onAnswer={(text) => resolve(d, text)}
+            onDismiss={d.dismissible ? () => resolve(d, '', true) : undefined}
             conversationTaskId={onOpenConversation ? conversationTaskId?.(d.workspaceId) : undefined}
             onOpenConversation={onOpenConversation}
             t={t}
@@ -147,12 +160,15 @@ export function MoaWaitingOnYou({
 function DecisionRow({
   item,
   onAnswer,
+  onDismiss,
   conversationTaskId,
   onOpenConversation,
   t,
 }: {
   item: MoaPendingDecision;
   onAnswer: (text: string) => Promise<boolean>;
+  /** "Not needed": close the card without choosing; absent when not allowed. */
+  onDismiss?: () => Promise<boolean>;
   conversationTaskId?: string;
   onOpenConversation?: (taskId: string) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
@@ -161,11 +177,11 @@ function DecisionRow({
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState('');
   const [failed, setFailed] = useState(false);
-  const answer = async (text: string) => {
+  const answer = async (text: string, dismiss = false) => {
     if (busy) return;
     setBusy(true);
     setFailed(false);
-    const ok = await onAnswer(text);
+    const ok = dismiss && onDismiss ? await onDismiss() : await onAnswer(text);
     // A successful answer unmounts this row; only a failure is still here.
     if (!ok) {
       setBusy(false);
@@ -216,6 +232,12 @@ function DecisionRow({
             {t('moa.panel.answerSend')}
           </Button>
         </form>
+      )}
+      {onDismiss && (
+        <Button variant="ghost" size="sm" disabled={busy} data-moa-decision-dismiss onClick={() => void answer('', true)}
+          className="mt-1.5">
+          {t('moa.panel.dismiss')}
+        </Button>
       )}
       {conversationTaskId && (
         <button

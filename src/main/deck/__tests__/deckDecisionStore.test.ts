@@ -139,10 +139,25 @@ describe('deckDecisionStore', () => {
     const pending = renderDecisionBlock(d);
     expect(pending).toContain('BLOCKED');
     expect(pending).toContain('yes | no');
+    // A moot card is withdrawn by asking the operator to close it.
+    expect(pending).toContain('ask them to close the card with Not needed');
     const r = (await resolveDecision('ws-1', d.id, 'yes', dir))!;
     const resolved = renderDecisionBlock(r);
     expect(resolved).toContain('RESOLVED');
     expect(resolved).toContain('yes');
+  });
+
+  it('a dismissed decision survives a reload and renders as no answer, never as an option', async () => {
+    const d = (await raiseDecision('ws-1', { question: 'Continue the old session?', options: ['yes', 'no'] }, dir))!;
+    await resolveDecision('ws-1', d.id, '', dir, 'human', { dismissed: true });
+    const loaded = loadWorkspaceDecision('ws-1', dir)!;
+    expect(loaded).toMatchObject({ status: 'resolved', dismissed: true, resolvedBy: 'human' });
+    const block = renderDecisionBlock(loaded);
+    expect(block).toContain('DISMISSED');
+    expect(block).not.toContain('the human decided');
+    // A brain resolve can never carry the flag.
+    const e = (await raiseDecision('ws-2', { question: 'Q?' }, dir))!;
+    expect(await resolveDecision('ws-2', e.id, 'x', dir, 'brain', { dismissed: true })).not.toHaveProperty('dismissed');
   });
 
   it('resolveDecision returns null on a stale resolve (no double-transition kick)', async () => {
@@ -186,6 +201,7 @@ describe('deckDecisionStore', () => {
         '  options: yes | no',
         '  context: why',
         'Do not act until the human resolves this. If they just messaged you, they may be answering — otherwise wait.',
+        'If their message or a lookup already answers it, say so in one line and ask them to close the card with Not needed.',
       ].join('\n'),
     );
   });
