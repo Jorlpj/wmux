@@ -163,27 +163,29 @@ export function agyAccountRow(
 /**
  * Pick the account the next agy launch runs on. The active account is kept
  * while it has quota — swapping the machine-wide slot under running agy
- * sessions is avoided unless it is needed. Otherwise the usable account with
- * the most remaining quota wins (unknown quota ranks below any known value, so
- * a never-measured account is tried only after measured ones). When none is
- * usable and at least one is out of quota, the decision says so and carries
- * the earliest time one frees up — the caller must stop there, never retry in
- * a loop.
+ * sessions is avoided unless it is needed. Otherwise the measured account with
+ * the most remaining quota wins. As for Claude and Codex (#1740), an account
+ * with no reading is never a switch target, and "every account is out" is only
+ * claimed when every usable account was measured: with only unmeasured ones
+ * left, the launch goes ahead unchanged. When none is usable and at least one
+ * is out of quota, the decision says so and carries the earliest time one
+ * frees up — the caller must stop there, never retry in a loop.
  */
 export function chooseAgyAccount(rows: readonly AgyAccountRow[]): AgyLaunchDecision {
   if (rows.length === 0) return { ok: true, account: null, switched: false };
   const usable = rows.filter((r) => r.state === 'active' || r.state === 'ready');
   const active = usable.find((r) => r.active);
   if (active) return { ok: true, account: active, switched: false };
-  if (usable.length === 0) {
-    // Only quota holds a launch. With no account out of quota (they all need signing in again), agy
-    // starts on whatever is signed in and asks for the sign-in itself.
-    if (!rows.some((r) => r.state === 'exhausted')) return { ok: true, account: null, switched: false };
+  const measured = usable.filter((r) => r.remaining !== null);
+  if (measured.length === 0) {
+    // Only quota holds a launch. With an unmeasured account left, or none out of quota (they all need
+    // signing in again), agy starts on whatever is signed in.
+    if (usable.length > 0 || !rows.some((r) => r.state === 'exhausted')) return { ok: true, account: null, switched: false };
     const times = rows
       .filter((r) => r.state === 'exhausted' && r.availableAtMs !== null)
       .map((r) => r.availableAtMs as number);
     return { ok: false, reason: 'all-exhausted', availableAtMs: times.length > 0 ? Math.min(...times) : null };
   }
-  const ranked = [...usable].sort((a, b) => (b.remaining ?? -1) - (a.remaining ?? -1));
+  const ranked = [...measured].sort((a, b) => (b.remaining as number) - (a.remaining as number));
   return { ok: true, account: ranked[0], switched: true };
 }

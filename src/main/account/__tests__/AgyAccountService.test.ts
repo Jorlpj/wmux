@@ -126,6 +126,16 @@ describe('AgyAccountService', () => {
     expect(s.snapshot().accounts.every((a) => a.state !== 'needs-reauth')).toBe(true);
   });
 
+  it('leaves a sign-in made outside wmux alone even with switching on', async () => {
+    const s = make();
+    await s.setAutoRotate(true);
+    await withAccounts(s, ['a@x.com']);
+    snapshots.set('a@x.com', quota(0.9));
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('z@x.com'));
+    expect(await s.prepareLaunch()).toEqual({ ok: true, account: null, switched: false });
+    expect(new AgyVault(backend).activeEmail()).toBe('z@x.com');
+  });
+
   it('holds instead of using a registered active account that is out when the swap is refused', async () => {
     const s = make();
     await s.setAutoRotate(true);
