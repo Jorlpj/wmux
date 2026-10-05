@@ -9,7 +9,7 @@ import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspacePr
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear, IconCornerUpLeft } from '../icons';
-import { selectFleetPanes, sortFleetPanes, countNeedsAttention, fleetHqId, type FleetPane } from '../../stores/selectors/fleet';
+import { selectFleetPanes, sortFleetPanes, selectFleetSectionCounts, fleetHqId, type FleetPane } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import MoaTitlebarButton from '../Moa/MoaTitlebarButton';
@@ -169,10 +169,13 @@ export default function StatusBar() {
       }).filter((p) => isFleetAgentRow(p) && p.workspaceId !== hqId);
       return {
         running: panes.filter((p) => p.agentStatus === 'running').length,
-        needsYou: countNeedsAttention(panes),
       };
     }),
   );
+  // One Needs you count everywhere: the same rows the rail badge and Fleet's
+  // chip count (selectFleetSectionCounts) — questions, errors, stopped
+  // supervision and unconfirmed panes — so the three numbers never differ.
+  const needsYouCount = useStore((s) => selectFleetSectionCounts(s).needsYou);
   // Jump to the most urgent pane — computed at click time (no subscription).
   const jumpToUrgent = () => {
     const s = useStore.getState();
@@ -305,7 +308,7 @@ export default function StatusBar() {
             {(t('strip.running') || '{count} running').replace('{count}', String(fleetVitals.running))}
           </span>
         )}
-        {!onFleetPage && fleetVitals.needsYou > 0 && (
+        {!onFleetPage && needsYouCount > 0 && (
           <button
             type="button"
             data-statusbar-needs
@@ -313,12 +316,13 @@ export default function StatusBar() {
             // min-h only: the chip is text, so it is already wide enough — it
             // was the 13px line-height that put it under the pointer floor, and
             // the 40px titlebar absorbs the extra height with no layout change.
-            className="flex items-center gap-1.5 min-h-[24px] font-semibold text-[var(--accent-red)] hover:opacity-80 transition-opacity"
+            // Needs you wears one colour everywhere — the attention orange: the
+            // sidebar's ring and label, the rail badge and this count.
+            className="flex items-center gap-1.5 min-h-[24px] font-semibold text-[var(--attention-text)] hover:opacity-80 transition-opacity"
             title={t('strip.needsYouTooltip') || 'Jump to the pane that needs you'}
-            {...tokenAttrs('danger', 'text')}
           >
-            <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[var(--accent-red)]" />
-            {(t('strip.needsYou') || '{count} need you').replace('{count}', String(fleetVitals.needsYou))}
+            <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[var(--attention)]" />
+            {(t('strip.needsYou') || '{count} need you').replace('{count}', String(needsYouCount))}
           </button>
         )}
         {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
