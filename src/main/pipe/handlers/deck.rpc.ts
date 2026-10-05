@@ -39,6 +39,7 @@ import {
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { getMoaHandoffService } from '../../deck/moaHandoff';
+import { currentMoaReadRoots, refreshMoaReadRoots } from '../../deck/moaReadGate';
 import { plainLanguageRefusal } from '../../deck/plainLanguage';
 import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import { loadWorkspaceMode } from '../../deck/deckAutonomyStore';
@@ -268,6 +269,8 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
     // The job is done: hand-off cards Moa raised for it and the operator never
     // answered are moot, and would keep "Waiting on you" above zero.
     if (handoffs && ws === getHqWorkspaceId()) await handoffs.closeMootCards(ws).catch(() => 0);
+    // The job is settled: the repos it read stop being readable without asking.
+    if (ws === getHqWorkspaceId()) await refreshMoaReadRoots();
     return { ok: true, workId: work.id, summary, verification };
   });
 
@@ -353,6 +356,12 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
   // for the operator, or, in danger mode on both sides, delivers it itself
   // (moaHandoff.ts). HQ only: the token's workspace must be the HQ. Nothing
   // here takes a mode, an origin or a decision id from the brain.
+  // `deck.moaReadRoots`: Moa's read gate (a PreToolUse hook script in the HQ
+  // brain) asks which repositories it may read without a prompt. Read-only:
+  // the roots main holds in memory, unexpired and re-vetted (moaReadGate.ts).
+  // Reached through its own client lane (readGateLane.ts).
+  router.register('deck.moaReadRoots', async () => ({ roots: currentMoaReadRoots() }));
+
   router.register('deck.proposeHandoff', async (params) => {
     const ws = commanderTokenWorkspace(params['token']);
     if (!ws) {
