@@ -23,6 +23,7 @@ import { createOsc8LinkHandler, isLoopbackHref } from '../../terminal/osc8LinkHa
 import { installAltClickTrackingGuard } from '../../utils/altClickUnderMouseTracking';
 import { createOsc52Handler } from '../../utils/osc52Clipboard';
 import { gateUserInput, type UserInputTerminal } from '../../../shared/terminal/userInputGate';
+import { installShellPromptModeReset, shellPromptModeResetFor } from '../../../shared/terminal/shellPromptModeReset';
 import { fitsHeld, onFitsReleased } from '../../utils/layoutTransitionGate';
 
 export interface RemoteMirrorTerminalProps {
@@ -777,6 +778,10 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
     window.addEventListener('pointercancel', onDisarm, true);
     window.addEventListener('blur', onDisarm);
     document.addEventListener('visibilitychange', onVisibility);
+    // #1792: mouse / focus modes a killed TUI left armed are cleared once the
+    // remote shell prints its prompt, so this mirror stops POSTing reports
+    // into that shell. Same guard as the local panes (useTerminal).
+    installShellPromptModeReset(term);
     const osc52Disposable = term.parser.registerOscHandler(52, createOsc52Handler({
       isReplaying: () => !shouldHonorMirrorClipboardWrite({
         now: Date.now(),
@@ -929,6 +934,8 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
       const term = termRef.current;
       if (!term) return;
       term.reset();
+      // #1794: a new stream starts here; the prompt-mode guard forgets the old one.
+      shellPromptModeResetFor(term)?.reset();
       term.resize(e.cols, e.rows);
       // A fresh attach or a reconnect: the grid is new information, so the box
       // gets one decision against it. (A grant arrives as onPaneResize, below,
@@ -1020,6 +1027,8 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
       ? gateUserInput(termRef.current as unknown as UserInputTerminal, (data) => {
         if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
         if (repaintDepthRef.current > 0) return;
+        // #1794: reports of leaked modes whose reset has not applied yet.
+        if (termRef.current && shellPromptModeResetFor(termRef.current)?.dropsReport(data)) return;
         remote.paneWrite(attachId, data);
       })
       : null;
