@@ -114,9 +114,11 @@ export class AgyAccountService {
   private writeChain: Promise<unknown> = Promise.resolve();
   private login: AgyLoginState = { pending: false, previousEmail: null, startedAt: null, lastResult: null };
   private loginTimer: { cancel: () => void } | null = null;
-  /** Refresh-token digest of the sign-in that was active when the login began. Kept out of the
-   *  login state the renderer sees. */
-  private previousRefreshDigest: string | null = null;
+  /** Sign-ins that existed when the login began: refresh-token digests of every saved copy and of
+   *  the live one, and their emails. A running agy session writes one of these back when it
+   *  refreshes its access token; that is not the new sign-in. Kept out of the login state the
+   *  renderer sees. */
+  private knownSignIns: { digests: Set<string>; emails: Set<string> } = { digests: new Set(), emails: new Set() };
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly deps: AgyAccountServiceDeps) {
@@ -270,9 +272,18 @@ export class AgyAccountService {
     const vault = this.vault();
     if (this.login.pending) return this.loginState();
     const previousEmail = vault.activeEmail();
-    this.previousRefreshDigest = vault.activeRefreshDigest();
+    const liveDigest = vault.activeRefreshDigest();
     if (previousEmail && this.file().accounts.some((a) => a.email === previousEmail)) vault.captureActive();
     else if (previousEmail) await this.addCurrent();
+    const emails = new Set(this.file().accounts.map((a) => a.email));
+    if (previousEmail) emails.add(previousEmail);
+    const digests = new Set<string>();
+    for (const e of emails) {
+      const d = vault.copyRefreshDigest(e);
+      if (d) digests.add(d);
+    }
+    if (liveDigest) digests.add(liveDigest);
+    this.knownSignIns = { digests, emails };
     if (!vault.signOutActive()) throw new AgyAccountError('swap-failed', 'could not sign agy out');
     this.login = { pending: true, previousEmail, startedAt: this.now(), lastResult: null };
     this.emit();
@@ -293,17 +304,26 @@ export class AgyAccountService {
   async pollLogin(): Promise<void> {
     if (!this.login.pending) return;
     const email = this.deps.vault?.activeEmail() ?? null;
-    // An agy session left running refreshes its access token and rewrites the slot with the account just
-    // signed out; that is not the new sign-in. A real sign-in, even to the same account, has a new
-    // refresh token, so compare that rather than the email.
+    // An agy session left running refreshes its access token and rewrites the slot with its own
+    // account, which may be any saved account, not only the one just signed out; that is not the new
+    // sign-in. A real sign-in, even to a saved account, has a new refresh token, so compare that rather
+    // than the email. A sign-in with no refresh token cannot be told apart, so it counts as new only
+    // for an account wmux did not know.
     const digest = this.deps.vault?.activeRefreshDigest() ?? null;
-    if (email && email === this.login.previousEmail && digest === this.previousRefreshDigest) {
+    const stale = email !== null
+      && (digest !== null ? this.knownSignIns.digests.has(digest) : this.knownSignIns.emails.has(email));
+    if (stale) {
       this.deps.vault?.signOutActive();
     } else if (email) {
       this.login = { ...this.login, pending: false, lastResult: email };
       this.loginTimer = null;
-      await this.addCurrent();
-      await this.mutate((file) => { file.manualEmail = email; });
+      try {
+        await this.addCurrent();
+        await this.mutate((file) => { file.manualEmail = email; });
+      } catch (err) {
+        console.warn(`[agy-accounts] could not register the new agy sign-in: ${String(err)}`);
+        this.emit();
+      }
       return;
     }
     if (this.now() - (this.login.startedAt ?? 0) > LOGIN_TIMEOUT_MS) {

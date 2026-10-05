@@ -6,7 +6,8 @@ import { AgyVault, AGY_ACTIVE_TARGET, agyBlobEmail, copyTarget, type AgyVaultBac
 import { AgyAccountService, agyAccountQuotaPath, agyQuotaKey } from '../AgyAccountService';
 import type { AgyAccountQuotaSnapshot } from '../../../shared/agyAccounts';
 
-function blobFor(email: string, refresh = 'r1'): Buffer {
+// Every sign-in has its own refresh token, so the default differs per account.
+function blobFor(email: string, refresh = `r1:${email}`): Buffer {
   const idToken = ['h', Buffer.from(JSON.stringify({ email })).toString('base64url'), 's'].join('.');
   return Buffer.from(JSON.stringify({ token: { access_token: 'a', refresh_token: refresh }, auth_method: 'oauth', id_token: idToken }));
 }
@@ -332,9 +333,51 @@ describe('AgyAccountService — self-healing signals', () => {
     await s.pollLogin();
     expect(s.loginState().pending).toBe(true);
     expect(backend.read(AGY_ACTIVE_TARGET)).toBeNull();
-    expect(JSON.parse(String(backend.read(copyTarget('a@x.com')))).token.refresh_token).toBe('r1');
+    expect(JSON.parse(String(backend.read(copyTarget('a@x.com')))).token.refresh_token).toBe('r1:a@x.com');
     backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('b@x.com'));
     await s.pollLogin();
     expect(s.loginState()).toMatchObject({ pending: false, lastResult: 'b@x.com' });
+  });
+
+  it('sign-in ignores any saved account written back by a running session, not only the previous one', async () => {
+    const s = make();
+    for (const e of ['a@x.com', 'b@x.com']) {
+      backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor(e));
+      await s.addCurrent();
+    }
+    // Sessions on a and b are running; b is live. Start adding c.
+    await s.beginLogin();
+    // a's session refreshes its access token and writes a back into the slot.
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
+    await s.pollLogin();
+    expect(s.loginState()).toMatchObject({ pending: true, lastResult: null });
+    expect(backend.read(AGY_ACTIVE_TARGET)).toBeNull();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('c@x.com'));
+    await s.pollLogin();
+    expect(s.loginState()).toMatchObject({ pending: false, lastResult: 'c@x.com' });
+    // c, not a, is pinned as the manual pick.
+    expect(JSON.parse(fs.readFileSync(path.join(dataDir, 'agy-accounts.json'), 'utf8')).manualEmail).toBe('c@x.com');
+  });
+
+  it('sign-in without a refresh token counts as new only for an account wmux did not know', async () => {
+    const s = make();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com'));
+    await s.addCurrent();
+    await s.beginLogin();
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', ''));
+    await s.pollLogin();
+    expect(s.loginState().pending).toBe(true);
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('b@x.com', ''));
+    await s.pollLogin();
+    expect(s.loginState()).toMatchObject({ pending: false, lastResult: 'b@x.com' });
+  });
+
+  it('a sign-in that cannot be registered ends the watch without an unhandled rejection', async () => {
+    const s = make();
+    await s.beginLogin();
+    // The new sign-in is over the vault's blob limit, so it cannot be saved.
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('c@x.com', 'r'.repeat(3000)));
+    await expect(s.pollLogin()).resolves.toBeUndefined();
+    expect(s.loginState()).toMatchObject({ pending: false, lastResult: 'c@x.com' });
   });
 });
