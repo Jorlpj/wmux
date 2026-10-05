@@ -125,6 +125,16 @@ describe('chooseAgyAccount', () => {
     expect(d).toMatchObject({ ok: true, switched: true, account: { email: 'c@x.com' } });
   });
 
+  it('never holds a launch only because accounts need signing in again', () => {
+    const d = chooseAgyAccount([row('a@x.com', null, true, { needsReauth: true }), row('b@x.com', null, false, { needsReauth: true })]);
+    expect(d).toEqual({ ok: true, account: null, switched: false });
+  });
+
+  it('holds when the accounts left are out of quota or need signing in again', () => {
+    const d = chooseAgyAccount([row('a@x.com', snap({ 'gemini-5h': [0, LATER] }), true), row('b@x.com', null, false, { needsReauth: true })]);
+    expect(d).toEqual({ ok: false, reason: 'all-exhausted', availableAtMs: Date.parse(LATER) });
+  });
+
   it('tries a never-measured account only after measured ones', () => {
     const d = chooseAgyAccount([row('a@x.com', snap({ 'gemini-5h': [0, LATER] }), true), row('d@x.com', null)]);
     expect(d).toMatchObject({ ok: true, switched: true, account: { email: 'd@x.com' } });

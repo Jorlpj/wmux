@@ -229,6 +229,29 @@ describe('AgyAccountService', () => {
     expect(s.snapshot().accounts.find((a) => a.email === 'a@x.com')?.state).toBe('needs-reauth');
   });
 
+  it('clears needs-reauth once the active account is signed in again outside wmux', async () => {
+    const s = make();
+    await withAccounts(s, ['a@x.com', 'b@x.com']); // b is live
+    backend.remove(copyTarget('a@x.com'));
+    await expect(s.activate(s.snapshot().accounts.find((a) => a.email === 'a@x.com')?.id ?? '')).rejects.toMatchObject({ code: 'swap-failed' });
+    expect(s.snapshot().accounts.find((a) => a.email === 'a@x.com')?.state).toBe('needs-reauth');
+    // The user signs in to a with agy itself; a has quota.
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', 'r-fresh'));
+    snapshots.set('a@x.com', quota(0.8));
+    expect(await s.prepareLaunch()).toMatchObject({ ok: true, switched: false, account: { email: 'a@x.com', state: 'active' } });
+    expect(s.snapshot().accounts.find((a) => a.email === 'a@x.com')?.state).toBe('active');
+  });
+
+  it('never reports an active account that needs signing in again as out of quota', async () => {
+    const s = make();
+    await withAccounts(s, ['a@x.com', 'b@x.com']); // b is live
+    backend.remove(copyTarget('a@x.com'));
+    await expect(s.activate(s.snapshot().accounts.find((a) => a.email === 'a@x.com')?.id ?? '')).rejects.toBeTruthy();
+    // a is live again, but its sign-in is over the vault limit, so no copy can confirm it.
+    backend.write(AGY_ACTIVE_TARGET, 'antigravity', blobFor('a@x.com', 'r'.repeat(3000)));
+    expect(await s.prepareLaunch()).toMatchObject({ ok: true, switched: false, account: { email: 'a@x.com', state: 'needs-reauth' } });
+  });
+
   it('sign-in flow: saves the live account, signs out, registers the new one', async () => {
     const s = make();
     await withAccounts(s, ['a@x.com']);
