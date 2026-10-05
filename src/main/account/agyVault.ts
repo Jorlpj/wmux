@@ -79,6 +79,11 @@ export class AgyVault {
     return agyRefreshDigest(this.backend.read(AGY_ACTIVE_TARGET));
   }
 
+  /** Refresh-token digest of an account's saved copy (never the token itself). */
+  copyRefreshDigest(email: string): string | null {
+    return agyRefreshDigest(this.backend.read(copyTarget(email)));
+  }
+
   /** Copy the live sign-in into its account slot. Returns the email saved, or
    *  null when nobody is signed in. Called before every swap and after a
    *  login, so agy's own token refreshes are folded back into the copy. */
