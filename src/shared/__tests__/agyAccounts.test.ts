@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AGY_DEFAULT_COOLDOWN_MS,
   agyAccountRow,
+  agyModelFamily,
   chooseAgyAccount,
   evaluateAgyQuota,
   type AgyAccount,
@@ -63,6 +64,17 @@ describe('evaluateAgyQuota', () => {
     const s: AgyAccountQuotaSnapshot = { quota: { 'gemini-weekly': { remaining_fraction: 0, reset_in_seconds: twoDays } }, quotaCapturedAtMs: captured };
     const v = evaluateAgyQuota(s, captured + AGY_DEFAULT_COOLDOWN_MS + 1000);
     expect(v).toMatchObject({ usable: false, availableAtMs: captured + twoDays * 1000 });
+  });
+
+  it('does not hold a Gemini launch on spent third-party quota', () => {
+    const s = snap({ 'gemini-5h': [0.9, LATER], 'gemini-weekly': [0.8, LATER], '3p-5h': [0.5, LATER], '3p-weekly': [0, LATER] });
+    expect(evaluateAgyQuota(s, NOW)).toEqual({ usable: true, remaining: 0.8, availableAtMs: null });
+    expect(evaluateAgyQuota(s, NOW, '3p')).toMatchObject({ usable: false, availableAtMs: Date.parse(LATER) });
+  });
+
+  it('holds a third-party launch on its own buckets only', () => {
+    const s = snap({ 'gemini-5h': [0, LATER], '3p-5h': [0.7, LATER] });
+    expect(evaluateAgyQuota(s, NOW, '3p')).toEqual({ usable: true, remaining: 0.7, availableAtMs: null });
   });
 
   it('ignores buckets that do not gate a launch', () => {
@@ -137,5 +149,18 @@ describe('agy quota error in pane output', () => {
     det.feed('Antigravity CLI 1.2.14\r\n');
     det.feed('Error: RESOURCE_EXHAUSTED: you are out of quota for this model\r\n');
     expect(events.some((e) => e.agent === 'Antigravity CLI' && e.status === 'error' && e.message === 'Quota exhausted')).toBe(true);
+  });
+});
+
+describe('agyModelFamily', () => {
+  it.each([
+    [null, 'gemini'],
+    ['', 'gemini'],
+    ['gemini-3.8-flash-low', 'gemini'],
+    ['Gemini-3-pro', 'gemini'],
+    ['claude-sonnet-4-5', '3p'],
+    ['gpt-oss-120b-medium', '3p'],
+  ])('%s → %s', (id, family) => {
+    expect(agyModelFamily(id)).toBe(family);
   });
 });

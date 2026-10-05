@@ -9,9 +9,10 @@ import {
   isCompoundLine,
   isNewSessionLaunch,
   launchInlineEnvKeys,
+  launchOptionValue,
   launchStem,
 } from '../../shared/accountQuota';
-import type { AgyLaunchDecision } from '../../shared/agyAccounts';
+import { agyModelFamily, type AgyLaunchDecision, type AgyModelFamily } from '../../shared/agyAccounts';
 import { getAccountRotationService, type RotationDecision } from './AccountRotationService';
 import { getAgyAccountService } from './AgyAccountService';
 import { VENDOR_ENV_KEYS, type Vendor } from './accountStore';
@@ -25,7 +26,7 @@ export interface QuotaLaunchOptions {
 export interface AccountQuotaGateDeps {
   prepareLaunch?: (vendor: Vendor, workspaceId: string | undefined) => Promise<RotationDecision>;
   /** agy branch: its machine-wide sign-in is handled by the agy account service. */
-  prepareAgyLaunch?: () => Promise<AgyLaunchDecision>;
+  prepareAgyLaunch?: (family: AgyModelFamily) => Promise<AgyLaunchDecision>;
   platform?: string;
 }
 
@@ -72,14 +73,15 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
 }
 
 export interface AgyQuotaGateDeps {
-  prepareLaunch?: () => Promise<AgyLaunchDecision>;
+  prepareLaunch?: (family: AgyModelFamily) => Promise<AgyLaunchDecision>;
 }
 
 /**
  * The agy branch of the launch gate. agy keeps one machine-wide sign-in, so the
  * agy account service may switch that sign-in to a registered account with
  * quota before the line runs (only with its switch on, never away from an
- * account picked by hand). The same rules as Claude and Codex apply: only a
+ * account picked by hand), judged on the quota of the model family the line
+ * launches. The same rules as Claude and Codex apply: only a
  * new session is gated (not `--continue`, `--conversation` or a management
  * subcommand), a fan-out worker's model-env marker is kept, and a hold never
  * drops commands chained after the launch. Never throws.
@@ -92,8 +94,10 @@ export async function withAgyAccountQuota<T extends QuotaLaunchOptions>(
   const { marker, command } = splitModelEnvMarker(options.initialCommand);
   if (launchStem(command) !== 'agy' || !isNewSessionLaunch('agy', command)) return options;
   try {
-    const prepare = deps.prepareLaunch ?? (() => getAgyAccountService().prepareLaunch());
-    const decision = await prepare();
+    // Only the quota of the model family this launch runs on decides (`--model`, else agy's Gemini default).
+    const family = agyModelFamily(launchOptionValue(command, '--model'));
+    const prepare = deps.prepareLaunch ?? ((f: AgyModelFamily) => getAgyAccountService().prepareLaunch(f));
+    const decision = await prepare(family);
     if (decision.ok) return options;
     if (isCompoundLine(command)) {
       console.warn('[agy-accounts] agy accounts are all out of quota, but the launch line runs other commands too: launching unchanged');

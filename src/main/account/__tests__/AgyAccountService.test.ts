@@ -185,6 +185,17 @@ describe('AgyAccountService', () => {
     expect(new AgyVault(backend).activeEmail()).toBe('a@x.com');
   });
 
+  it('gates on the launched model family: spent third-party quota never holds Gemini', async () => {
+    const s = make();
+    await withAccounts(s, ['a@x.com']);
+    snapshots.set('a@x.com', { quota: {
+      'gemini-5h': { remaining_fraction: 0.9, reset_time: LATER },
+      '3p-weekly': { remaining_fraction: 0, reset_time: LATER },
+    } });
+    expect(await s.prepareLaunch()).toMatchObject({ ok: true });
+    expect(await s.prepareLaunch('3p')).toEqual({ ok: false, reason: 'all-exhausted', availableAtMs: Date.parse(LATER) });
+  });
+
   it('holds the launch when every account is out, without swapping', async () => {
     const s = make();
     await withAccounts(s, ['a@x.com', 'b@x.com']);

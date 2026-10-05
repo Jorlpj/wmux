@@ -152,6 +152,18 @@ export function isNewSessionLaunch(vendor: QuotaProvider, command: string | unde
   return first === undefined || !NON_SESSION_SUBCOMMANDS[vendor].has(first);
 }
 
+/** Value of a launch option (`--model x` or `--model=x`), unquoted; null when absent. */
+export function launchOptionValue(command: string | undefined, name: string): string | null {
+  const tokens = launchTokens(command);
+  const args = tokens.slice(tokens.findIndex((t) => !ENV_ASSIGNMENT.test(t)) + 1);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i].replace(/["']/g, '');
+    if (arg === name) return args[i + 1]?.replace(/["']/g, '') ?? null;
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+  }
+  return null;
+}
+
 /** Whether the line does more than launch the agent — chaining (`;`, `&&`,
  *  `||`, `|`, `&`, a newline) or redirection (`>`, `>>`, `<`) outside quotes,
  *  or command substitution (`$(`, backticks) outside single quotes — so
