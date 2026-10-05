@@ -17,6 +17,8 @@
 export interface AgyQuotaBucket {
   remaining_fraction?: number;
   reset_time?: string;
+  /** Countdown to the reset, relative to when the sensor captured the snapshot. */
+  reset_in_seconds?: number;
 }
 
 /** The per-account snapshot `quota-sink.js` writes. */
@@ -79,10 +81,18 @@ export function normalizeAgyEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-function resetMs(bucket: AgyQuotaBucket): number | null {
-  if (typeof bucket.reset_time !== 'string') return null;
-  const t = Date.parse(bucket.reset_time);
-  return Number.isFinite(t) ? t : null;
+/** Reset time of a bucket: `reset_time` when reported, else `reset_in_seconds` anchored to the capture
+ *  time (as agyAdapter does), never to now, which would push the reset later on every read. */
+function resetMs(bucket: AgyQuotaBucket, capturedAtMs: number | undefined): number | null {
+  if (typeof bucket.reset_time === 'string') {
+    const t = Date.parse(bucket.reset_time);
+    return Number.isFinite(t) && t > 0 ? t : null;
+  }
+  if (typeof bucket.reset_in_seconds === 'number' && Number.isFinite(bucket.reset_in_seconds)
+    && typeof capturedAtMs === 'number' && Number.isFinite(capturedAtMs)) {
+    return capturedAtMs + Math.round(bucket.reset_in_seconds * 1000);
+  }
+  return null;
 }
 
 /**
@@ -103,7 +113,7 @@ export function evaluateAgyQuota(
   for (const name of AGY_GATING_BUCKETS) {
     const bucket = quota[name];
     if (!bucket || typeof bucket.remaining_fraction !== 'number' || !Number.isFinite(bucket.remaining_fraction)) continue;
-    const reset = resetMs(bucket);
+    const reset = resetMs(bucket, snapshot?.quotaCapturedAtMs);
     const refilled = reset !== null && reset <= now;
     const fraction = refilled ? 1 : bucket.remaining_fraction;
     remaining = remaining === null ? fraction : Math.min(remaining, fraction);
