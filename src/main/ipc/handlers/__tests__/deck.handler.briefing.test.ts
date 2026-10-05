@@ -109,9 +109,11 @@ const decisions = new Map<string, FakeDecision>();
 vi.mock('../../../deck/deckDecisionStore', () => ({
   onDecisionsChanged: vi.fn(() => () => undefined),
   isIssueProposalDecision: vi.fn(() => false),
+  isMainOwnedDecision: vi.fn(() => false),
   loadWorkspaceDecision: vi.fn((ws: string) => decisions.get(ws) ?? null),
   loadDeckDecisions: vi.fn(() => Object.fromEntries(decisions.entries())),
   hasPendingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),
+  hasBrainBlockingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),
   resolveDecision: vi.fn(async () => null),
   clearResolvedDecision: vi.fn(async () => undefined),
   clearDecision: vi.fn(async () => undefined),

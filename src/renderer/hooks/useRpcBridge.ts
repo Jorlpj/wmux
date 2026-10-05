@@ -64,6 +64,7 @@ import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
+import type { MoaPendingDecision } from '../../shared/moa';
 import { createSidebarDropLog } from '../../shared/phoneFleetSidebar';
 import { buildFleetTriage, fleetTriageScopeError } from '../utils/fleetTriage';
 import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
@@ -301,6 +302,9 @@ function submitToPty(ptyId: string, text: string): void {
 /** Whether an A2A delivery skips the approval gate: main-stamped operator
  *  origin only, and not when the send asks for the gated delivery (the Git
  *  page's hand-off, which also waits for the person to stop typing). */
+/** The shape of a task id main may preset (generateId('task')). */
+const PRESET_TASK_ID_RE = /^task-[0-9a-f-]{36}$/;
+
 function a2aOperatorOrigin(params: RpcParams): boolean {
   return params.operatorOrigin === true && params.gatedDelivery !== true;
 }
@@ -330,6 +334,8 @@ interface NewTaskDelivery {
   expectAgent?: string;
   /** With waitQuiet: main's deadline for the whole delivery (epoch ms). */
   deadlineAt?: number;
+  /** With waitQuiet: main's own check for this delivery (GatedSubmitOptions.guardKey). */
+  guardKey?: string;
 }
 
 /** The fields a new-task delivery's receipt carries about the fresh-context
@@ -370,6 +376,7 @@ async function deliverA2aText(
     ...(newTask?.waitQuiet ? { waitQuiet: true } : {}),
     ...(newTask?.waitQuiet && newTask.expectAgent ? { expectAgent: newTask.expectAgent } : {}),
     ...(newTask?.waitQuiet && newTask.deadlineAt !== undefined ? { deadlineAt: newTask.deadlineAt } : {}),
+    ...(newTask?.waitQuiet && newTask.guardKey ? { guardKey: newTask.guardKey } : {}),
   });
   if (!result.ok) return { ptyId: null, refused: result };
   const fresh = freshContextOf(result);
@@ -378,6 +385,9 @@ async function deliverA2aText(
 
 /** Sender-facing hints for a delivery the gate withheld, by reason. */
 const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
+  guard_refused:
+    "wmux's own check for this delivery refused it right before the paste or the Enter, so nothing was " +
+    'submitted. The task is stored; the receiver can find it with a2a_task_query.',
   approval_pending:
     'The target pane is waiting on an approval, so the message was not submitted there: an Enter would ' +
     'answer the prompt. The task is stored; the receiver can find it with a2a_task_query. Send again once ' +
@@ -925,7 +935,16 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // Phone Fleet only (reached through main's PhoneWorkspaces, never the
     // public RPC router): the sidebar's own labels, projected and bounded.
     const drops = createSidebarDropLog();
-    const snapshot = buildPhoneSidebarSnapshot(store, drops.report);
+    // Pending hand-off cards for the read-only notice; main's in-memory list,
+    // read per call so it is never staler than the snapshot itself.
+    let moaDecisions: MoaPendingDecision[] | undefined;
+    try {
+      const reply = await window.electronAPI?.deck?.moa?.decisions?.();
+      if (Array.isArray(reply?.decisions)) moaDecisions = reply.decisions;
+    } catch {
+      drops.report('moa.decisions');
+    }
+    const snapshot = buildPhoneSidebarSnapshot(store, drops.report, moaDecisions);
     const dropped = drops.summary();
     if (dropped) console.warn(`[phone] sidebar projection left out: ${dropped}`);
     return snapshot;
@@ -3004,6 +3023,17 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       const available = store.workspaces.map((w) => w.name).join(', ');
       return { error: `a2a.task.send: target "${to}" not found. Available: ${available}` };
     }
+    // Main stamps this on a new task from Moa, the HQ brain (never from the
+    // wire): work for another workspace goes through the operator's card.
+    const hqOnly = params.hqHandoffOnly as { allowedTargets?: unknown } | undefined;
+    if (!taskId && hqOnly && Array.isArray(hqOnly.allowedTargets) && !hqOnly.allowedTargets.includes(target.id)) {
+      return {
+        error:
+          `a2a.task.send: Moa does not send work straight to another workspace's agent ("${target.name}"). ` +
+          'Call moa_propose_handoff with that pane (ptyId from pane_list) and the task as plain instructions; ' +
+          'the operator approves it with one click and it arrives as their own instruction.',
+      };
+    }
     // The same-workspace self-guard moved BELOW pane-address resolution (see
     // decideSameWsSend) so a precise sibling-pane address is honored. A same-ws
     // send is now rejected only when it has NO address (ambiguous) or resolves to
@@ -3084,7 +3114,13 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     const toAnchor = resolvedAddr ?? resolvedFallback;
 
     const initialMessage: Message = { kind: 'message', messageId: generateId('msg'), role: 'user', parts };
-    const newTaskId = generateId('task');
+    // A task id main minted for its own operator send (Moa's hand-off names the
+    // task in the text it delivers); main keeps it on the operator lane only.
+    const presetTaskId = typeof params.presetTaskId === 'string' && PRESET_TASK_ID_RE.test(params.presetTaskId)
+      && !store.getTask(params.presetTaskId)
+      ? params.presetTaskId
+      : null;
+    const newTaskId = presetTaskId ?? generateId('task');
 
     if (executeRequested) {
       const cwd = typeof params.cwd === 'string' ? params.cwd : null;
@@ -3204,6 +3240,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             waitQuiet: true,
             ...(liveMeta?.agentName ? { expectAgent: liveMeta.agentName } : {}),
             ...(typeof params.deliveryDeadlineAt === 'number' ? { deadlineAt: params.deliveryDeadlineAt } : {}),
+            ...(typeof params.deliveryGuardKey === 'string' ? { guardKey: params.deliveryGuardKey } : {}),
           }
         : {};
       let write: A2aPtyWrite = { ptyId: null };

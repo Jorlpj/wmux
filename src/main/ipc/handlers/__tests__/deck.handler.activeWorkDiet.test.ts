@@ -119,9 +119,11 @@ vi.mock('../../../deck/deckScheduleStore', () => ({
 vi.mock('../../../deck/deckDecisionStore', () => ({
   onDecisionsChanged: vi.fn(() => () => undefined),
   isIssueProposalDecision: vi.fn(() => false),
+  isMainOwnedDecision: vi.fn(() => false),
   loadWorkspaceDecision: vi.fn(() => null),
   loadDeckDecisions: vi.fn(() => ({})),
   hasPendingDecision: vi.fn(() => false),
+  hasBrainBlockingDecision: vi.fn(() => false),
   resolveDecision: vi.fn(async () => null),
   clearResolvedDecision: vi.fn(async () => undefined),
   clearDecision: vi.fn(async () => undefined),
