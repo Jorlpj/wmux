@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { withAccountQuota, withAgyAccountQuota, type QuotaLaunchOptions } from '../accountQuotaGate';
-import { MODEL_ENV_MARKER } from '../../../shared/workerLaunch';
+import { MODEL_ENV_MARKER, workerLaunchFlags } from '../../../shared/workerLaunch';
+import { buildInitialCommand, workerLaunchCommand } from '../../worktask/FanOutService';
 import type { AgyLaunchDecision } from '../../../shared/agyAccounts';
 
 const OUT: AgyLaunchDecision = { ok: false, reason: 'all-exhausted', availableAtMs: null };
@@ -73,5 +74,49 @@ describe('withAgyAccountQuota', () => {
     const out = await withAccountQuota<QuotaLaunchOptions>({ initialCommand: 'agy' }, { prepareAgyLaunch, prepareLaunch });
     expect(out?.initialCommand).toMatch(/^echo "wmux: agy was not started/);
     expect(prepareLaunch).not.toHaveBeenCalled();
+  });
+});
+
+// A fan-out task's line reads its prompt file with command substitution. That is wmux's own argument,
+// not a chain the user typed, so a hold must still apply. Lines come from the real builder.
+describe('account quota gate — fan-out lines with a prompt file', () => {
+  const posixPath = "/tmp/wmux tasks/it's $HOME `x`/prompt.md";
+  const winPath = "C:\\Users\\o'brien\\wmux $env:X\\prompt.md";
+
+  it.each([
+    ['linux', posixPath],
+    ['win32', winPath],
+  ] as const)('holds an agy fan-out launch on %s when every account is out', async (platform, promptPath) => {
+    const line = buildInitialCommand('agy', promptPath, platform);
+    expect(line).toContain('$(');
+    const { run } = gate(OUT, line);
+    expect((await run)?.initialCommand).toMatch(/^echo "wmux: agy was not started/);
+  });
+
+  it('holds a claude fan-out worker line (model-env marker, prompt file, permission flags)', async () => {
+    const line = `${workerLaunchCommand('claude', posixPath, { platform: 'linux' }).command} ${workerLaunchFlags('auto')}`;
+    expect(line.startsWith(MODEL_ENV_MARKER)).toBe(true);
+    const prepareLaunch = vi.fn(async () => ({ kind: 'hold' as const, availableAtMs: null }));
+    const out = await withAccountQuota<QuotaLaunchOptions>({ workspaceId: 'ws', initialCommand: line }, { prepareLaunch });
+    expect(out?.initialCommand).toBe(`${MODEL_ENV_MARKER}echo "wmux: claude was not started - every registered claude account is out of quota."`);
+  });
+
+  it.each([
+    ['linux', posixPath],
+    ['win32', winPath],
+  ] as const)('still never drops a command chained after a %s fan-out line', async (platform, promptPath) => {
+    const line = `${buildInitialCommand('agy', promptPath, platform)} && ./build.sh`;
+    const { run } = gate(OUT, line);
+    expect((await run)?.initialCommand).toBe(line);
+  });
+
+  it.each([
+    `agy -i "$(cat 'p.md'; rm -rf x)"`,
+    `agy -i "$(cat 'p.md')" ; ./build.sh`,
+    `agy -i "$(cat "p.md")"`,
+    `agy -i "$(cat 'a')" && ./build.sh "$(cat 'b')"`,
+  ])('treats a substitution that is not wmux\'s exact prompt read as a chain: %s', async (line) => {
+    const { run } = gate(OUT, line);
+    expect((await run)?.initialCommand).toBe(line);
   });
 });
