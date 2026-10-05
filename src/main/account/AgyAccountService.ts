@@ -368,6 +368,9 @@ export class AgyAccountService {
         snap = this.snapshot(family);
       }
     }
+    // A sign-in made outside wmux that is not registered cannot be measured: leave it alone, as #1740
+    // leaves a workspace with no bound account on the CLI's own login.
+    if (snap.activeEmail && !snap.accounts.some((a) => a.active)) return { ok: true, account: null, switched: false };
     const manual = this.file().manualEmail;
     if (!snap.autoRotate || (manual && snap.activeEmail === manual)) {
       // Rotation off, or the active account is the user's own pick: never swap, but still refuse an

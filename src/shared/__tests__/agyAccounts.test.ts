@@ -135,9 +135,9 @@ describe('chooseAgyAccount', () => {
     expect(d).toEqual({ ok: false, reason: 'all-exhausted', availableAtMs: Date.parse(LATER) });
   });
 
-  it('tries a never-measured account only after measured ones', () => {
+  it('never switches to a never-measured account, and never holds while one is left', () => {
     const d = chooseAgyAccount([row('a@x.com', snap({ 'gemini-5h': [0, LATER] }), true), row('d@x.com', null)]);
-    expect(d).toMatchObject({ ok: true, switched: true, account: { email: 'd@x.com' } });
+    expect(d).toEqual({ ok: true, account: null, switched: false });
   });
 
   it('refuses when every account is out and names the earliest reset', () => {
