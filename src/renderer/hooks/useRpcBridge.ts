@@ -14,7 +14,7 @@ import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
 import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { applyTaskQueryView } from '../../shared/a2aTaskQueryView';
-import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
+import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds, getWorkspaceRemoteSessions } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, launchRefusesPositionalPrompt, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import {
@@ -1035,6 +1035,36 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           `workspace.close: refusing to close "${id}" — it is the only workspace, ` +
           'and wmux always keeps one open. Create another workspace first.',
       };
+    }
+    // A CLI/pipe close of a workspace with agents still running in it needs
+    // `force`: closing it kills those agents mid-work, and a caller holding the
+    // wrong id (a fan-out accept's owner workspace read as a task's) did
+    // exactly that. Same "has a live agent" test as Fleet: a detected agent
+    // name on any pty the workspace owns, stashed panes included. The UI close
+    // paths are unchanged — the sidebar asks for confirmation.
+    if (params.force !== true) {
+      const agents = getWorkspacePtyIds(ws)
+        .map((ptyId) => store.surfaceAgent[ptyId]?.name)
+        .filter((name): name is string => !!name);
+      if (agents.length > 0) {
+        return {
+          error:
+            `workspace.close: refusing to close "${ws.name}" (${id}) — ${agents.length} agent pane(s) ` +
+            `are still running in it (${[...new Set(agents)].join(', ')}). ` +
+            'Check that this is the workspace you mean, then re-run with --force.',
+        };
+      }
+      // A remote-terminal surface has no local pty, so no agent is detected
+      // in it here — yet the close ends its session on the remote host. Treat
+      // every session the workspace owns there as possibly holding one.
+      const remote = getWorkspaceRemoteSessions(ws).length;
+      if (remote > 0) {
+        return {
+          error:
+            `workspace.close: refusing to close "${ws.name}" (${id}) — closing it ends ${remote} ` +
+            'remote session(s) it owns, and whatever runs in them. Re-run with --force if that is intended.',
+        };
+      }
     }
     // #977 — getWorkspacePtyIds, not the visible tree: closing a workspace
     // kills everything it owns, and a stashed pane left running would be an

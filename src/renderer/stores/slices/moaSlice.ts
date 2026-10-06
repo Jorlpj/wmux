@@ -49,6 +49,9 @@ export interface MoaSlice {
    *  (`committed: true`). Kept so a retry finishes the setup on the same
    *  workspace instead of creating another one. */
   moaHqPendingId: string | null;
+  /** A createMoaHq call is running. Every caller (the missing notice, Settings
+   *  → Recreate, first run) joins it instead of starting a second setup. */
+  moaHqSetupInFlight: boolean;
   refreshMoa: () => Promise<void>;
   /** Create the app-owned "Moa" workspace (not activated) and make it the HQ.
    *  First run and "Recreate Moa workspace" both use this. With a pending
@@ -79,58 +82,91 @@ export function listedWorkspaces<T extends { id: string }>(list: readonly T[], h
   return hqId ? list.filter((w) => w.id !== hqId) : [...list];
 }
 
-export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]], [], MoaSlice> = (set, get) => ({
-  moa: null,
-  moaHqSeed: readMoaHqSeed(),
-  moaHqPendingId: null,
+export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]], [], MoaSlice> = (set, get) => {
+  /** The running createMoaHq, shared by every caller until it settles. */
+  let inFlightSetup: Promise<MoaSetupResult> | null = null;
+  return {
+    moa: null,
+    moaHqSeed: readMoaHqSeed(),
+    moaHqPendingId: null,
+    moaHqSetupInFlight: false,
 
-  refreshMoa: async () => {
-    const api = window.electronAPI?.deck?.moa;
-    if (!api?.state) return;
-    let next: MoaState;
-    try {
-      next = await api.state();
-    } catch {
-      return; // keep the last known state
-    }
-    // An answer that is not Moa's state (an older main, a test double) is
-    // ignored the same way: keep what we had.
-    if (!next || typeof next !== 'object' || !next.hq || !next.config) return;
-    const prev = get().moa;
-    set((state: StoreState) => { state.moa = next; });
-    writeMoaHqSeed(next.hq.workspaceId);
-    // A Diff "Ask" still queued for the panel's brain: with Moa off or its HQ
-    // down the panel is only a card, so nothing sends it now, and sending it
-    // when Moa returns would fire an old question out of the blue. Drop it.
-    const block = moaQuestionBlock(next);
-    if (block && get().pendingBrainPrompt) {
-      get().setPendingBrainPrompt(null);
-      get().pushToast({
-        level: 'warn',
-        message: t(block === 'off' ? 'moa.panel.queuedDroppedOff' : 'moa.panel.queuedDroppedHq'),
+    refreshMoa: async () => {
+      const api = window.electronAPI?.deck?.moa;
+      if (!api?.state) return;
+      let next: MoaState;
+      try {
+        next = await api.state();
+      } catch {
+        return; // keep the last known state
+      }
+      // An answer that is not Moa's state (an older main, a test double) is
+      // ignored the same way: keep what we had.
+      if (!next || typeof next !== 'object' || !next.hq || !next.config) return;
+      const prev = get().moa;
+      set((state: StoreState) => { state.moa = next; });
+      writeMoaHqSeed(next.hq.workspaceId);
+      // A Diff "Ask" still queued for the panel's brain: with Moa off or its HQ
+      // down the panel is only a card, so nothing sends it now, and sending it
+      // when Moa returns would fire an old question out of the blue. Drop it.
+      const block = moaQuestionBlock(next);
+      if (block && get().pendingBrainPrompt) {
+        get().setPendingBrainPrompt(null);
+        get().pushToast({
+          level: 'warn',
+          message: t(block === 'off' ? 'moa.panel.queuedDroppedOff' : 'moa.panel.queuedDroppedHq'),
+        });
+      }
+      // Moa turned off while its workspace is on screen: the HQ is hidden from
+      // the list, so leave it for the first listed workspace.
+      const st = get();
+      const hq = moaHqId(st);
+      if (prev?.config.enabled && !next.config.enabled && hq && st.activeWorkspaceId === hq) {
+        const first = listedWorkspaces(st.workspaces, hq)[0];
+        if (first) st.setActiveWorkspace(first.id);
+      }
+    },
+
+    createMoaHq: () => {
+      // Single flight: a second call while one runs would see the HQ still
+      // missing (refreshMoa has not answered yet) only after the first pushed its
+      // workspace — it would then mint a NEW id and a setup that resets Moa's
+      // settings. Every caller gets the running call's answer instead.
+      if (inFlightSetup) return inFlightSetup;
+      set((state: StoreState) => { state.moaHqSetupInFlight = true; });
+      inFlightSetup = runCreateMoaHq().finally(() => {
+        inFlightSetup = null;
+        set((state: StoreState) => { state.moaHqSetupInFlight = false; });
       });
-    }
-    // Moa turned off while its workspace is on screen: the HQ is hidden from
-    // the list, so leave it for the first listed workspace.
-    const st = get();
-    const hq = moaHqId(st);
-    if (prev?.config.enabled && !next.config.enabled && hq && st.activeWorkspaceId === hq) {
-      const first = listedWorkspaces(st.workspaces, hq)[0];
-      if (first) st.setActiveWorkspace(first.id);
-    }
-  },
+      return inFlightSetup;
+    },
 
-  createMoaHq: async () => {
+    openMoaHq: () => {
+      const hq = get().moa?.hq;
+      if (!hq?.workspaceId || hq.state !== 'ok') return;
+      get().setActiveWorkspace(hq.workspaceId);
+    },
+  };
+
+  async function runCreateMoaHq(): Promise<MoaSetupResult> {
     const api = window.electronAPI?.deck?.moa;
     if (!api?.setup) return { ok: false, code: 'unavailable' };
     const pending = get().moaHqPendingId;
     const reused = pending && get().workspaces.some((w) => w.id === pending) ? pending : null;
     const reuse = reused !== null;
+    // The HQ's workspace is gone (closed, or a session load lost it): bring it
+    // back under the SAME id. Everything Moa keeps is keyed by that id — the
+    // brain's session and home (so its conversation resumes), its decisions,
+    // work and settings — so a new id would start Moa over from nothing.
+    const hq = get().moa?.hq;
+    const lost = !reuse && hq?.state === 'hq-missing' && hq.workspaceId
+      && !get().workspaces.some((w) => w.id === hq.workspaceId) ? hq.workspaceId : null;
     let id = reused ?? '';
     if (!reuse) {
       set((state: StoreState) => {
         const ordinal = state.nextWorkspaceOrdinal ?? 1;
         const ws = createWorkspace(MOA_WORKSPACE_NAME, ordinal);
+        if (lost) ws.id = lost;
         state.nextWorkspaceOrdinal = ordinal + 1;
         state.workspaces.push(ws);
         id = ws.id;
@@ -138,7 +174,7 @@ export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]]
     }
     let result: MoaSetupResult;
     try {
-      result = await api.setup(id);
+      result = await api.setup(id, lost ? { rebind: true } : undefined);
     } catch {
       result = { ok: false, code: 'failed' };
     }
@@ -157,11 +193,5 @@ export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]]
     }
     await get().refreshMoa();
     return result;
-  },
-
-  openMoaHq: () => {
-    const hq = get().moa?.hq;
-    if (!hq?.workspaceId || hq.state !== 'ok') return;
-    get().setActiveWorkspace(hq.workspaceId);
-  },
-});
+  }
+};
