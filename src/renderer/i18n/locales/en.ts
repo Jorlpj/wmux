@@ -1277,6 +1277,7 @@ export const en = {
   'settings.computerUseNoHelperNote': 'This wmux build does not include the helper for this OS yet, so computer use cannot be turned on. It comes in a later release.',
   'settings.computerUseUnsupportedNote': 'wmux has no helper for this OS, so computer use cannot be turned on.',
   'settings.computerUseElevatedNote': 'wmux is running as administrator, and computer use refuses to run elevated because it could drive administrator apps. Restart wmux without “Run as administrator” to use it.',
+  'settings.computerUseHelperUnsignedNote': 'This helper is not code-signed; Windows Defender or SmartScreen may warn about it.',
   'settings.computerUseStopKeyNoHelperDesc': 'Not held: this build has no helper, so there is nothing for it to stop.',
   'settings.computerUseStopKeyOffDesc': 'Held only while computer use is on; then pressing it anywhere stops all agents at once.',
   'settings.computerUseOnWithoutHelperNote': 'Computer use is on, but this build has no helper: agents still see the tool and every call fails. Turn it off for now.',

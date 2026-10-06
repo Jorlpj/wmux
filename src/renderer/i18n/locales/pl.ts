@@ -1261,6 +1261,7 @@ export const pl = {
   'settings.computerUseNoHelperNote': 'Ta wersja wmux nie zawiera jeszcze programu pomocniczego dla tego systemu, więc nie można włączyć sterowania komputerem. Pojawi się w późniejszym wydaniu.',
   'settings.computerUseUnsupportedNote': 'wmux nie ma programu pomocniczego dla tego systemu, więc nie można włączyć sterowania komputerem.',
   'settings.computerUseElevatedNote': 'wmux działa jako administrator, a sterowanie komputerem nie uruchamia się z podwyższonymi uprawnieniami, bo mogłoby sterować aplikacjami administratora. Uruchom wmux ponownie bez opcji „Uruchom jako administrator”.',
+  'settings.computerUseHelperUnsignedNote': 'Ten program pomocniczy nie ma podpisu kodu; Windows Defender lub SmartScreen mogą o nim ostrzegać.',
   'settings.computerUseStopKeyNoHelperDesc': 'Nieaktywny: ta wersja nie ma programu pomocniczego, więc nie ma czego zatrzymywać.',
   'settings.computerUseStopKeyOffDesc': 'Aktywny tylko, gdy sterowanie komputerem jest włączone; wtedy naciśnięcie go w dowolnym miejscu zatrzymuje wszystkich agentów naraz.',
   'settings.computerUseOnWithoutHelperNote': 'Sterowanie komputerem jest włączone, ale ta wersja nie ma programu pomocniczego: agenci nadal widzą to narzędzie, a każde wywołanie kończy się błędem. Na razie je wyłącz.',

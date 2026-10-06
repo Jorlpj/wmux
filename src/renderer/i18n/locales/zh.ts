@@ -1365,6 +1365,7 @@ export const zh = {
   'settings.computerUseNoHelperNote': '此 wmux 版本尚未包含适用于此系统的辅助程序，因此无法开启电脑操控。它将在后续版本中提供。',
   'settings.computerUseUnsupportedNote': 'wmux 没有适用于此系统的辅助程序，因此无法开启电脑操控。',
   'settings.computerUseElevatedNote': 'wmux 正以管理员身份运行。电脑操控可能借此操作管理员程序，因此拒绝以提升的权限运行。请不使用“以管理员身份运行”重新启动 wmux。',
+  'settings.computerUseHelperUnsignedNote': '此辅助程序没有代码签名；Windows Defender 或 SmartScreen 可能会对其发出警告。',
   'settings.computerUseStopKeyNoHelperDesc': '未占用：此版本没有辅助程序，因此没有可停止的操作。',
   'settings.computerUseStopKeyOffDesc': '仅在开启电脑操控时占用；届时在任意位置按下即可一次停止所有代理。',
   'settings.computerUseOnWithoutHelperNote': '电脑操控已开启，但此版本没有辅助程序：代理仍能看到该工具，但每次调用都会失败。请暂时将其关闭。',
