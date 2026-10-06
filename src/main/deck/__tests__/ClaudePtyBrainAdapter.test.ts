@@ -35,6 +35,7 @@ import {
   buildDenyScript,
   buildBrainLaunchCommand,
   flattenPromptForPty,
+  tuiDialogExcerpt,
   classifyReportedPrompt,
   lastPasteModeToggle,
   printedText,
@@ -663,6 +664,26 @@ describe('the spawned command line', () => {
   });
 });
 
+// Claude Code 2.1.290's folder-trust dialog as the pty received it (the path
+// shortened). Ink places every word with a column move and colours it mid-line.
+const REAL_TRUST_DIALOG = "\u001b7\u001b[r\u001b8\u001b[?25h\u001b[?25l\u001b[?2004h\u001b[?2031h\u001b[?1004h\r\r\n\u001b[38;5;220m────────────────────────────────────────────────────────────────────────────────\u001b[39m\r\r\n\u001b[2G\u001b[38;5;220m\u001b[1mAccessing\u001b[12Gworkspace:\u001b[22m\u001b[39m\r\r\n\r\r\n\u001b[2G\u001b[1m/Users/me/projects/real\u001b[22m\r\r\n\u001b[2G\u001b[1mdlg/cwd\u001b[22m\r\r\n\r\r\n\u001b[2GQuick\u001b[8Gsafety\u001b[15Gcheck:\u001b[22GIs\u001b[25Gthis\u001b[30Ga\u001b[32Gproject\u001b[40Gyou\u001b[44Gcreated\u001b[52Gor\u001b[55Gone\u001b[59Gyou\u001b[63Gtrust?\u001b[70G(Like\u001b[76Gyour\r\r\n\u001b[2Gown\u001b[6Gcode,\u001b[12Ga\u001b[14Gwell-known\u001b[25Gopen\u001b[30Gsource\u001b[37Gproject,\u001b[46Gor\u001b[49Gwork\u001b[54Gfrom\u001b[59Gyour\u001b[64Gteam).\u001b[71GIf\u001b[74Gnot,\r\r\n\u001b[2Gtake\u001b[7Ga\u001b[9Gmoment\u001b[16Gto\u001b[19Greview\u001b[26Gwhat's\u001b[33Gin\u001b[36Gthis\u001b[41Gfolder\u001b[48Gfirst.\r\r\n\r\r\n\u001b[2GClaude\u001b[9GCode'll\u001b[17Gbe\u001b[20Gable\u001b[25Gto\u001b[28Gread,\u001b[34Gedit,\u001b[40Gand\u001b[44Gexecute\u001b[52Gfiles\u001b[58Ghere.\r\r\n\r\r\n\u001b[2G\u001b[38;5;246mSecurity\u001b[11Gguide\u001b[39m\r\r\n\r\r\n\u001b[2G\u001b[38;5;153m❯\u001b[4GNo,\u001b[8Gexit\u001b[39m\r\r\n\u001b[4GYes,\u001b[9GI\u001b[11Gtrust\u001b[17Gthis\u001b[22Gfolder\r\r\n\r\r\n\u001b[2G\u001b[38;5;246mEnter\u001b[8Gto\u001b[11Gconfirm\u001b[19G·\u001b[21GEsc\u001b[25Gto\u001b[28Gcancel\u001b[39m\r\r\n\u001b[1C\u001b[4A\u001b[>0q\u001b[?u\u001b[c";
+
+describe('tuiDialogExcerpt', () => {
+  it('reads Claude Code\'s own trust dialog as whole lines, options last', () => {
+    const excerpt = tuiDialogExcerpt(REAL_TRUST_DIALOG);
+    const lines = excerpt.split('\n');
+    expect(lines.slice(-3)).toEqual(['❯ No, exit', 'Yes, I trust this folder', 'Enter to confirm · Esc to cancel']);
+    expect(lines).toContain("Claude Code'll be able to read, edit, and execute files here.");
+    expect(excerpt.length).toBeLessThanOrEqual(300);
+    expect(excerpt).not.toContain('\u001b');
+    expect(excerpt).not.toMatch(/[\u2500-\u257f]/);
+  });
+
+  it('keeps a line whole when colour codes sit inside it', () => {
+    expect(tuiDialogExcerpt('\u001b[2G\u001b[38;5;153m❯\u001b[4G\u001b[1mYes\u001b[22m, proceed\u001b[39m\r\n')).toBe('❯ Yes, proceed');
+  });
+});
+
 describe('flattenPromptForPty', () => {
   it('collapses newlines and control characters — the TUI submits on Enter', () => {
     expect(flattenPromptForPty('do this\nthen that\x1b[A')).toBe('do this then that [A');
@@ -754,6 +775,59 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     expect(host.writes).toEqual([]);
     // And the pty survives, so answering it there resumes the same session.
     expect(host.destroyed).toEqual([]);
+    adapter.dispose();
+  });
+
+  // The blocked send leaves the pty alive, so the NEXT send skips the spawn.
+  // It used to type the message and Enter into the dialog still open, which
+  // picked the dialog's default ("exit"): claude died with code 1 and every
+  // send alternated between the blocked error and a dead session.
+  it('never types into a dialog still open on a later send, and resumes once SessionStart lands', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    host.nextBanner =
+      '\x1b[?25l\x1b[2J\x1b[H╭────────╮\r\n│ Do you trust the files in this folder? │\r\n' +
+      '│ \x1b[1m❯ 1. Yes, proceed\x1b[22m │\r\n│ 2. No, exit │\r\n╰────────╯\r\n';
+    const first = await collect(adapter.send('summarise the fleet'));
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ type: 'error' });
+    const ptyId = host.created[0].id;
+
+    const second = await collect(adapter.send('summarise the fleet'));
+    expect(second).toHaveLength(1);
+    expect((second[0] as { message: string }).message).toMatch(/answer it in the terminal/i);
+    const excerpt = (second[0] as { tuiDialog?: { excerpt: string } }).tuiDialog?.excerpt ?? '';
+    expect(excerpt).toContain('Do you trust the files in this folder?');
+    expect(excerpt).toContain('2. No, exit');
+    expect(excerpt).not.toContain('\x1b');
+    expect(excerpt).not.toMatch(/[│╭]/);
+    // Nothing typed, the same pty kept, no respawn.
+    expect(host.writes).toEqual([]);
+    expect(host.created).toHaveLength(1);
+    expect(host.destroyed).toEqual([]);
+
+    // The user answered the dialog in the terminal: the TUI starts.
+    expect(deliverBrainPtyHookSignal(signal('agent.session_start', ptyId)).consumed).toBe(true);
+    const third = collect(adapter.send('summarise the fleet'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    expect(host.writes.every((w) => w.id === ptyId)).toBe(true);
+    expect(host.writes.map((w) => w.data).join('')).toContain('summarise the fleet');
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-ok' }));
+    const events = await third;
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.at(-1)).toEqual({ type: 'turn-end', sessionId: 'sess-ok' });
+    expect(host.created).toHaveLength(1);
+    adapter.dispose();
+  });
+
+  it('still types into a pty that printed nothing (slow start, no SessionStart)', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 'sess-quiet' }));
+    const events = await turn;
+    expect(events.at(-1)).toEqual({ type: 'turn-end', sessionId: 'sess-quiet' });
     adapter.dispose();
   });
 
