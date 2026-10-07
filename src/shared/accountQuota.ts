@@ -183,7 +183,12 @@ export function envSetsKey(env: Record<string, string> | undefined, key: string,
 }
 
 /** Text a held launch prints instead of starting the agent. Shell-neutral. */
-export function heldLaunchNotice(provider: QuotaProvider, availableAtMs: number | null): string {
-  const when = availableAtMs ? ` The first one frees up at ${new Date(availableAtMs).toLocaleString()}.` : '';
+export function heldLaunchNotice(provider: QuotaProvider, availableAtMs: number | null, scope: 'all' | 'active' = 'all'): string {
+  const at = availableAtMs ? new Date(availableAtMs).toLocaleString() : '';
+  if (scope === 'active') {
+    const when = at ? ` It frees up at ${at}.` : '';
+    return `echo "wmux: ${provider} was not started - the active ${provider} account is out of quota and wmux may not switch away from it.${when}"`;
+  }
+  const when = at ? ` The first one frees up at ${at}.` : '';
   return `echo "wmux: ${provider} was not started - every registered ${provider} account is out of quota.${when}"`;
 }

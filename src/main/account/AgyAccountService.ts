@@ -20,6 +20,7 @@ import {
   normalizeAgyEmail,
   type AgyAccount,
   type AgyAccountQuotaSnapshot,
+  type AgyAccountRow,
   type AgyAccountsSnapshot,
   type AgyLaunchDecision,
   type AgyModelFamily,
@@ -104,6 +105,16 @@ export interface AgyLoginState {
   lastResult: string | null;
   /** Set when a cancelled or timed-out sign-in could not put this account back: agy is signed out. */
   restoreFailed?: string;
+}
+
+/**
+ * A hold on an exhausted active account wmux may not switch away from. The notice
+ * says "every account is out" only when that is true; otherwise it names the
+ * active account, so the user knows another account still has quota.
+ */
+function heldOnActive(accounts: readonly AgyAccountRow[], availableAtMs: number | null): AgyLaunchDecision {
+  const otherHasQuota = accounts.some((a) => !a.active && a.state === 'ready');
+  return { ok: false, reason: otherHasQuota ? 'active-exhausted' : 'all-exhausted', availableAtMs };
 }
 
 export class AgyAccountService {
@@ -377,7 +388,7 @@ export class AgyAccountService {
       // active account that is out of quota. Only quota holds a launch: an account that needs signing
       // in again starts agy as it is, so agy can ask for the sign-in.
       const active = snap.accounts.find((a) => a.active);
-      if (active?.state === 'exhausted') return { ok: false, reason: 'all-exhausted', availableAtMs: active.availableAtMs };
+      if (active?.state === 'exhausted') return heldOnActive(snap.accounts, active.availableAtMs);
       if (active?.state === 'needs-reauth') console.warn(`[agy-accounts] agy account ${active.id} needs signing in again; launching unchanged`);
       return { ok: true, account: active ?? null, switched: false };
     }
@@ -396,7 +407,7 @@ export class AgyAccountService {
       // wmux knows is out is held as usual; any other sign-in starts as it would without wmux.
       console.warn(`[agy-accounts] not switching agy for this launch (${result})`);
       const active = snap.accounts.find((a) => a.active);
-      if (active?.state === 'exhausted') return { ok: false, reason: 'all-exhausted', availableAtMs: active.availableAtMs };
+      if (active?.state === 'exhausted') return heldOnActive(snap.accounts, active.availableAtMs);
       return { ok: true, account: active ?? null, switched: false };
     }
     console.log(`[agy-accounts] switched agy to account ${decision.account.id} for this launch`);

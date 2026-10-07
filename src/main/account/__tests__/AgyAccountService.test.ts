@@ -145,7 +145,8 @@ describe('AgyAccountService', () => {
     const realWrite = backend.write.bind(backend);
     backend.write = (target, user, blob) => (target === copyTarget('a@x.com') ? false : realWrite(target, user, blob));
 
-    expect(await s.prepareLaunch()).toMatchObject({ ok: false, reason: 'all-exhausted' });
+    // b still has quota, so the hold names the active account rather than claiming every account is out.
+    expect(await s.prepareLaunch()).toMatchObject({ ok: false, reason: 'active-exhausted' });
     expect(agyBlobEmail(backend.read(AGY_ACTIVE_TARGET))).toBe('a@x.com');
   });
 
@@ -172,7 +173,7 @@ describe('AgyAccountService', () => {
     expect(await s.prepareLaunch()).toMatchObject({ ok: true, switched: false });
     // a runs out: held, not switched behind the user's back.
     snapshots.set('a@x.com', quota(0));
-    expect(await s.prepareLaunch()).toMatchObject({ ok: false, reason: 'all-exhausted' });
+    expect(await s.prepareLaunch()).toMatchObject({ ok: false, reason: 'active-exhausted' });
     expect(agyBlobEmail(backend.read(AGY_ACTIVE_TARGET))).toBe('a@x.com');
 
     // Flipping the switch hands the choice back: now it switches.

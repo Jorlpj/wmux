@@ -106,8 +106,11 @@ export async function withAgyAccountQuota<T extends QuotaLaunchOptions>(
       console.warn('[agy-accounts] agy accounts are all out of quota, but the launch line runs other commands too: launching unchanged');
       return options;
     }
-    console.warn('[agy-accounts] agy launch held: every registered agy account is out of quota');
-    return { ...options, initialCommand: marker + heldLaunchNotice('agy', decision.availableAtMs) };
+    const scope = decision.reason === 'active-exhausted' ? 'active' : 'all';
+    console.warn(scope === 'active'
+      ? '[agy-accounts] agy launch held: the active agy account is out of quota and may not be switched away from'
+      : '[agy-accounts] agy launch held: every registered agy account is out of quota');
+    return { ...options, initialCommand: marker + heldLaunchNotice('agy', decision.availableAtMs, scope) };
   } catch (err) {
     console.warn(`[agy-accounts] launch gate failed, launching unchanged: ${String(err)}`);
   }

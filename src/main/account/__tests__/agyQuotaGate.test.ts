@@ -19,6 +19,13 @@ describe('withAgyAccountQuota', () => {
     expect(prepareLaunch).toHaveBeenCalledTimes(1);
   });
 
+  it('says only the active account is out when wmux may not switch away and another has quota', async () => {
+    const held = await gate({ ok: false, reason: 'active-exhausted', availableAtMs: null }, 'agy').run;
+    expect(held?.initialCommand).toMatch(/the active agy account is out of quota/);
+    expect(held?.initialCommand).not.toMatch(/every registered/);
+    expect((await gate(OUT, 'agy').run)?.initialCommand).toMatch(/every registered agy account is out of quota/);
+  });
+
   it('lets the launch through when the service says ok', async () => {
     const { run } = gate(OK, 'agy');
     expect((await run)?.initialCommand).toBe('agy');

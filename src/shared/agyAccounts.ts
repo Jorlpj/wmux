@@ -61,7 +61,10 @@ export interface AgyAccountsSnapshot {
 
 export type AgyLaunchDecision =
   | { ok: true; account: AgyAccount | null; switched: boolean }
-  | { ok: false; reason: 'all-exhausted'; availableAtMs: number | null };
+  /** `all-exhausted`: every account wmux could switch to is out. `active-exhausted`: the active
+   *  account is out and wmux may not switch away (switching off, the user's own pick, or the live
+   *  sign-in could not be saved), even if another account has quota. */
+  | { ok: false; reason: 'all-exhausted' | 'active-exhausted'; availableAtMs: number | null };
 
 /** Model families agy reports quota for: Gemini (what agy runs by default)
  *  and third-party models (the `3p-*` buckets). */
