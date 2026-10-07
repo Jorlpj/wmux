@@ -2587,6 +2587,10 @@ export class WebTerminalServer {
         // that they are present now: each field is omitted while the desktop
         // is away. Omitted without a bridge, and by an older daemon.
         ...(this.deps.desktop ? { fleetSidebar: true } : {}),
+        // `/api/workspaces` can carry Moa's delegated jobs (`moaDelegations`).
+        // Same meaning as `fleetSidebar`: supported here, present only while
+        // a desktop new enough to compute it answers.
+        ...(this.deps.desktop ? { moaDelegations: true } : {}),
         // Moa (the desktop's HQ main bot) is on and its HQ workspace exists.
         // OMITTED, not false, otherwise — Moa off, no HQ, no desktop attached,
         // or an older desktop or daemon: the phone reads all of them as "no Moa".
@@ -3275,6 +3279,9 @@ export class WebTerminalServer {
     return this.json(res, 200, {
       workspaces: merged,
       ...(active && byId.has(active) ? { activeWorkspaceId: active } : {}),
+      // Not limited to the listed rows: a finished job's workspace is often
+      // closed by then, and its id names nothing the phone may not see.
+      ...(sidebar.moaDelegations !== undefined ? { moaDelegations: sidebar.moaDelegations } : {}),
     });
   }
 
@@ -4321,8 +4328,13 @@ export class WebTerminalServer {
     const owner = chatOwner(principal);
     const queue = caps.chatQueue === true && chat.queueEnabled?.() === true ? chat.queue?.(owner, sessionId) ?? [] : undefined;
     const events = queue !== undefined ? this.tagDeliveredRows(chat, sessionId, owner, body.events) : body.events;
+    // Only a terminal binding whose agent is not alive can be resumable; skip the lookup otherwise.
+    const resumable = resolution.source === 'file' && resolution.status.agentAlive !== true
+      ? await chat.resumable?.(sessionId).catch(() => false) ?? false : false;
+    if (res.destroyed || res.writableEnded) return;
+    if (moaWithdrawn()) return;
     this.json(res, 200, { ...body, ...(events !== undefined ? { events } : {}), chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
-      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}),
+      { ...(turn ? { turn } : {}), resumable, chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}),
         accountStatus: this.opts?.allowTranscript === true && process.platform !== 'win32' &&
           this.deps.codexAccountStatus?.accountHome(sessionId) !== undefined }) });
   }
@@ -4765,6 +4777,8 @@ export class WebTerminalServer {
       // Launch body capabilities: `prompt` may be omitted, and `resume: true` is accepted.
       chatLaunchBare: true,
       chatLaunchResume: true,
+      // `resume: true` also continues a pane's own binding once its agent exited (`chat.resumable`).
+      chatResumeBound: true,
       chatVersion: 1,
     };
   }
@@ -9318,6 +9332,7 @@ function sidebarWorkspaceFields(
     ...(row.gitBranch !== undefined ? { gitBranch: row.gitBranch } : {}),
     ...(row.gitIsWorktree !== undefined ? { gitIsWorktree: row.gitIsWorktree } : {}),
     ...(row.gitSync !== undefined ? { gitSync: row.gitSync } : {}),
+    ...(row.moaHandoff !== undefined ? { moaHandoff: row.moaHandoff } : {}),
     ...(taskSummary !== undefined ? { taskSummary } : {}),
     ...(task
       ? {

@@ -110,6 +110,35 @@ describe('MoaWaitingOnYou', () => {
     expect(container.querySelector('[data-moa-decision="d6"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
+
+  it('"Not needed" closes a dismissible card without choosing; other cards have no such action', async () => {
+    const onResolve = vi.fn(async () => ({ ok: true }));
+    const decisions = [{ ...decision('d8', 'ws-a', ['yes', 'no']), dismissible: true as const }, decision('d9', 'ws-b', ['Open'])];
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions, onResolve, t })));
+    expect(container.querySelector('[data-moa-decision="d9"] [data-moa-decision-dismiss]')).toBeNull();
+    const dismiss = container.querySelector('[data-moa-decision="d8"] [data-moa-decision-dismiss]') as HTMLButtonElement;
+    expect(dismiss.textContent).toBe('moa.panel.dismiss');
+    await act(async () => { dismiss.click(); });
+    expect(onResolve).toHaveBeenCalledWith({ workspaceId: 'ws-a', id: 'd8', resolution: '', dismiss: true });
+    expect(container.querySelector('[data-moa-decision="d8"]')).toBeNull();
+  });
+});
+
+describe('MoaWaitingOnYou — a delegated agent\'s permission prompt', () => {
+  it('shows the agent, the command and a jump to its pane, counts it, and offers no answer', async () => {
+    const onOpenPty = vi.fn();
+    const delegatedApprovals = [{ id: 'ap1', ptyId: 'pty-w', workspaceId: 'ws-w', workspaceName: 'wmux', agentName: 'Claude Code', toolName: 'Bash', what: 'git push origin main', createdAt: 1 }];
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions: [], onResolve: vi.fn(), delegatedApprovals, onOpenPty, memoryApi: memoryApi(null).api, t })));
+    const row = container.querySelector('[data-moa-delegated-approval="ap1"]') as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('wmux');
+    expect(row.querySelector('[data-moa-delegated-approval-what]')?.textContent).toBe('git push origin main');
+    expect(container.querySelector('#moa-waiting-title')?.textContent).toContain('1');
+    // Read-only: no option, no input, no answer button.
+    expect(row.querySelectorAll('[data-moa-decision-option], input, [data-moa-decision-dismiss]')).toHaveLength(0);
+    await act(async () => { (row.querySelector('[data-moa-delegated-approval-open]') as HTMLButtonElement).click(); });
+    expect(onOpenPty).toHaveBeenCalledWith('ws-w', 'pty-w');
+  });
 });
 
 describe('MoaWaitingOnYou — the "Remember this?" card', () => {
@@ -185,9 +214,14 @@ describe('MoaTaskCards', () => {
     expect(toggle.textContent).toContain('Alpha');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-moa-task-details]')).toBeNull();
+    const title = toggle.querySelector('[data-moa-task-title]') as HTMLElement;
+    expect(title.className).toContain('truncate');
 
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    // Open: the title wraps instead of truncating.
+    expect(title.className).not.toContain('truncate');
+    expect(title.className).toContain('whitespace-normal');
     const details = container.querySelector('[data-moa-task-details]') as HTMLElement;
     expect(details.id).toBe(toggle.getAttribute('aria-controls'));
     // Only the decision that still waits is listed.
@@ -226,6 +260,84 @@ describe('MoaPanelTop', () => {
       expect([...container.querySelectorAll('[data-moa-task]')].map((el) => el.getAttribute('data-moa-task'))).toEqual(['l2', 'l1']);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('Open conversation links (#1779)', () => {
+  const taskOf = (ws: string) => (ws === 'ws-task' ? 'wtask-1' : undefined);
+
+  it('a fan-out task card links to its conversation; other work does not', async () => {
+    const onOpenConversation = vi.fn();
+    await act(async () => root.render(createElement(MoaTaskCards, {
+      links: [link('l1', { title: 'Fan-out task', owner: { workspaceId: 'ws-task' } }), link('l2', { title: 'Plain send' })],
+      pendingDecisions: [],
+      workspaceName: () => undefined,
+      conversationTaskId: taskOf,
+      onOpenConversation,
+      t,
+    })));
+    const toggles = container.querySelectorAll<HTMLButtonElement>('[data-moa-task-toggle]');
+    await act(async () => { toggles[0].click(); toggles[1].click(); });
+    const [taskCard, plainCard] = Array.from(container.querySelectorAll('[data-moa-task]'));
+    expect(plainCard.querySelector('[data-moa-task-conversation]')).toBeNull();
+    const open = taskCard.querySelector<HTMLButtonElement>('[data-moa-task-conversation]')!;
+    expect(open.textContent).toBe('moa.panel.openConversation');
+    await act(async () => { open.click(); });
+    expect(onOpenConversation).toHaveBeenCalledWith('wtask-1');
+  });
+
+  it('a decision raised by a fan-out task links to its conversation', async () => {
+    const onOpenConversation = vi.fn();
+    await act(async () => root.render(createElement(MoaWaitingOnYou, {
+      decisions: [decision('d1', 'ws-task', ['Go']), decision('d2', 'ws-b', ['Go'])],
+      onResolve: vi.fn(),
+      conversationTaskId: taskOf,
+      onOpenConversation,
+      t,
+    })));
+    const links = container.querySelectorAll<HTMLButtonElement>('[data-moa-decision-conversation]');
+    expect(links).toHaveLength(1);
+    expect(links[0].closest('[data-moa-decision]')?.getAttribute('data-moa-decision')).toBe('d1');
+    await act(async () => { links[0].click(); });
+    expect(onOpenConversation).toHaveBeenCalledWith('wtask-1');
+  });
+});
+
+describe('MoaPanelTop — one report, first run', () => {
+  it('a job Moa handed out that is done leaves Delegated work (its report card tells it); other done work stays', async () => {
+    const list = vi.fn(async () => [
+      link('moa-done', { title: 'Done by Moa', state: 'done', a2aTaskId: 't1' }),
+      link('moa-running', { title: 'Running' }),
+      link('issue-done', { title: 'Issue', origin: 'issue', issue: { host: 'github.com', owner: 'o', repo: 'r', number: 1, title: 'Issue', url: 'https://github.com/o/r/issues/1' }, state: 'done' }),
+    ]);
+    await act(async () => root.render(createElement(MoaPanelTop, { decisions: [], linksApi: { list, onChanged: () => () => undefined }, t })));
+    await act(async () => { await Promise.resolve(); });
+    expect([...container.querySelectorAll('[data-moa-task]')].map((el) => el.getAttribute('data-moa-task')).sort()).toEqual(['issue-done', 'moa-running']);
+  });
+
+  it('another agent\'s A2A tasks (manual links) are not Moa\'s delegations and are not listed', async () => {
+    const list = vi.fn(async () => [
+      link('moa-running', { title: 'Running' }),
+      link('orchestrator-running', { title: 'Orchestrator: fix', origin: 'manual', a2aTaskId: 't9' }),
+    ]);
+    await act(async () => root.render(createElement(MoaPanelTop, { decisions: [], linksApi: { list, onChanged: () => () => undefined }, t })));
+    await act(async () => { await Promise.resolve(); });
+    expect([...container.querySelectorAll('[data-moa-task]')].map((el) => el.getAttribute('data-moa-task'))).toEqual(['moa-running']);
+  });
+
+  it('before Moa\'s first turn (no brain, nothing waiting) it says what to ask; once the brain runs it does not', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({ moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never, brainPtyIds: {} });
+      const linksApi = { list: vi.fn(async () => []), onChanged: () => () => undefined };
+      await act(async () => root.render(createElement(MoaPanelTop, { decisions: [], linksApi, approvalsApi: { delegatedApprovals: async () => ({ approvals: [] }) }, t })));
+      expect(container.querySelector('[data-moa-first-run]')?.textContent).toContain('moa.panel.chatEmptyHint');
+      await act(async () => { useStore.setState({ brainPtyIds: { 'ws-hq': 'pty-hq' } }); });
+      expect(container.querySelector('[data-moa-first-run]')).toBeNull();
+    } finally {
+      useStore.setState({ moa: prev.moa, brainPtyIds: prev.brainPtyIds });
     }
   });
 });

@@ -102,6 +102,7 @@ import { createFanOutService } from './worktask/createFanOutService';
 import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
+import { registerMoaRpc } from './pipe/handlers/moa.rpc';
 import { registerAutomationRpc } from './pipe/handlers/automation.rpc';
 import { registerWorktaskHandlers, type WorktaskServices } from './ipc/handlers/worktask.handler';
 import { registerWorktaskRpc } from './pipe/handlers/worktask.rpc';
@@ -113,6 +114,9 @@ import { createWorkspaceFactsPublisher, invalidateAutonomyCache, registerWorkspa
 import { publishMoaPane, setMoaPanePush } from './deck/moaPaneFeed';
 import { reconcileOwnerDowngrades } from './worktask/taskAutonomy';
 import { createHqAutoPress, setHqAutoPress } from './deck/hqApprovalLane';
+import { paneOwnCwdOf, startMoaShadow } from './deck/moaShadowHost';
+import { startMoaDelegate } from './deck/moaDelegateWiring';
+import { getMoaDelegateService } from './deck/moaDelegatePorts';
 import { getTaskLedger } from './deck/taskLedgerHost';
 import { createTrackRecordFeed, setTrackRecordFeed, type TrackApprovalRecord } from './deck/trackRecordFeed';
 import { getTrackRecordStore } from './deck/trackRecordStore';
@@ -139,6 +143,7 @@ import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { warnOnInstallIntegrityGap } from './updater/installIntegrity';
 import { readDaemonPid } from './updater/installTeardown';
+import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
@@ -906,6 +911,9 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
               Number.isFinite((opts as { deadlineAt: number }).deadlineAt)
                 ? { deadlineAt: (opts as { deadlineAt: number }).deadlineAt }
                 : {}),
+              ...(typeof (opts as { guardKey?: unknown }).guardKey === 'string'
+                ? { guardKey: ((opts as { guardKey: string }).guardKey).slice(0, 128) }
+                : {}),
             }
           : {}),
         ...gatedSubmitTaskContext(opts),
@@ -1087,8 +1095,16 @@ registerGitHandoffHandlers({
   invoke: (method, params) => invokeRendererRpc(method, params),
   startFanOut: (req) => startGuiFanOut(fanOutService, req),
 });
-registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
+registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
 registerLedgerRpc(rpcRouter, () => mainWindow);
+// Moa's delegate (moa_ask). Answers `off` with nothing recorded until the
+// owner turns the ask mode on (startMoaDelegate registers the service).
+registerMoaRpc(rpcRouter, {
+  getService: getMoaDelegateService,
+  resolvePtyWorkspace: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  // The pane's own cwd only: a workspace's cwd is not the asker's repo.
+  paneCwd: paneOwnCwdOf,
+});
 // Scheduled runs for agents: draft-only propose + redacted reads, relayed to
 // the daemon over main's first-party connection (pipe/handlers/automation.rpc.ts).
 registerAutomationRpc(rpcRouter, {
@@ -1235,6 +1251,7 @@ onAutonomyWritten(() => {
 // data dir before the Deck stores are first read (once per registration).
 const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
   getDaemonClient: () => daemonClient,
+  invokeOperatorRpc: (method, params) => invokeRendererRpc(method, params),
 });
 // The track record's first start waits for the deck handler: it decides Moa's
 // switch for a new install (ensureMoaDefault), which reads as on until then.
@@ -1939,6 +1956,13 @@ app.on('ready', async () => {
       // A new approval, or one settled elsewhere: the lane re-lists.
       client.on('approvals:changed', () => { void hqAutoPress.run(); });
       client.on('approvals:changed', () => { void trackRecordFeed.onApprovalsChanged(); });
+      // Moa's shadow judge (records only); a first pass catches questions
+      // already waiting on this daemon.
+      const moaShadow = startMoaShadow(() => daemonClient);
+      client.on('approvals:changed', () => { void moaShadow.onApprovalsChanged(); });
+      void moaShadow.onApprovalsChanged();
+      // Moa's delegate: registers its service only while the ask mode is on.
+      startMoaDelegate({ getDaemonClient: () => daemonClient });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the
@@ -2412,6 +2436,29 @@ app.on('window-all-closed', () => {
   // Actual quit is triggered from the tray "Quit" menu item.
 });
 
+// Alt+F4: ask before quitting. A normal Quit only detaches from the daemon, so
+// live sessions keep running and reattach on the next launch.
+let quitConfirmOpen = false;
+async function confirmQuit(win: BrowserWindow): Promise<void> {
+  if (quitConfirmOpen) return;
+  quitConfirmOpen = true;
+  try {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'question',
+      title: 'Quit wmux',
+      message: 'Quit wmux?',
+      detail: 'Your terminal sessions keep running in the background and reattach the next time you open wmux.',
+      buttons: ['Quit', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (response === 0) app.quit();
+  } finally {
+    quitConfirmOpen = false;
+  }
+}
+
 // quitAndInstall() closes every window and only installs once the window list
 // empties. With isQuitting still false the hide-to-tray close intercept above
 // cancels that close, so the window list never empties, the install never runs,
@@ -2443,10 +2490,28 @@ function adoptMainWindow(win: BrowserWindow): void {
     if (mainWindow === win) mainWindow = null;
   });
 
-  // Intercept window close — hide to tray instead of destroying
+  // Intercept window close — hide to tray instead of destroying, except for
+  // Alt+F4, which asks to quit. The OS delivers Alt+F4 and the title-bar X as the
+  // same close request (and the key may never reach the page), so the key state
+  // is read from the OS when the request arrives; the input event is a second hint.
+  let altF4At = 0;
+  win.webContents.on('before-input-event', (event, input) => {
+    if (!isAltF4KeyDown(input)) return;
+    altF4At = Date.now();
+    // A focused terminal cancels Alt+F4 (xterm sends it to the shell), so no
+    // close request ever follows. On Windows, take the key here and ask.
+    if (process.platform === 'win32' && !isQuitting) {
+      event.preventDefault();
+      void confirmQuit(win);
+    }
+  });
   win.on('close', (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
+    if (isQuitting) return;
+    e.preventDefault();
+    if (isAltF4Held() || Date.now() - altF4At < 1000) {
+      altF4At = 0;
+      void confirmQuit(win);
+    } else {
       win.hide();
     }
   });

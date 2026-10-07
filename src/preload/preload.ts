@@ -262,7 +262,7 @@ const electronAPI = {
       // `cwdMissing` (#1305) rides the recoveryPending shape: the WSL directory
       // itself is gone, so Retry cannot succeed until it is restored and the
       // pane is offered a fresh start in the home directory instead.
-      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean; recoveryPending?: boolean; cwdMissing?: boolean; recovery?: DeadPaneRecovery }>,
+      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; cols?: number; rows?: number; error?: string; code?: string; transient?: boolean; recoveryPending?: boolean; cwdMissing?: boolean; recovery?: DeadPaneRecovery }>,
     // Fix B — on-demand promote of a cap-skipped suspended session.
     // #1305 — `fresh` promotes it in the home directory WITHOUT resuming the
     // recorded conversation: the way out when its own directory is gone.
@@ -298,8 +298,11 @@ const electronAPI = {
       ipcRenderer.on(IPC.PTY_DATA, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_DATA, listener); };
     },
-    onExit: (callback: (id: string, exitCode: number) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, id: string, exitCode: number) => callback(id, exitCode);
+    // `signal` is the killing signal (non-zero) or null/0 for a normal exit;
+    // node-pty reports a signalled process with exitCode 0.
+    onExit: (callback: (id: string, exitCode: number, signal?: number | null) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, id: string, exitCode: number, signal?: number | null) =>
+        callback(id, exitCode, signal);
       ipcRenderer.on(IPC.PTY_EXIT, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_EXIT, listener); };
     },
@@ -387,6 +390,8 @@ const electronAPI = {
      * V8 JS heap (~10MB) and under-reported real usage by ~10x.
      */
     getMemoryUsage: () => ipcRenderer.invoke(IPC.APP_MEMORY) as Promise<number>,
+    /** CPU % of the whole machine used by wmux and all its child processes. */
+    getCpuUsage: () => ipcRenderer.invoke(IPC.APP_CPU) as Promise<number | null>,
     /**
      * System woke from sleep (main's powerMonitor 'resume'). Used to rebuild
      * renderer GPU state that sleep can silently invalidate (shared glyph
@@ -491,8 +496,8 @@ const electronAPI = {
     // progress) flow through this one shape. Renderer routes by ptyId
     // (preferred) or workspaceId (for surface-less updates like
     // meta.setStatus on the active workspace).
-    onUpdate: (callback: (payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; gitSync?: { dirty: number; ahead: number; behind: number; hasUpstream: boolean } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; pendingQuestion?: string; lastMessage?: string; paneId?: string; paneLabel?: string; paneRole?: string; agentSlug?: string | null; hookKind?: string; settled?: boolean }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; gitSync?: { dirty: number; ahead: number; behind: number; hasUpstream: boolean } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; pendingQuestion?: string; lastMessage?: string; paneId?: string; paneLabel?: string; paneRole?: string; agentSlug?: string | null; hookKind?: string; settled?: boolean }) =>
+    onUpdate: (callback: (payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; gitSync?: { dirty: number; ahead: number; behind: number; hasUpstream: boolean } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; pendingQuestion?: string; lastMessage?: string; lastActivity?: ''; paneId?: string; paneLabel?: string; paneRole?: string; agentSlug?: string | null; hookKind?: string; settled?: boolean }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; gitSync?: { dirty: number; ahead: number; behind: number; hasUpstream: boolean } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; pendingQuestion?: string; lastMessage?: string; lastActivity?: ''; paneId?: string; paneLabel?: string; paneRole?: string; agentSlug?: string | null; hookKind?: string; settled?: boolean }) =>
         callback(payload);
       ipcRenderer.on(IPC.METADATA_UPDATE, listener);
       return () => { ipcRenderer.removeListener(IPC.METADATA_UPDATE, listener); };
@@ -567,6 +572,7 @@ const electronAPI = {
         ...(opts?.waitQuiet ? { waitQuiet: true } : {}),
         ...(opts?.waitQuiet && opts.expectAgent ? { expectAgent: opts.expectAgent } : {}),
         ...(opts?.waitQuiet && opts.deadlineAt !== undefined ? { deadlineAt: opts.deadlineAt } : {}),
+        ...(opts?.waitQuiet && typeof opts.guardKey === 'string' ? { guardKey: opts.guardKey } : {}),
       }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,
@@ -828,12 +834,14 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_STATE) as Promise<import('../shared/moa').MoaState>,
       setConfig: (patch: import('../shared/moa').MoaConfigPatch) =>
         ipcRenderer.invoke(IPC.DECK_MOA_CONFIG_SET, patch) as Promise<{ ok: boolean; code?: string }>,
-      setup: (workspaceId: string) =>
-        ipcRenderer.invoke(IPC.DECK_MOA_SETUP, { workspaceId }) as Promise<import('../shared/moa').MoaSetupResult>,
+      setup: (workspaceId: string, opts?: { rebind?: boolean }) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_SETUP, { workspaceId, ...(opts?.rebind ? { rebind: true } : {}) }) as Promise<import('../shared/moa').MoaSetupResult>,
       archiveList: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_LIST) as Promise<{ decisions: import('../shared/moa').MoaArchivedDecision[] }>,
       archiveAck: () => ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_ACK) as Promise<{ ok: boolean }>,
       resetStore: () => ipcRenderer.invoke(IPC.DECK_MOA_STORE_RESET) as Promise<{ ok: boolean }>,
+      shadowStats: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_SHADOW_STATS) as Promise<import('../shared/moa').MoaShadowStats>,
       memoryList: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_MEMORY_LIST) as Promise<{ items: import('../shared/moa').MoaMemoryItem[] }>,
       memoryDelete: (kind: import('../shared/moa').MoaMemoryItem['kind'], name: string) =>
@@ -851,6 +859,40 @@ const electronAPI = {
       // Every workspace's pending decision ("Waiting on you").
       decisions: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_DECISIONS) as Promise<{ decisions: import('../shared/moa').MoaPendingDecision[] }>,
+      taskResult: (args: { workspaceId: string; taskId: string }) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_TASK_RESULT, args) as Promise<{ result: import('../shared/moaResult').MoaTaskResult | null }>,
+      delegatedApprovals: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATED_APPROVALS) as Promise<{ approvals: import('../shared/moa').MoaDelegatedApproval[] }>,
+      delegatedAnswer: (args: { approvalId: string; choiceKey: string; promptFingerprint: string }) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATED_ANSWER, args) as Promise<import('../shared/moa').MoaApprovalAnswerResult>,
+      // Moa's delegate (moa_ask tickets): list, answer an escalated one, the
+      // per-rule auto toggle, and main's change events. Owner-only: no pipe
+      // route reaches these.
+      delegateList: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATE_LIST) as Promise<import('../shared/moaDecision').MoaDelegateListResult>,
+      delegateResolve: (args: import('../shared/moaDecision').MoaResolveRequest) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATE_RESOLVE, args) as Promise<import('../shared/moaDecision').MoaResolveResult>,
+      delegateAutoSet: (args: import('../shared/moaDecision').MoaAutoRuleSetRequest) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATE_AUTO_SET, args) as Promise<import('../shared/moaDecision').MoaAutoRuleSetResult>,
+      // Decision events; the lane audit's MoaAuditEvent rides the same channel.
+      onDelegateDecision: (callback: (event: import('../shared/moaDecision').MoaDecisionEvent | import('../shared/moaDecision').MoaAuditEvent) => void) => {
+        const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/moaDecision').MoaDecisionEvent | import('../shared/moaDecision').MoaAuditEvent): void => callback(data);
+        ipcRenderer.on(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, listener);
+        return () => { ipcRenderer.removeListener(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, listener); };
+      },
+      onDelegateEffect: (callback: (event: import('../shared/moaDecision').MoaEffectEvent) => void) => {
+        const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/moaDecision').MoaEffectEvent): void => callback(data);
+        ipcRenderer.on(IPC.DECK_MOA_DELEGATE_EFFECT_EVENT, listener);
+        return () => { ipcRenderer.removeListener(IPC.DECK_MOA_DELEGATE_EFFECT_EVENT, listener); };
+      },
+      // Moa's hand-offs: answer a hand-off card (a body only when the operator
+      // edited it), the recent auto hand-offs, and stopping one of them.
+      handoffResolve: (args: import('../shared/moaHandoff').MoaHandoffResolveRequest) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_HANDOFF_RESOLVE, args) as Promise<import('../shared/moaHandoff').MoaHandoffResolveResult>,
+      handoffReceipts: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_HANDOFF_RECEIPTS) as Promise<{ receipts: import('../shared/moaHandoff').MoaAutoHandoffReceipt[] }>,
+      handoffStop: (args: { id: string }) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_HANDOFF_STOP, args) as Promise<{ ok: boolean }>,
       // The HQ brain's transcript as turn events (chat look over the terminal brain).
       transcript: {
         status: () =>
@@ -1058,7 +1100,7 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_DECISION_GET, { workspaceId }) as Promise<{
           decision: import('../main/deck/deckDecisionStore').WorkspaceDecision | null;
         }>,
-      resolve: (args: { workspaceId: string; id: string; resolution: string }) =>
+      resolve: (args: { workspaceId: string; id: string; resolution: string; dismiss?: boolean }) =>
         ipcRenderer.invoke(IPC.DECK_DECISION_RESOLVE, args) as Promise<{
           ok: boolean;
           code?: string;

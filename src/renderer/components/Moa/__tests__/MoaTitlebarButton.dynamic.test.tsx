@@ -156,15 +156,15 @@ describe('Moa titlebar icon', () => {
     expect(useStore.getState().channelDockVisible).toBe(true);
   });
 
-  it('beside the Git page it reads the panel as shown and opens and closes it in place', async () => {
-    useStore.setState({ appRoute: 'git', channelDockVisible: true } as never);
+  it.each(['git', 'fleet', 'schedules', 'remote'] as const)('beside the %s page it reads the panel as shown and opens and closes it in place', async (route) => {
+    useStore.setState({ appRoute: route, channelDockVisible: true } as never);
     await mount();
     expect(button()!.getAttribute('aria-expanded')).toBe('true');
     act(() => button()!.click());
-    expect(useStore.getState().appRoute).toBe('git');
+    expect(useStore.getState().appRoute).toBe(route);
     expect(useStore.getState().channelDockVisible).toBe(false);
     act(() => button()!.click());
-    expect(useStore.getState().appRoute).toBe('git');
+    expect(useStore.getState().appRoute).toBe(route);
     expect(useStore.getState().channelDockVisible).toBe(true);
   });
 });
@@ -220,7 +220,7 @@ describe('Moa bubble', () => {
     tick(1);
     expect(bubble()).toBeNull();
     expect(dot()).toBe('waiting');
-    expect(button()!.querySelector('[data-moa-titlebar-dot]')!.getAttribute('style')).toContain('--accent-yellow');
+    expect(button()!.querySelector('[data-moa-titlebar-dot]')!.getAttribute('style')).toContain('--attention');
   });
 
   it('shows one bubble at a time: the newest decision replaces the last, a finished task never displaces a decision', async () => {
@@ -320,6 +320,14 @@ describe('Moa reply dot', () => {
     act(() => button()!.click());
     act(() => useStore.setState({ channelDockVisible: false } as never));
     expect(dot()).toBe('none');
+  });
+
+  it('Moa\'s mid-turn narration (folded by main) does not mark it; the reply does', async () => {
+    await mount();
+    act(() => append!({ seq: 1, events: [{ id: 'n1', kind: 'assistant_text', text: 'Proposing the hand-off.', folded: true }], cursor: {} as never }));
+    expect(dot()).toBe('none');
+    act(() => append!({ seq: 2, events: [{ id: 'a1', kind: 'assistant_text', text: '넘겼습니다.', turnComplete: true }], cursor: {} as never }));
+    expect(dot()).toBe('reply');
   });
 
   it('holds its own transcript subscription whether or not the panel is mounted', async () => {

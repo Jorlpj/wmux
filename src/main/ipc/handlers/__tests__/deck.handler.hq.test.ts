@@ -124,6 +124,7 @@ import { getTaskLedger } from '../../../deck/taskLedgerHost';
 import { __resetStartupDeckReconcileForTest } from '../../../deck/deckOrphanReconcile';
 import { mintCommanderToken } from '../../../deck/commanderTrust';
 import { registerBrainPty } from '../../../deck/brainPtyHookBus';
+import { __resetMoaPaneFeedForTest, setMoaPanePush } from '../../../deck/moaPaneFeed';
 
 class FakeAdapter implements BrainAdapter {
   sessionId: string | null = null;
@@ -214,6 +215,12 @@ beforeEach(async () => {
   __resetWorkspaceMirrorForTest();
   __resetHqMemoryForTest();
   __resetStartupDeckReconcileForTest();
+  // A daemon that takes every Moa pane push. With no transport the feed arms a
+  // module-level backoff retry (500 ms, doubling) on real time; when it fires
+  // inside a fake-timer window it re-arms as a fake timer, so
+  // vi.getTimerCount() below would count it depending on wall-clock speed.
+  __resetMoaPaneFeedForTest();
+  setMoaPanePush(async () => ({ ok: true }));
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   await setHqWorkspaceId(null);
@@ -565,6 +572,26 @@ describe('Moa settings IPC', () => {
     // The ramp level rides the HQ's turns.
     await send('ws-moa');
     expect(prompts.at(-1)).toContain('[moa] Level 1');
+  });
+
+  it('a rebind of the lost HQ under its own id keeps its settings and only turns Moa on', async () => {
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa' })).toMatchObject({ ok: true });
+    expect(await invoke(IPC.DECK_MOA_CONFIG_SET, { level: 3 })).toEqual({ ok: true });
+    await invoke(IPC.DECK_MOA_SET, { enabled: false });
+    vi.mocked(setWorkspaceMode).mockClear();
+    vi.mocked(setWorkspaceAutonomy).mockClear();
+
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa', rebind: true })).toEqual({ ok: true, archived: 0 });
+    expect(getHqWorkspaceId()).toBe('ws-moa');
+    expect(getMoaConfig()).toMatchObject({ enabled: true, level: 3 });
+    expect(vi.mocked(setWorkspaceMode)).not.toHaveBeenCalled();
+    expect(vi.mocked(setWorkspaceAutonomy)).not.toHaveBeenCalled();
+  });
+
+  it('rebind for an id that is not the HQ is a normal setup', async () => {
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-new', rebind: true })).toMatchObject({ ok: true });
+    expect(getHqWorkspaceId()).toBe('ws-new');
+    expect(getMoaConfig()).toMatchObject({ level: 1 });
   });
 
   it('setup refuses an invalid workspace id', async () => {

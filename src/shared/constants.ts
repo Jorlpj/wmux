@@ -331,6 +331,8 @@ export const IPC = {
   //   { onboarded, level, maxTurnsPerHour, bubbles, reduceMotion }.
   //   DECK_MOA_SETUP { workspaceId } makes a just-created workspace the HQ at
   //   level 1 and turns Moa on (first run, and "Recreate Moa workspace").
+  //   With `rebind: true` and the current HQ's own id it only turns Moa on:
+  //   the lost HQ came back under its id, so its settings are kept.
   //   DECK_MOA_ARCHIVE_LIST / _ACK: the decisions the HQ migration archived and
   //   their one-time notice. DECK_MOA_STORE_RESET moves an unreadable
   //   deck-hq.json aside and starts over (Moa off, no HQ).
@@ -341,6 +343,8 @@ export const IPC = {
   DECK_MOA_ARCHIVE_LIST: 'deck:moa:archive:list',
   DECK_MOA_ARCHIVE_ACK: 'deck:moa:archive:ack',
   DECK_MOA_STORE_RESET: 'deck:moa:store:reset',
+  //   DECK_MOA_SHADOW_STATS — the shadow judge's readout (MoaShadowStats).
+  DECK_MOA_SHADOW_STATS: 'deck:moa:shadow:stats',
   //   DECK_MOA_MEMORY_LIST / _DELETE: what Moa remembers (saved precedents,
   //   notes and skills, all approved by the operator) and deleting one by
   //   { kind, name }. DECK_MOA_CHANGED also says this list moved.
@@ -361,6 +365,24 @@ export const IPC = {
   //   ({ before? }) / SUBSCRIBE / UNSUBSCRIBE (invoke); APPEND (send, main →
   //   renderer, TranscriptAppendData).
   DECK_MOA_DECISIONS: 'deck:moa:decisions',
+  // Permission prompts of agents Moa delegated work to ({ approvals:
+  // MoaDelegatedApproval[] }), for the panel's "Waiting on you".
+  DECK_MOA_DELEGATED_APPROVALS: 'deck:moa:delegated-approvals',
+  // Answer one of those prompts in place ({ approvalId, choiceKey,
+  // promptFingerprint } → MoaApprovalAnswerResult). Main presses only a prompt
+  // it lists above, through the daemon's first-party desktop answer.
+  DECK_MOA_DELEGATED_ANSWER: 'deck:moa:delegated-answer',
+  // A delegated task's result from its A2A completion evidence ({ workspaceId,
+  // taskId } → { result: MoaTaskResult | null }), for Moa's result card.
+  DECK_MOA_TASK_RESULT: 'deck:moa:task-result',
+  //   DECK_MOA_HANDOFF_RESOLVE (invoke MoaHandoffResolveRequest): answer a
+  //   hand-off card by id (main reads the body from its own store; an edited
+  //   body is the operator's own input). DECK_MOA_HANDOFF_RECEIPTS (invoke):
+  //   recent auto hand-offs. DECK_MOA_HANDOFF_STOP (invoke { id }): interrupt
+  //   the worker and cancel an auto hand-off's task.
+  DECK_MOA_HANDOFF_RESOLVE: 'deck:moa:handoff:resolve',
+  DECK_MOA_HANDOFF_RECEIPTS: 'deck:moa:handoff:receipts',
+  DECK_MOA_HANDOFF_STOP: 'deck:moa:handoff:stop',
   DECK_MOA_TRANSCRIPT_STATUS: 'deck:moa:transcript:status',
   DECK_MOA_TRANSCRIPT_SNAPSHOT: 'deck:moa:transcript:snapshot',
   DECK_MOA_TRANSCRIPT_SUBSCRIBE: 'deck:moa:transcript:subscribe',
@@ -378,6 +400,19 @@ export const IPC = {
   //   tool or CLI verb.
   DECK_MOA_APPROVAL: 'deck:moa:approval',
   DECK_MOA_APPROVAL_ANSWER: 'deck:moa:approval:answer',
+  //   DECK_MOA_DELEGATE_* — Moa's delegate decisions (moa_ask tickets) and their
+  //   merge effects; shapes in src/shared/moaDecision.ts. Renderer-only: no
+  //   pipe RPC, MCP tool or CLI verb resolves a decision or toggles a rule.
+  //   LIST (invoke) → MoaDelegateListResult. RESOLVE (invoke MoaResolveRequest
+  //   → MoaResolveResult). AUTO_SET (invoke MoaAutoRuleSetRequest →
+  //   MoaAutoRuleSetResult): the owner's per-rule auto toggle. DECISION_EVENT
+  //   (send, main → renderer, MoaDecisionEvent) and EFFECT_EVENT (send,
+  //   MoaEffectEvent) say a record was created or changed.
+  DECK_MOA_DELEGATE_LIST: 'deck:moa:delegate:list',
+  DECK_MOA_DELEGATE_RESOLVE: 'deck:moa:delegate:resolve',
+  DECK_MOA_DELEGATE_AUTO_SET: 'deck:moa:delegate:auto:set',
+  DECK_MOA_DELEGATE_DECISION_EVENT: 'deck:moa:delegate:decision',
+  DECK_MOA_DELEGATE_EFFECT_EVENT: 'deck:moa:delegate:effect',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as
@@ -681,6 +716,9 @@ export const IPC = {
   // Replaces the renderer-only performance.memory.usedJSHeapSize, which only
   // measured the renderer V8 JS heap (~10MB) and grossly under-reported usage.
   APP_MEMORY: 'app:memory',
+  // CPU use of wmux + all its child processes, percent of the whole machine
+  // (renderer -> main, invoke). null until a baseline sample exists.
+  APP_CPU: 'app:cpu',
   // Windows "start on login" toggle. GET queries the per-user Run registry key
   // (source of truth) and returns { enabled }. SET adds/removes it and returns
   // the post-op state. No-op returning { enabled: false } off-Windows.

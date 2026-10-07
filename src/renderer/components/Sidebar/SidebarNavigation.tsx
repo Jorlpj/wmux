@@ -20,8 +20,8 @@ import { FOCUS_RING } from '../focusRing';
 export default function SidebarNavigation({ compact = false, home = false }: {
   compact?: boolean;
   /** The rail: pages only, each swapped into the sheet — Workspaces (home),
-   *  Fleet, Schedules and Remote. Search & commands is a palette, reached from
-   *  the titlebar pill (CommandPill) and ⌘K, so it is not on the rail. */
+   *  Fleet, Schedules and Remote. The command palette is not a page: ⌘K and
+   *  the rail's More menu open it. */
   home?: boolean;
 }) {
   const t = useT();
@@ -34,6 +34,9 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   const runningText = fleetCounts.running > 0 ? t('sidebar.fleetRunning', { count: fleetCounts.running }) : '';
   // Built from the visible strings, so the spoken name contains what is shown.
   const fleetName = [t('fleet.title'), needsText, runningText].filter(Boolean).join(', ');
+  // The rail counts agent rows only: Moa's tickets are read while Fleet is
+  // open, so the tooltip says the badge leaves them out.
+  const fleetTip = needsText || runningText ? t('sidebar.fleetTipAgentsOnly', { name: fleetName }) : fleetName;
   // Scheduled runs: shown once a daemon answers automation.list. Needs you =
   // runs awaiting a response + schedules whose last run failed; otherwise the
   // next run time, muted. Scheduled runs never appear in Fleet itself.
@@ -63,11 +66,9 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   // (pushed PR status only). The spoken name says why.
   const gitSignal = useStore(selectGitRailSignal);
   const gitName = gitSignal ? `${t('git.title')}, ${t('git.railSignal')}` : t('git.title');
-  // Moa: the app-owned HQ workspace, reached only from here (it is not in the
-  // workspace list). Shown while Moa is on and its workspace exists. It is a
-  // workspace, not a page: it opens on Workspaces, and it is the current
-  // place (instead of Workspaces) while it is the active workspace there.
-  const moaShown = useStore((s) => !!s.moa?.config.enabled && s.moa.hq.state === 'ok' && !!s.moa.hq.workspaceId);
+  // Moa's HQ workspace has no rail entry (its panel and the panel's terminal
+  // view are its home), but it can still be the active workspace (Settings ›
+  // Moa, the panel's "open HQ"): Workspaces then leads back to the list.
   const moaActive = useStore((s) => route === 'workspaces' && !s.activeRemoteKey
     && !!s.moa?.hq.workspaceId && s.activeWorkspaceId === s.moa.hq.workspaceId);
   // The rail navigates (a page stays put when clicked again); the in-sheet
@@ -83,7 +84,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   };
   const entries = [
     ...(home ? [{
-      id: 'home', label: t('sidebar.workspaces'), name: t('sidebar.workspaces'), active: route === 'workspaces' && !(home && moaShown && moaActive),
+      id: 'home', label: t('sidebar.workspaces'), name: t('sidebar.workspaces'), active: route === 'workspaces',
       icon: <IconGrid size={16} />,
       onClick: () => {
         const st = useStore.getState();
@@ -115,16 +116,6 @@ export default function SidebarNavigation({ compact = false, home = false }: {
       icon: <IconGitBranch size={16} />,
       onClick: () => useStore.getState().setAppRoute('git'),
     }] : []),
-    ...(home && moaShown ? [{
-      id: 'moa', label: t('moa.rail.title'), name: t('moa.rail.title'), active: moaActive,
-      // A monogram, not a logo: the M of Moa in the rail's stroke style.
-      icon: <Icon size={16}><path d="M3.5 10.5v-7L7 7.5l3.5-4v7" /></Icon>,
-      onClick: () => {
-        const st = useStore.getState();
-        st.openMoaHq();
-        st.setAppRoute('workspaces');
-      },
-    }] : []),
   ];
 
   const springTimer = useRef<number | null>(null);
@@ -150,6 +141,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   return (
     <nav className={`wmux-sidebar-nav${compact ? ' wmux-sidebar-nav-compact' : ''}`} aria-label={t('sidebar.navigation')}>
       {entries.map(({ id, label, name, active, icon, onClick }) => {
+        const tip = id === 'fleet' ? fleetTip : name;
         return (
           <Fragment key={id}><button
             type="button"
@@ -160,7 +152,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
             // in-sheet list's items are toggles.
             aria-current={home && active ? 'page' : undefined}
             aria-pressed={home ? undefined : active}
-            title={compact ? name : undefined}
+            title={compact ? tip : undefined}
             onClick={onClick}
             // Spring-loaded: an issue / PR dragged from the Git page and held
             // over Workspaces opens it, so the drop can land on a pane or a row.
@@ -179,11 +171,11 @@ export default function SidebarNavigation({ compact = false, home = false }: {
 }
 
 /**
- * Trailing counts on the Fleet shortcut. Only Needs you is amber (the attention
- * signal); Running stays muted. The label never gives way to them: when the
- * row is too narrow, Running drops out first and then Needs you shrinks to its
- * number (ui.css). The compact rail has no room for numbers, so it keeps a
- * single amber dot while anything needs you. The accessible name carries the
+ * Trailing counts on the Fleet shortcut. Only Needs you is the --attention
+ * orange (the attention signal); Running stays muted. The label never gives way
+ * to them: when the row is too narrow, Running drops out first and then Needs
+ * you shrinks to its number (ui.css). The compact rail has no room for numbers, so it keeps a
+ * single orange dot while anything needs you. The accessible name carries the
  * full text in every variant.
  */
 function FleetCounts({ compact, badge = false, needsYou, needsText, runningText }: {

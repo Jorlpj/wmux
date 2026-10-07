@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildBrainSkills, installBrainSkills, WMUX_SKILL_MARKER } from '../brainSkills';
+import { buildBrainSkills, installBrainSkills, syncBrainContractFile, WMUX_CONTRACT_MARKER, WMUX_SKILL_MARKER } from '../brainSkills';
 
 let tmpDir: string;
 
@@ -80,6 +80,16 @@ describe('buildBrainSkills', () => {
     expect(approve).toContain('`choiceKey`');
     expect(approve).toMatch(/plain question[\s\S]*no pending approval record/);
     expect(approve).toMatch(/plain question you can answer[\s\S]*reply with terminal_send/);
+  });
+
+  it('routes work for another workspace through moa_propose_handoff, never a pasted envelope', () => {
+    const delegate = skillNamed('delegate');
+    expect(delegate).toContain('## Work for another workspace (Moa / HQ)');
+    expect(delegate).toContain('`moa_propose_handoff`');
+    expect(delegate).toContain('operator approves it');
+    expect(delegate).toContain('Never paste A2A text, envelopes');
+    expect(delegate).toMatch(/unverified agent\s+text/);
+    expect(delegate).toMatch(/You cannot\s+type into that pane yourself/);
   });
 
   it('makes the approve skill say verify-then-press, not press-on-event', () => {
@@ -165,5 +175,55 @@ describe('installBrainSkills', () => {
     fs.mkdirSync(home);
     fs.writeFileSync(path.join(home, '.claude'), 'not a directory', 'utf8');
     expect(() => installBrainSkills(home)).not.toThrow();
+  });
+});
+
+describe('syncBrainContractFile', () => {
+  let home: string;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-contract-'));
+  });
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+  const target = (): string => path.join(home, '.claude', 'CLAUDE.md');
+
+  it('writes the contract under the marker and reports it as in place', () => {
+    expect(syncBrainContractFile(home, 'BODY')).toBe(true);
+    expect(fs.readFileSync(target(), 'utf8')).toBe(`${WMUX_CONTRACT_MARKER}\n\nBODY\n`);
+  });
+
+  it('with no contract writes nothing at all', () => {
+    expect(syncBrainContractFile(home, null)).toBe(false);
+    expect(fs.readdirSync(home)).toEqual([]);
+  });
+
+  it('an unreadable target (a directory) is neither written nor removed', () => {
+    fs.mkdirSync(target(), { recursive: true });
+    expect(syncBrainContractFile(home, 'BODY')).toBe(false);
+    expect(syncBrainContractFile(home, null)).toBe(false);
+    expect(fs.statSync(target()).isDirectory()).toBe(true);
+  });
+
+  it("removes only wmux's own file when the contract goes away", () => {
+    fs.mkdirSync(path.dirname(target()), { recursive: true });
+    fs.writeFileSync(target(), 'operator notes');
+    expect(syncBrainContractFile(home, null)).toBe(false);
+    expect(fs.readFileSync(target(), 'utf8')).toBe('operator notes');
+  });
+});
+
+describe('syncBrainContractFile writes atomically', () => {
+  it('leaves no temp file behind and never a marker-less target', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-contract-atomic-'));
+    try {
+      expect(syncBrainContractFile(home, 'BODY')).toBe(true);
+      expect(syncBrainContractFile(home, 'BODY v2')).toBe(true);
+      const dir = path.join(home, '.claude');
+      expect(fs.readdirSync(dir)).toEqual(['CLAUDE.md']);
+      expect(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8').startsWith(WMUX_CONTRACT_MARKER)).toBe(true);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

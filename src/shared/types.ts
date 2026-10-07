@@ -126,6 +126,11 @@ export interface Surface {
   scrollbackFile?: string;  // surfaceId used as filename for scrollback dump
   /** True once the user manually renamed this tab; blocks shell-set (OSC 0/2) titles. */
   titleLocked?: boolean;
+  /** While titleLocked: the title the first rename replaced. Clearing the
+   *  rename restores it, and the next shell-set title takes over from there.
+   *  Not refreshed from OSC titles while locked — an agent retitles its tab
+   *  many times a second, and each refresh would be a store write. */
+  autoTitle?: string;
 }
 
 // === Pane: either a leaf (has surfaces) or a branch (has children) ===
@@ -494,6 +499,13 @@ export interface MetadataUpdatePayload {
    * send ''.
    */
   lastMessage?: string;
+  /**
+   * The retained last activity line (the renderer's `surfaceLastActivity`)
+   * outlives a Stop, so a finished row can say what it did. Only a session
+   * start sends it, as '' — a fresh session (startup, `/clear`, a restarted
+   * agent) must not inherit the previous session's line.
+   */
+  lastActivity?: '';
   // External RPC channels (meta.setStatus / meta.setProgress) write through
   // the same payload. Renderer applies these to the active workspace when no
   // ptyId/workspaceId is provided.
@@ -859,6 +871,8 @@ export interface SessionData {
    * pane's current working directory (OSC 7-tracked). Default true.
    */
   splitInheritsCwd?: boolean;
+  /** #1838: a clean shell exit (code 0) closes its tab. Default true. */
+  closeTabOnShellExit?: boolean;
   /**
    * Issue #167 idle-clearing of xterm's hidden IME textarea (protects
    * against field-replacing voice injectors). Default false since v3.1.1 —
@@ -935,6 +949,12 @@ export interface SessionData {
   /** #1326 — whether the agent roster's muted trailer shows the auto `w<ws>-<pane>`
    *  coordinate for unlabeled panes. Default true. */
   sidebarShowPaneCoordinates?: boolean;
+  /** Attention blink (2026-10-07): 'off' | 'once' | 'remind' | 'continuous',
+   *  the remind interval in ms, and 'dot' | 'pulse' for finished turns.
+   *  Whitelisted on load (attentionBlink.ts). */
+  attentionBlink?: string;
+  attentionBlinkRemindMs?: number;
+  attentionBlinkFinished?: string;
   /** #1481 — workspace list order ('manual' | 'attention' | 'recent'). Absent in
    *  older sessions; `sidebarAttentionFirst` then decides. Whitelisted on load. */
   sidebarSortMode?: string;
@@ -956,6 +976,8 @@ export interface SessionData {
   anthropicUsageEnabled?: boolean;
   /** Arm a pane held at a usage limit to continue after the reset, unless the pane decided otherwise. */
   usageLimitAutoResume?: boolean;
+  /** #1826 — type the resume line into Claude Code panes recovered at app start. Opt-in. */
+  claudeResumeOnStart?: boolean;
   /** Categories whose surface actions are suppressed (#516). */
   mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];

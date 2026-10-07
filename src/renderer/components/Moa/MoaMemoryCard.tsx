@@ -6,8 +6,9 @@
 // Discard exist here: no free-text answer. Re-read whenever main says Moa
 // moved (a card went up, was answered, or the next one replaced it).
 //
-// Same needs-you grammar as the decision card (content-20% fill, dashed
-// content-30% border, the amber eyebrow as its one state mark).
+// Same needs-you grammar as the Waiting on you rows and the sidebar (a 1px
+// attention-orange hairline over the selection-subtle fill, the orange dot as
+// its one state mark).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
@@ -29,6 +30,29 @@ export function previewOf(fullText: string): { text: string; complete: boolean }
   let text = lines.slice(0, PREVIEW_LINES).join('\n');
   if (text.length > PREVIEW_CHARS) text = text.slice(0, PREVIEW_CHARS);
   return { text, complete: text === fullText.trimEnd() };
+}
+
+/**
+ * The card in plain words. The proposal file starts with frontmatter (name,
+ * description, kind) and markers that are for Moa, not the operator: they are
+ * left out. A precedent (main writes it from the operator's own answer) reads
+ * as one sentence, its question and answer; any other proposal shows its body.
+ */
+export function plainMemory(card: Pick<MoaMemoryCardData, 'kind' | 'fullText'>):
+  | { kind: 'precedent'; question: string; answer: string }
+  | { kind: 'text'; text: string } {
+  let body = card.fullText.replace(/\r\n/g, '\n');
+  const front = /^---\n[\s\S]*?\n---\n?/.exec(body);
+  if (front) body = body.slice(front[0].length);
+  body = body.split('\n').filter((line) => !/^\s*<!--.*-->\s*$/.test(line)).join('\n').trim();
+  if (card.kind === 'precedent') {
+    // Whole fields, every line: Save keeps them, so the operator sees them all.
+    const m = /(?:^|\n)Question:[ \t]*([\s\S]*?)\nAnswer:[ \t]*([\s\S]*?)(?:\nAnswered:[^\n]*)?(?:\nSource task:[^\n]*)?\s*$/.exec(body);
+    const question = m?.[1]?.trim();
+    const answer = m?.[2]?.trim();
+    if (question && answer) return { kind: 'precedent', question, answer };
+  }
+  return { kind: 'text', text: body };
 }
 
 const BUTTON = `h-[26px] px-2 rounded-md text-[12px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS_RING}`;
@@ -89,8 +113,12 @@ export function MoaMemoryCard({
 
   if (!card) return null;
 
-  const preview = previewOf(card.fullText);
+  const plain = plainMemory(card);
+  const shownText = plain.kind === 'text' ? plain.text : '';
+  const preview = plain.kind === 'text' ? previewOf(shownText) : { text: '', complete: true };
   const mustOpen = !preview.complete && !expanded;
+  const title = t(card.kind === 'precedent' ? 'moa.memoryCard.precedentTitle' : card.kind === 'skill' ? 'moa.memoryCard.skillTitle' : 'moa.memoryCard.noteTitle')
+    + (card.replaces ? ` ${t('moa.memoryCard.replaces')}` : '');
   const answer = async (choice: 'save' | 'discard'): Promise<void> => {
     if (submitting) return;
     setSubmitting(true);
@@ -111,28 +139,44 @@ export function MoaMemoryCard({
   const body = (
     <div
       data-moa-memory-card={card.id}
-      className="flex flex-col min-h-0 max-h-full rounded-md px-4 py-3 space-y-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]"
+      className="flex flex-col rounded-md px-4 py-3 space-y-2.5 border border-solid border-[var(--attention-hairline,var(--attention))] bg-[var(--selection-subtle)]"
     >
-      <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--accent-yellow)]" {...tokenAttrs('warning', 'text')}>
+      {/* The orange dot marks the state; the eyebrow words keep the text colour. */}
+      <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
+        <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--attention)]" />
         {t('moa.memoryCard.eyebrow')}
       </div>
       <div className="text-[13px] font-semibold text-[var(--text-main)] leading-relaxed" {...tokenAttrs('textMain', 'text')}>
-        {card.question}
+        {title}
       </div>
-      <div className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] leading-relaxed">
-        {card.description}
-      </div>
-      {/* The text Save writes, as plain text: data, never markup. */}
-      <pre
-        id={fullId}
-        data-moa-memory-text={expanded ? 'full' : 'preview'}
-        tabIndex={expanded ? 0 : undefined}
-        className={`m-0 rounded-md border border-[var(--line)] bg-[var(--bg-base)] px-2.5 py-2 text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words text-[var(--text-main)] ${expanded ? 'min-h-[6em] max-h-[50vh] flex-1 overflow-auto' : 'shrink-0 max-h-[9.5em] overflow-hidden'}`}
-        {...tokenAttrs('textMain', 'text')}
-      >
-        {expanded ? card.fullText.trimEnd() : preview.text}
-        {!expanded && !preview.complete ? '\n…' : ''}
-      </pre>
+      {plain.kind === 'precedent' ? (
+        <>
+          {/* The operator's own answer and Moa's question: text, never markup. */}
+          <p data-moa-memory-rule className="m-0 text-[13px] text-[var(--text-main)] leading-relaxed break-words whitespace-pre-wrap" {...tokenAttrs('textMain', 'text')}>
+            {t('moa.memoryCard.precedentRule', { question: plain.question, answer: plain.answer })}
+          </p>
+          <p className="m-0 text-[12px] text-[color-mix(in_srgb,var(--text-main)_75%,transparent)] leading-relaxed">
+            {t('moa.memoryCard.precedentNote')}
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_75%,transparent)] leading-relaxed">
+            {card.description}
+          </div>
+          {/* What Save keeps, as plain text: data, never markup. */}
+          <pre
+            id={fullId}
+            data-moa-memory-text={expanded ? 'full' : 'preview'}
+            tabIndex={expanded ? 0 : undefined}
+            className={`m-0 rounded-md border border-[var(--line)] bg-[var(--bg-base)] px-2.5 py-2 text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words text-[var(--text-main)] shrink-0`}
+            {...tokenAttrs('textMain', 'text')}
+          >
+            {expanded ? shownText : preview.text}
+            {!expanded && !preview.complete ? '\n…' : ''}
+          </pre>
+        </>
+      )}
       {!preview.complete && (
         <button
           type="button"
@@ -142,7 +186,7 @@ export function MoaMemoryCard({
           onClick={() => setExpanded((v) => !v)}
           className={`${BUTTON} self-start shrink-0 text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] hover:text-[var(--text-main)]`}
         >
-          {expanded ? t('moa.memoryCard.hideFull') : t('moa.memoryCard.showFull', { chars: card.fullText.length })}
+          {expanded ? t('moa.memoryCard.hideFull') : t('moa.memoryCard.showFull', { chars: shownText.length })}
         </button>
       )}
       <div className="flex flex-wrap items-center gap-1.5">
@@ -165,7 +209,7 @@ export function MoaMemoryCard({
           {t('moa.memoryCard.discard')}
         </button>
         {mustOpen && (
-          <span className="text-[11px] text-[color-mix(in_srgb,var(--text-main)_60%,transparent)]">
+          <span className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_75%,transparent)]">
             {t('moa.memoryCard.readToSave')}
           </span>
         )}

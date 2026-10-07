@@ -21,11 +21,11 @@ function moa(hq: string | null, enabled = true): MoaState {
 }
 
 let mainState: MoaState;
-let setup: ReturnType<typeof vi.fn<(id: string) => Promise<MoaSetupResult>>>;
+let setup: ReturnType<typeof vi.fn<(id: string, opts?: { rebind?: boolean }) => Promise<MoaSetupResult>>>;
 beforeEach(() => {
   localStorage.clear();
   mainState = moa(null);
-  setup = vi.fn<(id: string) => Promise<MoaSetupResult>>();
+  setup = vi.fn<(id: string, opts?: { rebind?: boolean }) => Promise<MoaSetupResult>>();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     deck: { moa: { state: vi.fn(async () => mainState), setup } },
   };
@@ -169,3 +169,45 @@ describe('a Diff question still queued when Moa cannot take it', () => {
     expect(useStore.getState().toasts).toHaveLength(0);
   });
 });
+
+describe('recreating a lost HQ', () => {
+  it('brings it back under the SAME id, so the brain\'s session and settings keyed by it carry over', async () => {
+    const lost: MoaState = { ...moa('hq-old'), hq: { workspaceId: 'hq-old', state: 'hq-missing' } };
+    useStore.setState({ moa: lost } as never);
+    mainState = moa('hq-old');
+    setup.mockResolvedValue({ ok: true });
+    const res = await useStore.getState().createMoaHq();
+    expect(res.ok).toBe(true);
+    expect(setup).toHaveBeenCalledWith('hq-old', { rebind: true });
+    const back = useStore.getState().workspaces.find((w) => w.id === 'hq-old');
+    expect(back?.name).toBe('Moa');
+  });
+
+  it('a first run (no HQ yet) still creates a fresh workspace', async () => {
+    useStore.setState({ moa: moa(null) } as never);
+    setup.mockResolvedValue({ ok: true });
+    await useStore.getState().createMoaHq();
+    const [id, opts] = setup.mock.calls[0];
+    expect(id).toMatch(/^ws-/);
+    expect(opts).toBeUndefined();
+  });
+
+  it('overlapping calls share one setup: no second workspace, no second (resetting) setup', async () => {
+    const lost: MoaState = { ...moa('hq-old'), hq: { workspaceId: 'hq-old', state: 'hq-missing' } };
+    useStore.setState({ moa: lost } as never);
+    mainState = moa('hq-old');
+    let finish!: (r: MoaSetupResult) => void;
+    setup.mockImplementation(() => new Promise((r) => { finish = r; }));
+    const first = useStore.getState().createMoaHq();
+    expect(useStore.getState().moaHqSetupInFlight).toBe(true);
+    const second = useStore.getState().createMoaHq();
+    finish({ ok: true });
+    expect(await first).toEqual({ ok: true });
+    expect(await second).toEqual({ ok: true });
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(setup).toHaveBeenCalledWith('hq-old', { rebind: true });
+    expect(useStore.getState().workspaces.filter((w) => w.name === 'Moa').map((w) => w.id)).toEqual(['hq-old']);
+    expect(useStore.getState().moaHqSetupInFlight).toBe(false);
+  });
+});
+

@@ -93,6 +93,7 @@ vi.mock('../../../deck/deckDecisionStore', async (orig) => {
     loadDeckDecisions: vi.fn(() => ({})),
     loadWorkspaceDecision: vi.fn(() => null),
     hasPendingDecision: vi.fn(() => pendingRef.current),
+    hasBrainBlockingDecision: vi.fn(() => pendingRef.current),
     raiseDecision: vi.fn(async (workspaceId: string, args: Omit<RaisedDecision, 'workspaceId'>) => {
       raised.push({ workspaceId, ...args });
       return null;
@@ -268,5 +269,23 @@ describe('deck handler — New session with delegated work outstanding', () => {
     clearActiveDeckWork(WS);
     expect(await newSession()).toEqual({ ok: true });
     expect(raised).toEqual([]);
+  });
+});
+
+describe('deck handler — small talk is not work', () => {
+  it('a thank-you opens no request, so there is nothing for Moa to report done', async () => {
+    await send('고마워');
+    expect(loadActiveDeckWork(WS)).toBeNull();
+  });
+
+  it('a thank-you mid-job is not filed as a follow-up of the live request', async () => {
+    beginOrContinueDeckWork(WS, 'math.js에 빼기 함수 추가해줘');
+    await send('고마워요!');
+    expect(loadActiveDeckWork(WS)).toMatchObject({ objective: 'math.js에 빼기 함수 추가해줘', followUps: [] });
+  });
+
+  it('a request still opens one', async () => {
+    await send('math.js에 빼기 함수 추가해줘');
+    expect(loadActiveDeckWork(WS)?.objective).toBe('math.js에 빼기 함수 추가해줘');
   });
 });

@@ -1,4 +1,8 @@
 import type { BrowserWindow } from 'electron';
+import { getHqWorkspaceId } from '../../deck/deckHqStore';
+import { getTaskLedger } from '../../deck/taskLedgerHost';
+import { getMoaHandoffService } from '../../deck/moaHandoff';
+import { refuseHandoffMarker } from '../handoffMarkerTripwire';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import { isHostedCaller } from '../../../shared/rpc';
@@ -50,6 +54,9 @@ const INTERNAL_RENDERER_FIELDS = [
   'requirePaneIdentity',
   'livePaneIds',
   'deliveryDeadlineAt',
+  'deliveryGuardKey',
+  'presetTaskId',
+  'hqHandoffOnly',
 ] as const;
 
 /**
@@ -71,6 +78,8 @@ function withOperatorOrigin(
   if (ctx?.operator) out.operatorOrigin = true;
   return out;
 }
+
+export { refuseHandoffMarker } from '../handoffMarkerTripwire';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -118,6 +127,16 @@ type CallerPane =
  * the same resolution the renderer's update path makes (stashed panes count, a
  * ptyId the workspace does not own is treated as absent).
  */
+/** Why the HQ could not close a hand-off task (requesterComplete codes). */
+const HANDOFF_CLOSE_REFUSAL: Record<string, string> = {
+  not_requester: 'this HQ did not propose it, or it was never delivered',
+  ended: 'the task already ended',
+  needs_input: 'the worker is waiting on the operator; relay its question instead',
+  turn_not_ended: "the worker's turn has not ended yet; wait for its stop",
+  target_working: 'the worker is mid-turn again; wait for its next stop',
+  error: 'the task could not be moved',
+};
+
 async function resolveCallerPane(
   getWindow: () => BrowserWindow | null,
   workspaceId: unknown,
@@ -431,8 +450,9 @@ export function registerA2aRpc(
   // A2A protocol — whoami/discover/broadcast/skills는 렌더러 소유 그대로.
   router.register('a2a.whoami', (params) => sendToRenderer(getWindow, 'a2a.whoami', params));
   router.register('a2a.discover', (params) => sendToRenderer(getWindow, 'a2a.discover', params));
-  router.register('a2a.broadcast', (params, ctx) =>
-    sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx)));
+  router.register('a2a.broadcast', async (params, ctx) =>
+    refuseHandoffMarker('a2a.broadcast', params.message, ctx)
+    ?? sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx)));
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
 
   // task.query — 데몬 정본 + 렌더러 캐시 병합(envelope PR4).
@@ -554,12 +574,31 @@ export function registerA2aRpc(
   // 메시지 배달/이벤트 방출(렌더러 UI 반응성 로직 보존). 데몬 reject → 렌더러
   // 미접촉 반환(재판정 금지). 데몬 unavailable → 현행 렌더러-검증 경로 폴백.
   router.register('a2a.task.update', async (rawParams, ctx) => {
+    const marked = refuseHandoffMarker('a2a.task.update', rawParams.message, ctx);
+    if (marked) return marked;
     const params = withOperatorOrigin(rawParams, ctx);
     // 메시지 선검증(shared validateMessage — 렌더러와 동일 계약): 데몬 커밋 후
     // 렌더러가 메시지를 거부해 캐시-데몬이 갈라지는 창을 닫는다.
     if (typeof params.message === 'string') {
       try { validateMessage(params.message); } catch (e) {
         return { error: `a2a.task.update: ${e instanceof Error ? e.message : 'invalid'}` };
+      }
+    }
+    // A Moa hand-off is the operator's task, so its receiver never closes it
+    // through this lane. The HQ that proposed it may close it as completed once
+    // the worker's turn has ended; main moves it, with the worker's closing
+    // words as the result. The caller proves it is that HQ by its own pane
+    // there (or its commander token). Any other caller falls through to the
+    // receiver rules below, which refuse it.
+    if (params.status === 'completed' && typeof params.taskId === 'string' && typeof params.workspaceId === 'string') {
+      const handoffs = getMoaHandoffService();
+      if (handoffs && handoffs.byTask(params.taskId)?.hqWorkspaceId === params.workspaceId) {
+        const proven = ctx?.commanderWorkspace === params.workspaceId
+          || (await resolveCallerPane(getWindow, params.workspaceId, params.senderPtyId)).kind === 'resolved';
+        if (!proven) return { error: 'a2a.task.update: only the HQ that proposed this hand-off may close it' };
+        const done = await handoffs.requesterComplete(params.workspaceId, params.taskId);
+        if (done.ok) return { ok: true, taskId: params.taskId, status: 'completed', result: done.result };
+        return { error: `a2a.task.update: hand-off not closed (${done.code}): ${HANDOFF_CLOSE_REFUSAL[done.code]}${done.message ? ` (${done.message})` : ''}` };
       }
     }
     // External callers must prove their pane to move a pane-pinned task; the
@@ -600,7 +639,7 @@ export function registerA2aRpc(
       if (gate.kind === 'ok') {
         if (cancelWorker) claudeWorker.cancel(cancelWorker);
         // Work link (best-effort): the daemon's committed state is the truth.
-        void recordTaskState(params.taskId, stateOfTask(gate.result.task));
+        void recordTaskState(params.taskId, stateOfTask(gate.result.task), undefined, gate.result.task);
         return sendToRenderer(getWindow, 'a2a.task.update', {
           ...params,
           daemonCommitted: true,
@@ -611,7 +650,11 @@ export function registerA2aRpc(
       // explicit ok from it counts as a committed cancel.
       const res = await sendToRenderer(getWindow, 'a2a.task.update', params);
       if (cancelWorker && isRecord(res) && res.ok === true) claudeWorker.cancel(cancelWorker);
-      if (isRecord(res) && res.ok === true) void recordTaskState(params.taskId, params.status);
+      if (isRecord(res) && res.ok === true) {
+        // No committed task on this path: its report is the update itself.
+        void recordTaskState(params.taskId, params.status, undefined,
+          { status: { state: params.status, message: params.message, evidence: params.evidence } });
+      }
       return res;
     }
     // Message-only update: may reopen an ended task (daemon first).
@@ -634,6 +677,8 @@ export function registerA2aRpc(
   // 해석·승인 게이트 등 렌더러 UI 반응성 로직은 그대로). 워커 spawn **전에**
   // await — 이후 전이(working/completed)가 데몬 게이트에서 태스크를 찾도록.
   router.register('a2a.task.send', async (params, ctx) => {
+    const marked = refuseHandoffMarker('a2a.task.send', [params.message, params.title], ctx);
+    if (marked) return marked;
     // Forward the VALIDATED commander binding (RpcRouter set it from the
     // per-spawn token; never read from the wire, so any caller-supplied value
     // is dropped first). The renderer's reply-delivery guards need it: an
@@ -646,6 +691,15 @@ export function registerA2aRpc(
     // `workspaceId` on the wire would carry its privilege into someone else's.
     let sendParams: Record<string, unknown> = withOperatorOrigin(params, ctx);
     delete sendParams.commanderWorkspaceId;
+    // A main-registered delivery check (deliveryGuards.ts), kept only on the
+    // operator lane. It can only add a refusal, never skip a check.
+    if (ctx?.operator === true && typeof params.deliveryGuardKey === 'string' && params.gatedDelivery === true) {
+      sendParams.deliveryGuardKey = params.deliveryGuardKey;
+    }
+    // A task id main minted for a new operator send (moaHandoff.ts).
+    if (ctx?.operator === true && typeof params.presetTaskId === 'string' && !params.taskId) {
+      sendParams.presetTaskId = params.presetTaskId;
+    }
     // A trusted in-process caller (Git page, fanout, Moa) that created the work
     // link first names it here, so the new task joins that link instead of
     // starting a twin. Never taken from an external caller; main-only.
@@ -655,6 +709,19 @@ export function registerA2aRpc(
     if (ctx?.commanderWorkspace) {
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
       sendParams.workspaceId = ctx.commanderWorkspace;
+      // Moa (the HQ brain) gives work to another workspace only through a
+      // hand-off the operator approves (moa_propose_handoff). A new task from
+      // it may go to its own workspace and its own fan-out tasks; the renderer
+      // refuses any other target after it resolves `to`.
+      if (!params.taskId && ctx.commanderWorkspace === getHqWorkspaceId()) {
+        let own: string[] = [];
+        try {
+          own = getTaskLedger().list({ ownerWorkspaceId: ctx.commanderWorkspace }).map((e) => e.taskWorkspaceId);
+        } catch {
+          // a ledger we cannot read grants nothing extra
+        }
+        sendParams.hqHandoffOnly = { allowedTargets: [ctx.commanderWorkspace, ...own] };
+      }
     }
     // A NEW execute send's reply is held until the user answers the approval
     // prompt, which the 5 s bridge default gave up on long before (#1462). The

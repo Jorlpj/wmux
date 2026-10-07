@@ -305,6 +305,13 @@ export async function reconcileOrphanDeckState(
   }
 }
 
+/** Whether a work link's owner still counts as live for the closed-workspace
+ *  settle: listed now, or the HQ. A missing HQ is not closed — it comes back
+ *  under the same id — so its links are kept, like its Deck state above. */
+export function workLinkOwnerLive(live: ReadonlySet<string>, hq: string | null): (workspaceId: string) => boolean {
+  return (workspaceId) => live.has(workspaceId) || workspaceId === hq;
+}
+
 let startupDeckReconcileDone = false;
 
 export function isStartupDeckReconcileDone(): boolean {
@@ -323,6 +330,9 @@ export async function tryStartupDeckReconcile(opts?: {
   dir?: string;
   log?: (line: string) => void;
   maxSnapshotAgeMs?: number;
+  /** Settle work outside the deck stores whose workspace is gone (the work
+   *  links). Runs under the same restored-session rule as the sweep. */
+  settleClosedWork?: (liveIds: ReadonlySet<string>) => Promise<unknown>;
 }): Promise<boolean> {
   if (startupDeckReconcileDone) return true;
   const mirror = getWorkspaceMirror();
@@ -350,6 +360,7 @@ export async function tryStartupDeckReconcile(opts?: {
     const liveIds = entries.map((e) => e.id);
     try {
       await reconcileOrphanDeckState(liveIds, opts);
+      await opts?.settleClosedWork?.(new Set(liveIds));
       return true;
     } catch (err) {
       opts?.log?.(`startup reconcile error: ${String(err)}`);

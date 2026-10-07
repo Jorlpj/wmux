@@ -109,9 +109,11 @@ const decisions = new Map<string, FakeDecision>();
 vi.mock('../../../deck/deckDecisionStore', () => ({
   onDecisionsChanged: vi.fn(() => () => undefined),
   isIssueProposalDecision: vi.fn(() => false),
+  isMainOwnedDecision: vi.fn(() => false),
   loadWorkspaceDecision: vi.fn((ws: string) => decisions.get(ws) ?? null),
   loadDeckDecisions: vi.fn(() => Object.fromEntries(decisions.entries())),
   hasPendingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),
+  hasBrainBlockingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),
   resolveDecision: vi.fn(async () => null),
   clearResolvedDecision: vi.fn(async () => undefined),
   clearDecision: vi.fn(async () => undefined),
@@ -285,7 +287,9 @@ describe('DECK_BRIEFING_GET', () => {
     seedMirror('ws-1', [
       { ptyId: 'p-run', agentStatus: 'running' },
       { ptyId: 'p-b', agentStatus: 'awaiting_input' },
-      { ptyId: 'p-a', agentStatus: 'waiting' },
+      { ptyId: 'p-a', agentStatus: 'awaiting_input' },
+      // 2026-10-07 — a turn that ended with no question is idle, not blocked.
+      { ptyId: 'p-w', agentStatus: 'waiting' },
     ]);
     const r = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
       briefing: WorkspaceBriefing;

@@ -21,6 +21,7 @@ import {
   parseTrustedAuthors,
   type MoaConfigPatch,
   type MoaMemoryItem,
+  type MoaShadowStats,
 } from '../../../shared/moa';
 import type { RetroSchedule } from '../../../shared/trackRecord';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
@@ -143,6 +144,24 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
     await refreshMoa();
   };
 
+  // ── Shadow judge readout: re-read when Moa moves, and every 30 s while on ──
+  const shadowOn = moa?.config.shadowJudge === true;
+  const [shadow, setShadow] = useState<MoaShadowStats | null>(null);
+  useEffect(() => {
+    let live = true;
+    const api = window.electronAPI.deck?.moa;
+    if (!api?.shadowStats) return;
+    const read = () => {
+      api.shadowStats().then((s) => { if (live) setShadow(s ?? null); }, () => { /* keep the last readout */ });
+    };
+    read();
+    const timer = shadowOn ? window.setInterval(read, 30_000) : undefined;
+    return () => {
+      live = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [moa, shadowOn]);
+
   // ── Master switch ──
   const [switchFailed, setSwitchFailed] = useState(false);
   const onSwitchChange = async (next: boolean) => {
@@ -168,7 +187,11 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
   };
 
   // ── HQ status and its one-click recovery ──
-  const [hqBusy, setHqBusy] = useState(false);
+  const [localHqBusy, setHqBusy] = useState(false);
+  // A recreate running anywhere (the missing notice starts one on its own)
+  // holds these buttons too: a second setup would race the first.
+  const setupInFlight = useStore((s) => s.moaHqSetupInFlight);
+  const hqBusy = localHqBusy || setupInFlight;
   const [hqFailed, setHqFailed] = useState(false);
   const runHqAction = async (action: () => Promise<boolean>) => {
     setHqBusy(true);
@@ -657,6 +680,31 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             data-testid="moa-approval-press"
           />
         </SettingRow>
+        <SettingRow id="moashadowjudge" label={t('moa.settings.shadowJudge')} description={t('moa.settings.shadowJudgeDesc')}>
+          <Switch
+            checked={shadowOn}
+            onCheckedChange={(v) => { void patchConfig({ shadowJudge: v }); }}
+            aria-label={t('moa.settings.shadowJudge')}
+            disabled={!loaded}
+            data-testid="moa-shadow-judge"
+          />
+        </SettingRow>
+        {shadow && (shadowOn || shadow.decisions > 0) && (
+          <SettingNote className="tabular-nums" data-testid="moa-shadow-readout">
+            {t('moa.settings.shadowReadout', {
+              decisions: shadow.decisions,
+              agreement: shadow.compared > 0 ? `${Math.round((shadow.agreed / shadow.compared) * 100)}%` : '—',
+              compared: shadow.compared,
+              escalations: shadow.escalations,
+              tokens: shadow.tokensToday.toLocaleString(),
+            })}
+          </SettingNote>
+        )}
+        {shadow?.full && (
+          <SettingNote tone="warning" data-testid="moa-shadow-full">
+            {t('moa.settings.shadowFull')}
+          </SettingNote>
+        )}
         {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
             terminal brain (an interactive TUI) and ACP brains ignore the flag
             entirely (see createAdapter in deck.handler), so with the terminal
@@ -795,6 +843,24 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             aria-label={t('moa.settings.issueProposals')}
             disabled={!loaded}
             data-testid="moa-issue-proposals"
+          />
+        </SettingRow>
+        <SettingRow id="moaautohandoff" label={t('moa.settings.autoHandoff')} description={t('moa.settings.autoHandoffDesc')}>
+          <Switch
+            checked={moa?.config.autoHandoff !== false}
+            onCheckedChange={(v) => { void patchConfig({ autoHandoff: v }); }}
+            aria-label={t('moa.settings.autoHandoff')}
+            disabled={!loaded}
+            data-testid="moa-auto-handoff"
+          />
+        </SettingRow>
+        <SettingRow id="moareadwithoutasking" label={t('moa.settings.readWithoutAsking')} description={t('moa.settings.readWithoutAskingDesc')}>
+          <Switch
+            checked={moa?.config.readWithoutAsking !== false}
+            onCheckedChange={(v) => { void patchConfig({ readWithoutAsking: v }); }}
+            aria-label={t('moa.settings.readWithoutAsking')}
+            disabled={!loaded}
+            data-testid="moa-read-without-asking"
           />
         </SettingRow>
         <SettingRow id="moaissuepoll" label={t('moa.settings.issuePoll')} description={t('moa.settings.issuePollDesc')}>

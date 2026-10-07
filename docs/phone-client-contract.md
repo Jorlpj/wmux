@@ -375,7 +375,7 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, moa?, moaSessionId?, channels?, terminalPromptDetail?,
+                      gatedTools, gateEnabled?, fleetSidebar?, moaDelegations?, moa?, moaSessionId?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
@@ -2654,6 +2654,11 @@ version bump.
 - **Channel posting from the phone** — deliberately behind a future
   `--allow-channel-post` grant. Reading, acking and joining (§9) are all this
   contract offers today.
+- **Answering a Moa hand-off from the phone** — v1 is the read-only
+  `moaHandoff` notice (see *Desktop sidebar fields*). v2 plans a new
+  authenticated route that resolves a pending hand-off card by its id alone,
+  with two answers, Hand off and Cancel. Edit stays desktop-only until a
+  contract for a phone text field exists.
 - **The relay is not deployed.** Until `WMUX_PUSH_RELAY_URL` and
   `WMUX_PUSH_RELAY_SECRET` are set on a daemon, push is inert by design — not an
   error, just nothing sent.
@@ -3129,6 +3134,24 @@ not the desktop fields.
   counts tasks waiting on the user, `toReview` counts open tasks whose every
   agent pane reported complete (Fleet's "Ready to review"), and `finished`
   counts tasks whose every agent pane reported complete.
+- `moaHandoff` — present only while a hand-off Moa proposed is waiting for the
+  operator in this workspace's decision slot (the workspace whose agent would
+  receive the work). Read-only notice:
+
+  ```json
+  "moaHandoff": { "agentName": "Claude Code", "title": "Fix the login redirect", "raisedAt": 1759600000000 }
+  ```
+
+  `agentName` is the receiving agent's display name (at most 64 characters),
+  `title` the first non-blank line of the proposed text with control and bidi
+  characters removed (one line, at most 80 characters), `raisedAt` epoch ms
+  when the card was raised. The text itself is never sent. Show it as "Moa
+  wants to hand work to <agentName>: <title>" and send the user to the desktop
+  to answer it; this version offers no way to approve, edit or cancel it from
+  the phone. It disappears on the next poll after the card is answered.
+  Omitted, never `null`, when nothing is pending, when the desktop is too old
+  to say, and when the desktop's reply was over its size budget (it is cut
+  after the layout trees and `moaDelegations`, before the pane placement).
 
 Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
 value and rules as on `GET /api/sessions`) when the desktop places that
@@ -3136,6 +3159,52 @@ session in a pane of that workspace.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.
+
+Top level of `GET /api/workspaces`: `moaDelegations` — the jobs Moa handed to
+agents, the same jobs the desktop Fleet lists as tickets. `/api/config` carries
+`moaDelegations: true` when this daemon can serve the key (a desktop bridge is
+wired); like `fleetSidebar` it describes support, not presence. Read-only:
+
+```json
+"moaDelegations": [
+  { "taskId": "task-…", "workspaceId": "ws-…", "agentName": "Claude Code",
+    "title": "Fix the login redirect", "state": "blocked", "since": 1759600000000 },
+  { "taskId": "task-…", "workspaceId": "ws-…", "agentName": "Codex CLI",
+    "title": "Add the retry test", "state": "done", "since": 1759590000000 }
+]
+```
+
+- **Which jobs.** A job Moa handed off (operator-approved or automatic) that
+  has an A2A task. Every open job (`working`, `blocked`) however old, plus jobs
+  that ended (`done`, `failed`) within the last 24 hours. At most 20, newest
+  `since` first; past 20 the oldest are left out. A hand-off Moa only proposed
+  is not a job yet: it is the `moaHandoff` notice on its workspace row.
+- `taskId` — the A2A task id. Stable for the job's life; key rows by it.
+- `workspaceId` — the workspace doing the work. It may name a workspace that is
+  not in `workspaces[]`: finished workers' workspaces are often closed. Show
+  the job anyway, with no link to the row.
+- `agentName` — the receiving agent's display name (at most 64 characters):
+  the name the desktop shows for the agent in that pane, else the agent the
+  job was handed to, else `Agent`.
+- `title` — the job's title, one line with control and bidi characters
+  removed, at most 80 characters (`Untitled task` when there is none).
+- `state` — `working`, `blocked`, `done` or `failed`. `blocked` means the job
+  waits on someone: a Moa decision about it is pending, the task asked for
+  input, or the agent's pane waits on a prompt (an approval or permission
+  prompt, or a question it asked). Send the user to the desktop to answer it;
+  this version answers nothing from the phone. `done` covers a job whose PR is
+  waiting for review or merged; `failed`, a task that failed. Treat an unknown
+  value as `working`.
+- `since` — epoch ms the job last changed on the desktop's record (delivered,
+  started, asked, answered, ended). A pane prompt that blocks a job does not
+  move it.
+
+The request text, the agent's report, its verification and any transcript are
+never sent. The key is an empty array when the desktop has no such jobs, and
+omitted, never `null`, when the desktop is too old to say, when it could not
+read its job records for this poll, and when its reply was over its size
+budget (the list goes whole, right after the layout trees). Read an absent key
+as "unknown", not as "no jobs": keep showing what the last poll returned.
 
 #### The Moa HQ (`role`, `moa`)
 
@@ -3885,6 +3954,7 @@ bridge. A missing key reads as `false`; none of them moves `protocolVersion`.
 | `chatSkills` | `/commands` accepts `?agent=` and answers the native catalogue |
 | `chatLaunchBare` | `POST …/chat/launch` accepts an omitted or empty `prompt` (starts the agent with no first message). Daemon capability; `chatLaunch` still says whether this caller may launch |
 | `chatLaunchResume` | `POST …/chat/launch` accepts `resume: true` (continue the newest conversation in the pane's cwd). Daemon capability, same as above |
+| `chatResumeBound` | `resume: true` is also accepted on a pane that keeps a binding whose agent exited, and continues exactly that conversation; `/turns` `chat.resumable` says when. Daemon capability, same as above |
 | `chatVersion` | Version of this chat contract (`1`). Bumped only on a breaking change |
 
 Gate the composer on `chatSend`, not on `allowInput`: a read-only device reads
@@ -3908,6 +3978,7 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   "maxSendBytes": 23000,          // only when the binding has a byte limit (OpenCode)
   "agentStatus": "complete",      // open set
   "agentAlive": true,
+  "resumable": false,             // terminal only; see "Resuming a bound pane"
   "capabilities": { "history": true, "send": true, "permissions": false, "cancel": false,
                     "fileUndo": false, "streaming": false, "launch": false, "skills": true },
   "blocked": { "by": "approval", "approvalId": "apr_…" },  // only while blocked
@@ -4177,10 +4248,55 @@ same agent is running there), the answer is `409 resume-in-use`
 (`effect:"none"`), because two agents would append to one conversation. The
 lookup is cached for 30 s per agent, cwd and account.
 
-Eligibility is unchanged: a pane that already resolves to a conversation
-(including one whose agent has exited but whose binding remains) is still
-`conversation-exists`. Resume is therefore for a pane with no binding, typically
-a fresh pane opened in the project's directory.
+Without `resume`, a pane that already resolves to a conversation (including
+one whose agent has exited but whose binding remains) is still
+`conversation-exists`. The newest-conversation lookup above is for a pane with
+no binding, typically a fresh pane opened in the project's directory.
+
+**Resuming a bound pane** (`chatResumeBound`). On a pane that keeps a binding
+and whose agent is not running, `resume: true` continues exactly that binding's
+conversation instead: Claude by its `agentSessionId` (`claude --resume <id>`),
+Codex by its thread id (`codex resume <id>`), in the binding's own folder. It is
+the line the desktop resume pill types. The id must be a lowercase UUID, and the
+line is built from fixed tokens only. `prompt` follows the same rules as above
+(the first message after the resume; not on PowerShell, see below). `mode` is the request's own: the
+binding's previous permission mode is never restored, and the dangerous-mode
+rules are unchanged.
+
+- **POSIX shells** (zsh, bash and sh on macOS and Linux; any other shell there,
+  such as fish or nu, is `launch-unsupported`): Claude is typed as
+  `cd -- '<cwd>' && claude --resume <id>`, Codex as
+  `codex resume --remote <relay> --cd '<cwd>' <id>`. A folder that cannot be one
+  single-quoted word is `resume-unavailable`.
+- **Windows PowerShell and pwsh**: `if (Set-Location -LiteralPath '<cwd>' -PassThru
+  -ErrorAction SilentlyContinue) { claude --resume <id> }`, likewise for
+  `codex resume <id>` (no relay there). A pane created with a chosen account
+  sets it first inside the block (`$env:CLAUDE_CONFIG_DIR = '<dir>'; …`, or
+  `CODEX_HOME`). The folder must be a drive-absolute path. **No first message
+  here:** Windows PowerShell, and pwsh calling a `.cmd` shim, pass native
+  arguments without escaping inner quotes, so a `prompt` cannot be kept one
+  argument. A bound resume with a `prompt` on a PowerShell pane answers
+  `409 resume-prompt-unsupported` and types nothing; resume without one, then
+  send the message through `POST …/chat/messages`.
+- **cmd.exe and WSL panes** answer `409 launch-unsupported`,
+  `reason:"unsupported-shell"`, and are never `resumable`: cmd.exe has no prompt
+  integration to prove an empty prompt, and a WSL pane's shell idles inside the
+  distro, where the host cannot prove it.
+
+The agent may start a new session id on resume. The binding then moves and
+`historyEpoch` changes, so re-read the conversation as a new one.
+
+`chat.resumable` (terminal bindings) is `false` wherever a bound resume launch
+(without a prompt) would refuse before typing, checked in the launch's order:
+the agent is running, the pane holds a managed conversation, the shell is not
+one of the above (fish, nu, cmd.exe, WSL), the binding's id or folder fails its
+check, the conversation's record is gone, or another live pane runs it. The
+record must be a non-empty transcript inside the session root of the account
+the pane launches with (`CLAUDE_CONFIG_DIR` or `CODEX_HOME` when set; no other
+root counts) and its folder must exist. For `resumable` that lookup is cached
+for 30 s, like the one above. The launch re-checks the record without the
+cache, so a record deleted meanwhile is `409 resume-unavailable`, and the
+pane-state checks (empty prompt, approvals) apply as for any launch.
 Receipts and the binding wait are the same as for any launch.
 
 The daemon re-authorizes once more as the last await before the launcher is
@@ -4212,10 +4328,11 @@ changes; never persist it.
 | same id, first attempt still running | 202 | `{state:"pending", replayed:true, clientLaunchId}` | absent |
 | launch receipt store full | 429 | `{error:"launch-busy"}` | `none` — retry later |
 | another launch running on this pane | 409 | `{error:"launch-pending"}` | `none` |
-| pane already has a conversation | 409 | `{error:"conversation-exists"}` | `none` |
-| `resume` with nothing to continue in the pane's cwd | 409 | `{error:"resume-unavailable"}` | `none` |
+| pane already has a conversation (no `resume`, or a managed record) | 409 | `{error:"conversation-exists"}` | `none` |
+| `resume` with nothing to continue in the pane's cwd; on a bound pane: the record is gone or unreadable, the id or folder fails its check, or `agent` is not the binding's agent | 409 | `{error:"resume-unavailable"}` | `none` |
 | `resume` of a conversation another live pane is running | 409 | `{error:"resume-in-use"}` | `none` |
-| `resume` + `prompt` for an agent that cannot take both | 409 | `{error:"resume-prompt-unsupported"}` | `none` |
+| `resume` on a bound pane whose agent is still running | 409 | `{error:"launch-not-ready", reason:"agent-running"}` | `none` |
+| `resume` + `prompt` for an agent that cannot take both, or a bound resume with a `prompt` on a PowerShell pane | 409 | `{error:"resume-prompt-unsupported"}` | `none` |
 | shell not ready | 409 | `{error:"launch-not-ready", reason:"shell-not-empty"\|"shell-busy"\|"approval-pending"\|"not-integrated"}` | `none` |
 | shell cannot launch | 409 | `{error:"launch-unsupported", reason:"unsupported-shell"\|"shell-has-children"}` | `none` |
 | same id, different request | 409 | `{error:"launch-id-conflict"}` | `none` |

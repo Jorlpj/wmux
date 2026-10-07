@@ -96,17 +96,18 @@ describe('Pin to top — order', () => {
     seed({ pa: 'idle', pb: 'awaiting_input', idle: 'idle', x: 'awaiting_input' }, 'attention', ['pa', 'pb']);
     act(() => root.render(<Sidebar />));
     expect(shown()).toEqual(['pa', 'pb', 'x', 'idle']);
-    // Pinned rows show their Ctrl+N hint even in a sorted order: it matches.
-    expect(row('pa').textContent).toContain('^1');
-    expect(row('idle').textContent).not.toContain('^');
+    // Every row shows its real Ctrl+N number (stored position) in a sorted order.
+    expect(row('pa').querySelector('[data-shortcut-number]')?.getAttribute('data-shortcut-number')).toBe('1');
+    expect(row('idle').querySelector('[data-shortcut-number]')?.getAttribute('data-shortcut-number')).toBe('3');
   });
 
   it('the rail shows the same pinned-first order, numbered as stored', () => {
     // `a` is running and would sort above the idle p2 without the group.
     seed({ p1: 'idle', p2: 'idle', a: 'running' }, 'attention', ['p1', 'p2']);
     act(() => root.render(<MiniSidebar />));
-    const titles = [...container.querySelectorAll('button[title]')].map((b) => b.getAttribute('title')).filter((t) => /^[a-z0-9]+ \(Ctrl\+\d\)$/.test(t ?? ''));
-    expect(titles).toEqual(['p1 (Ctrl+1)', 'p2 (Ctrl+2)', 'a (Ctrl+3)']);
+    const titles = [...container.querySelectorAll('button[title]')].map((b) => b.getAttribute('title')).filter((t) => /^[a-z0-9]+(, [A-Za-z ]+)? \(Ctrl\+\d\)$/.test(t ?? ''));
+    // The rail names the status too ("name, status").
+    expect(titles).toEqual(['p1 (Ctrl+1)', 'p2 (Ctrl+2)', 'a, Running (Ctrl+3)']);
   });
 
   it('Ctrl+1 jumps to the first pinned row (the displayed top)', () => {

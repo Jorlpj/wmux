@@ -174,6 +174,10 @@
   --accent-green: #34D399;
   --accent-red: #F87171;
   --accent-yellow: #FBBF24;
+  --attention: #FF8A3D;
+  --attention-text: #FF9550;
+  --attention-ink: #1A171B;
+  --attention-hairline: color-mix(in srgb, var(--attention) 66%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 69, 155, 247;
@@ -197,6 +201,10 @@
   --accent-green: #059669;
   --accent-red: #DC2626;
   --accent-yellow: #B45309;
+  --attention: #D8580B;
+  --attention-text: #A33F09;
+  --attention-ink: #141414;
+  --attention-hairline: color-mix(in srgb, var(--attention) 98%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.35);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 69, 155, 247;
@@ -224,6 +232,10 @@
   --accent-green: #8FBF7F;
   --accent-red: #D96C6C;
   --accent-yellow: #E8A33D;
+  --attention: #FF7A2E;
+  --attention-text: #FF8A45;
+  --attention-ink: #151517;
+  --attention-hairline: color-mix(in srgb, var(--attention) 72%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 232, 163, 61;
@@ -252,6 +264,10 @@
   --accent-green: #3D6750;
   --accent-red: #BC002D;
   --accent-yellow: #A06A1A;
+  --attention: #CA5510;
+  --attention-text: #9A3B08;
+  --attention-ink: #000000;
+  --attention-hairline: color-mix(in srgb, var(--attention) 98%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.35);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 188, 0, 45;
@@ -276,6 +292,10 @@
   --accent-green: #A6E3A1;
   --accent-red: #F38BA8;
   --accent-yellow: #F9E2AF;
+  --attention: #FAB387;
+  --attention-text: #FAB387;
+  --attention-ink: #1E1E2E;
+  --attention-hairline: color-mix(in srgb, var(--attention) 55%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 137, 180, 250;
@@ -300,6 +320,10 @@
   --accent-green: #909090;
   --accent-red: #FF5555;
   --accent-yellow: #C0C0C0;
+  --attention: #FF8A3D;
+  --attention-text: #FF9550;
+  --attention-ink: #080808;
+  --attention-hairline: color-mix(in srgb, var(--attention) 58%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 160, 160, 160;
@@ -324,6 +348,10 @@
   --accent-green: #4EBF8B;
   --accent-red: #E8554E;
   --accent-yellow: #F2C85B;
+  --attention: #FF9248;
+  --attention-text: #FF9C5A;
+  --attention-ink: #0C1428;
+  --attention-hairline: color-mix(in srgb, var(--attention) 60%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 91, 141, 239;
@@ -348,12 +376,44 @@
   --accent-green: #5AAE6A;
   --accent-red: #E84040;
   --accent-yellow: #F2C744;
+  --attention: #FF9A3C;
+  --attention-text: #FFA552;
+  --attention-ink: #1A0A0A;
+  --attention-hairline: color-mix(in srgb, var(--attention) 54%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 232, 64, 64;
   --accent-blue-rgb: 106, 160, 204;
   --bg-surface-rgb: 58, 26, 26;
   --bg-base-rgb: 26, 10, 10;
+}
+
+[data-theme="gruvbox-dark-hard"] {
+  --bg-base: #1D2021;
+  --bg-mantle: #181A1B;
+  --bg-surface: #3C3836;
+  --bg-overlay: #504945;
+  --text-muted: #7C6F64;
+  --text-subtle: #928374;
+  --text-sub: #BDAE93;
+  --text-sub2: #A89984;
+  --text-main: #EBDBB2;
+  --accent: #FE8019;
+  --accent-cursor: #FE8019;
+  --accent-blue: #83A598;
+  --accent-green: #B8BB26;
+  --accent-red: #FB4934;
+  --accent-yellow: #FABD2F;
+  --attention: #FE8019;
+  --attention-text: #FE9040;
+  --attention-ink: #1D2021;
+  --attention-hairline: color-mix(in srgb, var(--attention) 73%, transparent);
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
+  --accent-rgb: 254, 128, 25;
+  --accent-blue-rgb: 131, 165, 152;
+  --bg-surface-rgb: 60, 56, 54;
+  --bg-base-rgb: 29, 32, 33;
 }
 
 [data-theme="nightowl"] {
@@ -372,6 +432,10 @@
   --accent-green: #8AAA70;
   --accent-red: #CC6B5A;
   --accent-yellow: #C89060;
+  --attention: #F08A3E;
+  --attention-text: #F59A55;
+  --attention-ink: #1E1B16;
+  --attention-hairline: color-mix(in srgb, var(--attention) 66%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 196, 160, 85;
@@ -396,6 +460,10 @@
   --accent-green: #909090;
   --accent-red: #FF4444;
   --accent-yellow: #A0A0A0;
+  --attention: #FF8A3D;
+  --attention-text: #FF9550;
+  --attention-ink: #000000;
+  --attention-hairline: color-mix(in srgb, var(--attention) 54%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 192, 192, 192;
@@ -422,6 +490,10 @@
   --accent-green: #1F6940;
   --accent-red: #C60C30;
   --accent-yellow: #9B6A07;
+  --attention: #CE530B;
+  --attention-text: #983A08;
+  --attention-ink: #000000;
+  --attention-hairline: color-mix(in srgb, var(--attention) 98%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.35);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 0, 52, 120;
@@ -1010,7 +1082,7 @@ select option {
   animation: sidebar-dot-breathe 2s ease-in-out infinite;
 }
 .sidebar-dot-waiting {
-  --sidebar-dot-glow: color-mix(in srgb, var(--accent-red) 70%, transparent);
+  --sidebar-dot-glow: color-mix(in srgb, var(--attention) 70%, transparent);
 }
 .sidebar-dot-waiting::after {
   animation: sidebar-dot-breathe 1.2s ease-in-out infinite;
@@ -1161,6 +1233,10 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --accent-green: #5FD39A;
   --accent-red: #FF7B7B;
   --accent-yellow: #F2B25C;
+  --attention: #FF8A4C;
+  --attention-text: #FF9A62;
+  --attention-ink: #1A171D;
+  --attention-hairline: color-mix(in srgb, var(--attention) 67%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 155, 140, 255;
@@ -1198,6 +1274,10 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --accent-green: #4ADE80;
   --accent-red: #F87171;
   --accent-yellow: #FBBF24;
+  --attention: #FB8A3C;
+  --attention-text: #FB923C;
+  --attention-ink: #09090B;
+  --attention-hairline: color-mix(in srgb, var(--attention) 62%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 250, 250, 250;
@@ -1235,6 +1315,10 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --accent-green: #3FCF8E;
   --accent-red: #FF6B6B;
   --accent-yellow: #F5A524;
+  --attention: #FF8A3D;
+  --attention-text: #FF9550;
+  --attention-ink: #0B0C0E;
+  --attention-hairline: color-mix(in srgb, var(--attention) 63%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 76, 141, 255;
@@ -1272,6 +1356,10 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --accent-green: #16A34A;
   --accent-red: #DC2626;
   --accent-yellow: #C2700A;
+  --attention: #CE560D;
+  --attention-text: #A8400A;
+  --attention-ink: #000000;
+  --attention-hairline: color-mix(in srgb, var(--attention) 97%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.35);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 91, 91, 214;
@@ -1309,6 +1397,10 @@ html[data-glass] .wmux-app-root .wmux-titlebar-segment {
   --accent-green: #7FC98A;
   --accent-red: #E8736B;
   --accent-yellow: #E8A33D;
+  --attention: #FF7A26;
+  --attention-text: #FF8A3D;
+  --attention-ink: #121212;
+  --attention-hairline: color-mix(in srgb, var(--attention) 71%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 232, 163, 61;

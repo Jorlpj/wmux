@@ -59,6 +59,7 @@ import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer, type CoalescerInput } from '../../deck/CommanderEventCoalescer';
 import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import { runHqAutoPress, takeHqPressPointer } from '../../deck/hqApprovalLane';
+import { getMoaShadowStats, runMoaShadow } from '../../deck/moaShadowHost';
 import { trackContextMemory } from '../../deck/trackRecordFeed';
 import { getTrackRecordStore } from '../../deck/trackRecordStore';
 import { notifyPrOwner, setPrOwnerSink } from '../../deck/prOwnerNotify';
@@ -141,16 +142,26 @@ import {
   renderStaleDecisionBlock,
   isDecisionStale,
   hasPendingDecision,
+  hasBrainBlockingDecision,
   raiseDecision,
   isIssueProposalDecision,
+  isMainOwnedDecision,
   onDecisionsChanged,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { startMoaIssueProposals } from '../../deck/moaIssueProposalsHost';
+import { setMoaHandoffService } from '../../deck/moaHandoff';
+import { createMoaHandoffService } from '../../deck/moaHandoffHost';
+import { HANDOFF_NOTICE_OPTION, HANDOFF_OPTIONS, type MoaHandoffResolveResult } from '../../../shared/moaHandoff';
 import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
-import { answerMoaApproval, readMoaApproval } from '../../deck/moaApproval';
+import { isSmallTalk } from '../../deck/smallTalk';
+import { computeReadRoots, isAcceptableReadRoot, setMoaReadRoots, setMoaReadRootsRefresher } from '../../deck/moaReadGate';
+import { createSerialChain } from '../../deck/serialChain';
+import { answerMoaApproval, MOA_ANSWER_DELEGATED_PROMPT_RPC, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
-import type { MoaApproval, MoaApprovalAnswerResult, MoaPendingDecision } from '../../../shared/moa';
+import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
+import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
+import { resultFromTask, type MoaTaskResult } from '../../../shared/moaResult';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
@@ -159,6 +170,7 @@ import {
   loadActiveDeckWorks,
   loadLiveDeckWork,
   loadLiveDeckWorks,
+  operatorDecisionContext,
   recordDeckWorkA2aTask,
   renderActiveDeckWorkBlock,
   renderActiveDeckWorkReminderLine,
@@ -192,7 +204,7 @@ import {
 } from '../../deck/deckScheduleStore';
 import { sweepOrphanAtomicTemps } from '../../../daemon/util/atomicWrite';
 import { getWmuxDir } from '../../../daemon/config';
-import { isStartupDeckReconcileDone, tryStartupDeckReconcile } from '../../deck/deckOrphanReconcile';
+import { isStartupDeckReconcileDone, tryStartupDeckReconcile, workLinkOwnerLive } from '../../deck/deckOrphanReconcile';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -227,11 +239,16 @@ export interface RegisterDeckHandlerOptions {
     loadMemory?: () => string;
     /** Moa's proposals folder, when its brain may write proposals there. */
     moaProposalsDir?: string;
+    /** Moa's brain may read delegated repos without a prompt (moaReadGate.ts). */
+    moaReadGate?: boolean;
     /** How a terminal brain reports each hook signal's session id and
      *  transcript path (the HQ's right-panel transcript binds from these).
      *  Optional: only the terminal brain has hook signals to report. */
     onTranscriptHint?: (hint: MoaTranscriptHint) => void;
   }) => BrainAdapter;
+  /** The operator-lane RPC (main's invokeRendererRpc): Moa's hand-offs deliver
+   *  through it, as the operator's own input. Absent ⇒ hand-offs are off. */
+  invokeOperatorRpc?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
    *  injected small in tests. */
@@ -290,10 +307,15 @@ export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | und
  * receive ambient-turn instructions. Pure + exported for unit testing.
  */
 /** The HQ's ramp level, injected with the ambient blocks on the HQ's turns. */
+/** Every HQ turn: how work reaches another workspace's agent. The skill text
+ *  says the same, but a skill is not reliably loaded; this line always rides. */
+export const MOA_HANDOFF_LINE =
+  '[moa] Work for an agent in another workspace goes ONLY through moa_propose_handoff (target ptyId from pane_list, the task as plain instructions): the operator approves it and it arrives as their own instruction. send_message / terminal_send to another workspace is refused. After proposing, end your turn; you are woken with the result.';
+
 export const MOA_LEVEL_LINES: Record<1 | 2 | 3, string> = {
-  1: '[moa] Level 1 — observe and report: surface decisions and completion reports to the human. Delegate work only when the human asks you to.',
-  2: '[moa] Level 2 — delegate on request: when the human asks, plan and delegate the work to workspace agents and track it.',
-  3: '[moa] Level 3 — autonomous: you may delegate and follow through on your own, within the workspace modes.',
+  1: '[moa] Level 1 — observe and report: surface decisions and completion reports to the human. Delegate work only when the human asks you to, via moa_propose_handoff.',
+  2: '[moa] Level 2 — delegate on request: when the human asks, plan the work, delegate it to workspace agents via moa_propose_handoff, and track it.',
+  3: '[moa] Level 3 — autonomous: you may delegate (via moa_propose_handoff) and follow through on your own, within the workspace modes.',
 };
 
 export function renderAutonomyBlock(mode: AgentMode): string | null {
@@ -428,6 +450,7 @@ export function registerDeckHandler(
       onForeignSessionId: (sessionId: string) => void;
       loadMemory?: () => string;
       moaProposalsDir?: string;
+      moaReadGate?: boolean;
       onTranscriptHint?: (hint: MoaTranscriptHint) => void;
     }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
@@ -461,7 +484,11 @@ export function registerDeckHandler(
                 // on a human (gate rule 4) — the same signal that already
                 // suppresses every auto-wake releases the Stop gate. Read
                 // fresh per Stop, so resolve/clear re-arms with no state.
-                pendingDecision: hasPendingDecision(workspaceId),
+                // A hand-off the HQ proposed and is waiting on (a card the
+                // operator has not answered, or the worker's open task) is the
+                // same "waiting on a human" state, without the decision that
+                // would also hold back the wake that ends the wait.
+                pendingDecision: hasBrainBlockingDecision(workspaceId) || (moaHandoffs?.waitingOnHandoff(workspaceId) ?? false),
                 // Cap-out hysteresis (rule 5): once the gate has given up on
                 // this exact state, re-blocking on it next turn only re-buys
                 // the same refusal run.
@@ -517,6 +544,7 @@ export function registerDeckHandler(
             onForeignSessionId: adapterOpts.onForeignSessionId,
             ...(adapterOpts.loadMemory ? { loadMemory: adapterOpts.loadMemory } : {}),
             ...(adapterOpts.moaProposalsDir ? { proposalGate: { proposalsDir: adapterOpts.moaProposalsDir } } : {}),
+            ...(adapterOpts.moaReadGate ? { readGate: true } : {}),
             ...(adapterOpts.onTranscriptHint ? { onTranscriptHint: adapterOpts.onTranscriptHint } : {}),
             // The workspace mode IS the launch policy (owner decision
             // 2026-08-01): assist launches claude in accept-edits, danger in
@@ -746,6 +774,78 @@ export function registerDeckHandler(
   });
   const moaProposals = moaIssueProposals.service;
 
+  // Moa's operator-approved hand-offs (moaHandoff.ts): the cards in target
+  // slots, the delivery on a click (or in danger mode without one), and the
+  // task → HQ map onBusEvent routes by. Off without the operator lane.
+  // A danger-mode hand-off without a card is allowed only inside a turn the
+  // operator started (a wake's prompt can carry pane, PR or issue text). The
+  // brain's own manager records who started the turn it accepted; main
+  // decides, never the brain.
+  const moaHandoffs = opts.invokeOperatorRpc
+    ? createMoaHandoffService({
+        invoke: opts.invokeOperatorRpc,
+        getWindow,
+        notify: () => {
+          emitMoaChanged();
+          void refreshReadRoots();
+        },
+        operatorTurn: (hq) => managers.get(hq)?.manager.turnOrigin === 'human',
+        onOperatorCancel: (r) => {
+          if (hqPresence(r.hqWorkspaceId) !== 'present') return;
+          // No task exists for a canceled card: tell Moa the way a canceled
+          // task would, keyed by the hand-off id.
+          coalescer?.push({
+            workspaceId: r.hqWorkspaceId,
+            ptyId: `a2a:handoff-${r.id}`,
+            kind: 'a2a.canceled',
+            source: 'a2a',
+            agent: null,
+            seq: Date.now(),
+            ts: Date.now(),
+            a2a: { taskId: `handoff-${r.id}`, from: r.hqWorkspaceId, to: r.target.workspaceId, state: 'canceled', handoff: {} },
+          });
+        },
+      })
+    : null;
+  setMoaHandoffService(moaHandoffs);
+
+  // Moa's read roots (moaReadGate.ts): rewritten when a hand-off, the job, the
+  // panes or the setting move. The open fan-out worktrees come from the
+  // daemon's WorkTask list (main made them), read at most every 30 s.
+  const FANOUT_ROOTS_TTL_MS = 30_000;
+  let fanoutRoots: { hq: string; at: number; paths: string[] } | null = null;
+  const openFanoutWorktrees = async (hq: string): Promise<string[]> => {
+    if (fanoutRoots && fanoutRoots.hq === hq && Date.now() - fanoutRoots.at < FANOUT_ROOTS_TTL_MS) return fanoutRoots.paths;
+    const client = opts.getDaemonClient?.() ?? null;
+    const res = client ? ((await client.rpc('task.mission.list', { verifiedWorkspaceId: hq }).catch(() => null)) as { ok?: boolean; tasks?: unknown } | null) : null;
+    const tasks = res && res.ok === true && Array.isArray(res.tasks) ? (res.tasks as Array<Record<string, unknown>>) : [];
+    const paths = tasks
+      .filter((t) => t.status === 'open' && typeof t.worktreePath === 'string'
+        && (t.owner as { verifiedWorkspaceId?: unknown } | undefined)?.verifiedWorkspaceId === hq)
+      .map((t) => t.worktreePath as string)
+      .filter((p) => isAcceptableReadRoot(p));
+    fanoutRoots = { hq, at: Date.now(), paths };
+    return paths;
+  };
+  const readRootsChain = createSerialChain();
+  const writeReadRootsNow = async (): Promise<void> => {
+    const hq = getHqWorkspaceId();
+    const enabled = isMoaEnabled() && hq !== null && hqPresence(hq) === 'present' && getMoaConfig().readWithoutAsking !== false;
+    const work = enabled && hq ? loadLiveDeckWork(hq) : null;
+    // In memory only: the gate asks main for them (deck.moaReadRoots). A file
+    // on disk could be rewritten by any same-user process, a worker included.
+    setMoaReadRoots(computeReadRoots({
+      now: Date.now(),
+      enabled,
+      handoffs: enabled ? moaHandoffs?.readRootSources() ?? [] : [],
+      liveTaskIds: new Set(Object.keys(work?.a2aTasks ?? {})),
+      fanoutWorktrees: enabled && hq ? await openFanoutWorktrees(hq) : [],
+    }));
+  };
+  /** One write at a time; never throws. */
+  const refreshReadRoots = (): Promise<void> => readRootsChain(writeReadRootsNow).catch(() => undefined);
+  setMoaReadRootsRefresher(refreshReadRoots);
+
   /**
    * A request record has LEFT the store — superseded by a newer human request,
    * or dropped by a conversation clear. It can no longer be closed by
@@ -803,6 +903,9 @@ export function registerDeckHandler(
         );
         return;
       }
+      // A thank-you or a greeting asks for nothing: it neither opens a request
+      // Moa must finish and report, nor joins the one in flight as a follow-up.
+      if (isSmallTalk(humanText)) return;
       const result = beginOrContinueDeckWork(workspaceId, humanText);
       if (result?.superseded) surfaceStrandedWork(workspaceId, result.superseded, 'superseded');
     } catch (err) {
@@ -949,6 +1052,9 @@ export function registerDeckHandler(
     // brain is unchanged. Fixed for this manager's life, like its prompt.
     const isMoaHqPty = vendor === 'claude-pty' && workspaceId === getHqWorkspaceId() && isMoaEnabled();
     const moaProposalsDir = isMoaHqPty && isMoaMemoryProposalsEnabled() ? moaMemory.proposalsDir : undefined;
+    // Read once per spawn: turning the setting off drops the hook from the
+    // next brain and empties main's roots at once (refreshReadRoots).
+    const moaReadGate = isMoaHqPty && getMoaConfig().readWithoutAsking !== false;
     // Only a Claude runtime's session id names a Claude transcript.
     const claudeRuntime = vendor === 'claude' || vendor === 'claude-pty';
     // The adapter's foreign-turn callback needs the manager the adapter is
@@ -965,6 +1071,7 @@ export function registerDeckHandler(
         onForeignTurnStart: (prompt) => {
           // The default terminal brain has no deck composer: UserPromptSubmit is
           // the only place main sees that a human explicitly assigned work.
+          managerRef?.notifyForeignTurnStart();
           beginTrackedWork(workspaceId, prompt);
           coalescer?.notifyHumanSend(workspaceId);
         },
@@ -988,6 +1095,7 @@ export function registerDeckHandler(
         ...(fullPower ? { fullPower: true } : {}),
         ...(isMoaHqPty ? { loadMemory: () => loadCommanderMemory({ workspaceId }) } : {}),
         ...(moaProposalsDir ? { moaProposalsDir } : {}),
+        ...(moaReadGate ? { moaReadGate: true } : {}),
       }),
       sink: (event) => emit(workspaceId, event),
       startOptions: {
@@ -1002,6 +1110,8 @@ export function registerDeckHandler(
           // than handed a write policy it can only fail at.
           memoryWrites: vendor !== 'claude-pty',
           ...(moaProposalsDir ? { proposalsDir: moaProposalsDir } : {}),
+          // The HQ brain is Moa: it delegates across workspaces by hand-off.
+          ...(workspaceId === getHqWorkspaceId() && isMoaEnabled() ? { moa: true } : {}),
         }),
         ...(fleetContext ? { fleetContext } : {}),
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
@@ -1101,17 +1211,18 @@ export function registerDeckHandler(
     pendingActiveWorkBlocks.delete(workspaceId);
     trackContextMemory.forget(workspaceId);
   };
-  /** The workspace's decision as its brain may see it: an issue-proposal card
-   *  (moaIssueProposals.ts) is main's, never rendered into a turn or re-examined. */
+  /** The workspace's decision as its brain may see it: a main-owned card (an
+   *  issue proposal, a Moa hand-off) is main's, never rendered into a turn or
+   *  re-examined. */
   const loadBrainDecision = (workspaceId: string): WorkspaceDecision | null => {
     const d = loadWorkspaceDecision(workspaceId);
-    return isIssueProposalDecision(d) ? null : d;
+    return isMainOwnedDecision(d) ? null : d;
   };
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
     // takes effect immediately — same rationale as the heartbeat's per-tick read.
     const mode = loadWorkspaceMode(workspaceId);
-    // Moa's issue-proposal cards are main's, never a brain's [decision].
+    // Main-owned cards are main's, never a brain's [decision].
     const decision = loadBrainDecision(workspaceId);
     const loop = loadWorkspaceLoopState(workspaceId);
     const activeWork = loadActiveDeckWork(workspaceId);
@@ -1123,7 +1234,10 @@ export function registerDeckHandler(
     const autonomy = renderAutonomyBlock(mode);
     if (autonomy) ambient.push(autonomy);
     // The HQ's ramp level (Moa starts at level 1): what it may do on its own.
-    if (workspaceId === getHqWorkspaceId()) ambient.push(MOA_LEVEL_LINES[getMoaConfig().level]);
+    if (workspaceId === getHqWorkspaceId()) {
+      ambient.push(MOA_LEVEL_LINES[getMoaConfig().level]);
+      ambient.push(MOA_HANDOFF_LINE);
+    }
     // Binding operator policy next: the standing rules that let the brain resolve
     // a fork itself instead of escalating (and, in assist, guide what it
     // recommends). Injected for auto AND assist; never for off. Read fresh (the
@@ -1896,11 +2010,11 @@ export function registerDeckHandler(
     isAutoWakeEnabled: () => loadAutoWakeEnabled(),
     // A PENDING decision gate blocks every wake for this workspace (even a
     // running loop) until the human resolves it. Read fresh at each flush.
-    hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+    hasPendingDecision: (workspaceId) => hasBrainBlockingDecision(workspaceId),
     // Which decision, for the block log's rate limiter — a new decision is a new
     // fact and is announced at once rather than inside the old one's window.
     getPendingDecisionId: (workspaceId) => {
-      const d = loadWorkspaceDecision(workspaceId);
+      const d = loadBrainDecision(workspaceId);
       return d && d.status === 'pending' ? d.id : null;
     },
     // maxWakesPerMin: left to the coalescer's built-in default (6 accepted wakes
@@ -1914,14 +2028,69 @@ export function registerDeckHandler(
     // Master switch: off drops every push at the entry.
     isEnabled: () => isMoaEnabled(),
   });
+  /**
+   * A worker turn end in a pane holding an open hand-off task. A question or a
+   * refusal moves the task to input-required (that A2A event wakes Moa through
+   * the map above); any other turn end is passed to the HQ as the worker's
+   * stop, so Moa can read the pane. Completion is never inferred here.
+   */
+  const routeHandoffStop = async (ev: Extract<Parameters<EventBusSubscriber>[0], { type: 'agent.lifecycle' }>): Promise<void> => {
+    const routed = await moaHandoffs!.onWorkerStop(ev.ptyId, ev.agent ?? null, ev.lastMessage);
+    if (!routed || routed.movedToInputRequired) return;
+    if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.stop_failure') return;
+    const hq = moaHandoffs!.hqForTask(routed.taskId);
+    if (!hq || hqPresence(hq) !== 'present') return;
+    coalescer?.push({
+      workspaceId: hq,
+      ptyId: `a2a:${routed.taskId}`,
+      kind: ev.kind,
+      source: ev.source,
+      agent: ev.agent,
+      seq: ev.seq,
+      ts: ev.ts,
+      ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
+      // A plain turn end on the hand-off: the wake tells Moa how to close it.
+      ...(ev.kind === 'agent.stop' ? {
+        a2a: {
+          taskId: routed.taskId,
+          from: hq,
+          to: moaHandoffs!.byTask(routed.taskId)?.target.workspaceId ?? '',
+          state: 'working' as const,
+          handoff: {},
+        },
+      } : {}),
+    });
+  };
+  /** Turn ends the status sweep saw (moaHandoff.sweepTurnEnds): the HQ is
+   *  woken the way a Stop wakes it, with no closing words to quote. */
+  const routeStatusTurnEnds = async (): Promise<void> => {
+    if (!moaHandoffs) return;
+    for (const { hq, taskId } of await moaHandoffs.sweepTurnEnds()) {
+      if (hq !== moaHandoffs.hqForTask(taskId) || hqPresence(hq) !== 'present') continue;
+      coalescer?.push({
+        workspaceId: hq,
+        ptyId: `a2a:${taskId}`,
+        kind: 'agent.stop',
+        source: 'detector',
+        agent: null,
+        seq: Date.now(),
+        ts: Date.now(),
+        a2a: { taskId, from: hq, to: moaHandoffs.byTask(taskId)?.target.workspaceId ?? '', state: 'working', handoff: {} },
+      });
+    }
+  };
   // Subscribed by startRuntime (with the master switch), not here.
   const onBusEvent: EventBusSubscriber = (ev) => {
     // Cross-workspace task receipts belong to the SENDER commander. The base
     // workspaceId is server-stamped === from, but use `from` explicitly so a
     // future event-shape change cannot wake the receiver or a third workspace.
     if (ev.type === 'a2a.task') {
+      // A Moa hand-off is the operator's task (from = the operator), but it
+      // reports to the HQ that proposed it: route by the hand-off store.
+      const owner = moaHandoffs?.noteTaskState(ev.taskId, ev.state) ?? ev.from;
+      const handoffDetail = moaHandoffs?.handoffDetail(ev.taskId) ?? null;
       try {
-        recordDeckWorkA2aTask(ev.from, {
+        recordDeckWorkA2aTask(owner, {
           taskId: ev.taskId,
           to: ev.to,
           state: ev.state,
@@ -1944,13 +2113,16 @@ export function registerDeckHandler(
         ev.state !== 'input-required' &&
         ev.state !== 'canceled'
       ) return;
+      // The HQ closed this hand-off itself, in the turn that is acting on it:
+      // a second wake would only repeat that turn's report.
+      if (ev.state === 'completed' && moaHandoffs?.closedByHq(ev.taskId)) return;
       const kind =
         ev.state === 'completed' ? 'a2a.completed' as const
         : ev.state === 'failed' ? 'a2a.failed' as const
         : ev.state === 'input-required' ? 'a2a.input_required' as const
         : 'a2a.canceled' as const;
       const receipt: CoalescerInput = {
-        workspaceId: ev.from,
+        workspaceId: owner,
         ptyId: `a2a:${ev.taskId}`,
         kind,
         source: 'a2a',
@@ -1965,13 +2137,16 @@ export function registerDeckHandler(
           ...(ev.verifiedItemCount !== undefined
             ? { verifiedItemCount: ev.verifiedItemCount }
             : {}),
+          // A hand-off is the operator's task: the wake says so and carries
+          // the worker's question, which the HQ cannot query for itself.
+          ...(handoffDetail ? { handoff: handoffDetail } : {}),
         },
       };
       // An HQ that cannot run right now (workspace gone or not yet observed)
       // would have its receipt consumed by a refused flush: park it in the
       // durable backlog instead, replayed when the HQ is seen again.
       const hq = getHqWorkspaceId();
-      if (hq !== null && ev.from === hq && hqPresence(hq) !== 'present') {
+      if (hq !== null && owner === hq && hqPresence(hq) !== 'present') {
         void getTaskLedger()
           .recordOrphanedEvent({ ownerWorkspaceId: hq, seq: ev.seq, payload: receipt })
           .catch((err) => console.warn(`[deck] could not park an a2a receipt for HQ ${hq}: ${String(err)}`));
@@ -2046,6 +2221,10 @@ export function registerDeckHandler(
     // Waking the deck brain on one would announce work that never ended —
     // same class of false "finished" the alarm exists to suppress.
     if (ev.decision === 'internal') return;
+    // A pane holding an open Moa hand-off: its turn ends go to the HQ.
+    if (moaHandoffs && ev.kind !== 'agent.awaiting_input' && ev.decision !== 'dedup') {
+      void routeHandoffStop(ev).catch(() => undefined);
+    }
     const lifecycleInput = {
       workspaceId: ev.workspaceId,
       ptyId: ev.ptyId,
@@ -2090,7 +2269,7 @@ export function registerDeckHandler(
     runTurn: runTurnForWorkspace,
     // A pending decision gate blocks scheduled wakes too (the schedule stays
     // due and retries once resolved).
-    hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+    hasPendingDecision: (workspaceId) => hasBrainBlockingDecision(workspaceId),
   });
   // Started by startRuntime, with the master switch.
 
@@ -2101,10 +2280,16 @@ export function registerDeckHandler(
   // whose edge event was dropped. Reviewed workspaces are those with a live
   // manager OR a resting mode other than 'off'; the coalescer's own gates decide
   // whether a wake actually fires (the tick conditions only skip obvious no-ops).
+  // The work links of workspaces that are gone (closed while the app was down,
+  // or before this settle existed) are settled with the startup sweep. Only on
+  // the real data dir: a test's dir never holds the work-link store.
+  const settleClosedWorkLinks = opts.dir
+    ? undefined
+    : (live: ReadonlySet<string>) => getWorkLinkStore().abandonOrphaned(workLinkOwnerLive(live, getHqWorkspaceId()));
   const heartbeatWorkspaceIds = (): string[] => {
     // WMX-06: retry startup orphan reconcile on heartbeat tick if not already completed
     if (!isStartupDeckReconcileDone()) {
-      void tryStartupDeckReconcile({ dir: opts.dir });
+      void tryStartupDeckReconcile({ dir: opts.dir, settleClosedWork: settleClosedWorkLinks });
     }
     const ids = new Set<string>(managers.keys());
     // Durable direct requests arm the heartbeat even when the workspace's
@@ -2140,7 +2325,7 @@ export function registerDeckHandler(
     getAutonomy: (workspaceId) => loadWorkspaceAutonomy(workspaceId),
     isBusy: (workspaceId) =>
       managers.get(workspaceId)?.manager.getStatus().status === 'busy',
-    hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+    hasPendingDecision: (workspaceId) => hasBrainBlockingDecision(workspaceId),
     getFleetSnapshot: (workspaceId) => getWorkspaceMirror().getFleetSnapshot(workspaceId),
     flushSnapshot: (workspaceId, snapshot) => coalescer?.flushSnapshot(workspaceId, snapshot),
     lastWakeAt: (workspaceId) => coalescer?.lastWakeAt(workspaceId) ?? null,
@@ -2202,6 +2387,12 @@ export function registerDeckHandler(
     else void publishMoaPane(); // unchanged answers are not re-sent
     lastHqPresence = presence;
     moaProposals.sync();
+    // A hand-off whose pane closed or whose agent left: card down, task canceled.
+    void moaHandoffs?.reconcile().catch(() => undefined);
+    // A worker turn that ended with no Stop hook (interrupted, then finished).
+    void routeStatusTurnEnds().catch(() => undefined);
+    // Panes and workspaces come and go here: Moa's read roots follow.
+    void refreshReadRoots();
   };
   // The HQ store's setter refuses while the old/new HQ is mid-turn and, once
   // an HQ is designated, retires every other brain — both need the managers.
@@ -2322,11 +2513,18 @@ export function registerDeckHandler(
       const patch = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as MoaConfigPatch) : {};
       if (!(await setMoaConfig(patch))) return { ok: false, code: 'store_corrupt' };
       emitMoaChanged();
+      // Turned off: main's roots empty now, not at the next spawn.
+      if (patch.readWithoutAsking !== undefined) void refreshReadRoots();
       // Approvals already waiting when the lane is turned on get their pass now.
       if (patch.approvalPress === true) runHqAutoPress();
+      // Same for questions already waiting when the shadow judge is turned on.
+      if (patch.shadowJudge === true) runMoaShadow();
       return { ok: true };
     }),
   );
+
+  ipcMain.removeHandler(IPC.DECK_MOA_SHADOW_STATS);
+  ipcMain.handle(IPC.DECK_MOA_SHADOW_STATS, wrapHandler(IPC.DECK_MOA_SHADOW_STATS, async () => getMoaShadowStats()));
 
   // First run and "Recreate Moa workspace": the renderer has just created the
   // app-owned workspace; make it the HQ at ramp level 1 (observe and report:
@@ -2343,6 +2541,18 @@ export function registerDeckHandler(
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
       if (isHqStoreCorrupt()) return { ok: false, code: 'store_corrupt' };
+      // A lost HQ recreated under its own id: everything Moa keeps is keyed by
+      // that id (the brain's session and home, decisions, work, mode), so it is
+      // back as it was. Only make sure the switch is on — resetting the mode,
+      // autonomy and level here would undo the operator's settings.
+      if (req.rebind === true && getHqWorkspaceId() === workspaceId) {
+        if (!isMoaEnabled()) {
+          if (!(await setMoaEnabled(true))) return { ok: false, code: 'store_corrupt', committed: true };
+          startRuntime();
+        }
+        emitMoaChanged();
+        return { ok: true, archived: 0 };
+      }
       let designated: Awaited<ReturnType<typeof setHqWorkspaceId>>;
       try {
         designated = await setHqWorkspaceId(workspaceId);
@@ -2467,11 +2677,112 @@ export function registerDeckHandler(
         decisions.push({
           workspaceId,
           ...(workspaceName ? { workspaceName } : {}),
-          decision: { id: d.id, question: d.question, options: d.options, context: d.context, raisedAt: d.raisedAt },
+          decision: { id: d.id, question: d.question, options: d.options, context: operatorDecisionContext(d.context), raisedAt: d.raisedAt },
+          ...(d.origin === 'moa-handoff' && moaHandoffs?.cardInfo(d.id) ? { handoff: moaHandoffs.cardInfo(d.id)! } : {}),
+          ...(isMainOwnedDecision(d) ? {} : { dismissible: true as const }),
         });
       }
       decisions.sort((a, b) => b.decision.raisedAt - a.decision.raisedAt);
       return { decisions };
+    }),
+  );
+
+  // Permission prompts of agents Moa delegated work to (moaDelegatedApprovals).
+  const listDelegatedApprovals = async (): Promise<MoaDelegatedApproval[]> => {
+    const hq = getHqWorkspaceId();
+    const dc = opts.getDaemonClient?.() ?? null;
+    if (!hq || !dc) return [];
+    let listed: unknown;
+    try {
+      listed = await dc.rpc('daemon.approvals.list', {});
+    } catch {
+      return [];
+    }
+    const pending = (listed as { pending?: unknown } | null)?.pending;
+    if (!Array.isArray(pending)) return [];
+    const names = new Map((getWorkspaceMirror().getEntries() ?? []).map((e) => [e.id, e.name]));
+    const taskWorkspaces = new Set(
+      getTaskLedger().list({ ownerWorkspaceId: hq, openOnly: true }).map((e) => e.taskWorkspaceId),
+    );
+    return selectDelegatedApprovals(pending, {
+      handoffPtys: moaHandoffs?.openTargets() ?? new Map(),
+      taskWorkspaces,
+      workspaceName: (id) => names.get(id),
+    });
+  };
+  ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_APPROVALS);
+  ipcMain.handle(
+    IPC.DECK_MOA_DELEGATED_APPROVALS,
+    wrapHandler(IPC.DECK_MOA_DELEGATED_APPROVALS, async (): Promise<{ approvals: MoaDelegatedApproval[] }> => ({
+      approvals: await listDelegatedApprovals(),
+    })),
+  );
+  // Answer one in place. Only a prompt the list above holds right now, so the
+  // renderer cannot aim the daemon's desktop answer at any other pane.
+  ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_ANSWER);
+  ipcMain.handle(
+    IPC.DECK_MOA_DELEGATED_ANSWER,
+    wrapHandler(IPC.DECK_MOA_DELEGATED_ANSWER, async (_event: Electron.IpcMainInvokeEvent, args: unknown): Promise<MoaApprovalAnswerResult> => {
+      const id = (args as { approvalId?: unknown } | null)?.approvalId;
+      const row = typeof id === 'string' ? (await listDelegatedApprovals()).find((a) => a.id === id) : undefined;
+      if (!row) return { ok: false, code: 'not_pending' };
+      if (!row.choices) return { ok: false, code: 'invalid' };
+      return answerMoaApproval(opts.getDaemonClient?.() ?? null, { ...(args as object), sessionId: row.ptyId }, MOA_ANSWER_DELEGATED_PROMPT_RPC);
+    }),
+  );
+
+  // A delegated task's result for Moa's result card: the A2A task's completion
+  // evidence, read from the daemon by the receiver workspace (moaResult.ts).
+  ipcMain.removeHandler(IPC.DECK_MOA_TASK_RESULT);
+  ipcMain.handle(
+    IPC.DECK_MOA_TASK_RESULT,
+    wrapHandler(IPC.DECK_MOA_TASK_RESULT, async (_event: Electron.IpcMainInvokeEvent, raw: unknown): Promise<{ result: MoaTaskResult | null }> => {
+      const req = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+      const workspaceId = readWorkspaceId(req);
+      const taskId = typeof req.taskId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(req.taskId) ? req.taskId : '';
+      const dc = opts.getDaemonClient?.() ?? null;
+      if (!workspaceId || !taskId || !dc) return { result: null };
+      let answer: unknown;
+      try {
+        answer = await dc.rpc('a2a.task.query', { workspaceId, view: 'page', taskId });
+      } catch {
+        return { result: null };
+      }
+      const tasks = (answer as { tasks?: unknown } | null)?.tasks;
+      const list = Array.isArray(tasks) ? tasks : tasks ? [tasks] : [];
+      const task = list.find((t) => !!t && typeof t === 'object' && (t as { id?: unknown }).id === taskId);
+      return { result: resultFromTask(task) };
+    }),
+  );
+
+  // Moa's hand-off cards and auto hand-off receipts (moaHandoff.ts).
+  ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RESOLVE);
+  ipcMain.handle(
+    IPC.DECK_MOA_HANDOFF_RESOLVE,
+    wrapHandler(IPC.DECK_MOA_HANDOFF_RESOLVE, async (_event: Electron.IpcMainInvokeEvent, raw: unknown): Promise<MoaHandoffResolveResult> => {
+      const req = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+      const workspaceId = readWorkspaceId(req);
+      const id = typeof req.id === 'string' ? req.id : '';
+      const action = req.action === 'handoff' || req.action === 'cancel' ? req.action : null;
+      if (!workspaceId || !id || !action) return { ok: false, code: 'invalid' };
+      // The edited body is the operator's own input; absent = main's stored one.
+      const body = typeof req.body === 'string' ? req.body : undefined;
+      const r = moaHandoffs ? await moaHandoffs.resolve(workspaceId, id, action, body) : null;
+      return r ?? { ok: false, code: 'not_pending' };
+    }),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RECEIPTS);
+  ipcMain.handle(
+    IPC.DECK_MOA_HANDOFF_RECEIPTS,
+    wrapHandler(IPC.DECK_MOA_HANDOFF_RECEIPTS, async () => ({ receipts: moaHandoffs?.receipts() ?? [] })),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_STOP);
+  ipcMain.handle(
+    IPC.DECK_MOA_HANDOFF_STOP,
+    wrapHandler(IPC.DECK_MOA_HANDOFF_STOP, async (_event: Electron.IpcMainInvokeEvent, raw: unknown) => {
+      const id = raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined;
+      if (typeof id !== 'string' || !moaHandoffs) return { ok: false };
+      return moaHandoffs.stop(id);
     }),
   );
 
@@ -2562,7 +2873,7 @@ export function registerDeckHandler(
         }
         return;
       }
-      void tryStartupDeckReconcile({ dir: opts.dir }).then((done) => {
+      void tryStartupDeckReconcile({ dir: opts.dir, settleClosedWork: settleClosedWorkLinks }).then((done) => {
         if (done) stopOrphanReconcile();
       });
     }, 2500);
@@ -3168,8 +3479,15 @@ export function registerDeckHandler(
     'never acted on — the turn that resolved it did not complete. This is YOUR OWN ' +
     'resolution, not a human answer: if it still holds, act on it now and continue; if it ' +
     'no longer applies, raise a fresh decision instead.';
+  // The operator closed the card as not needed: say so plainly, so the brain
+  // never takes one of its options as the answer.
+  const DECISION_DISMISSED_PROMPT =
+    'The operator DISMISSED the decision you raised as not needed (see the [decision] block ' +
+    'above). They chose none of its options: do NOT act on any of them. Carry on from the ' +
+    'current state; if a real fork still remains, raise a fresh decision.';
   const resumePromptFor = (d: WorkspaceDecision): string =>
-    d.resolvedBy === 'brain' ? DECISION_SELF_RESUME_PROMPT : DECISION_RESUME_PROMPT;
+    d.dismissed ? DECISION_DISMISSED_PROMPT
+      : d.resolvedBy === 'brain' ? DECISION_SELF_RESUME_PROMPT : DECISION_RESUME_PROMPT;
 
   ipcMain.removeHandler(IPC.DECK_DECISION_GET);
   ipcMain.handle(
@@ -3191,6 +3509,9 @@ export function registerDeckHandler(
       // A full headless (no-deck-open) startup reconcile is the M2 follow-up.
       if (workspaceId && decision?.status === 'resolved' && isIssueProposalDecision(decision)) {
         void moaProposals.handleResolved(workspaceId, decision).catch(() => undefined);
+      } else if (workspaceId && decision?.status === 'resolved' && isMainOwnedDecision(decision)) {
+        // A hand-off card claimed by a click that did not finish clearing it.
+        void clearResolvedDecision(workspaceId, decision.id).catch(() => undefined);
       } else if (workspaceId && decision?.status === 'resolved') {
         // Queued acquire (P1): a one-shot resume must await a slot, not silently
         // drop on a full gate — the answer would sit forever with autonomy off.
@@ -3216,7 +3537,16 @@ export function registerDeckHandler(
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
       const id = typeof req.id === 'string' ? req.id : '';
       const resolution = typeof req.resolution === 'string' ? req.resolution : '';
-      if (!id || !resolution.trim()) return { ok: false, code: 'invalid' };
+      // "Not needed": the operator closes a brain's card without choosing.
+      const dismiss = req.dismiss === true;
+      if (!id || (!dismiss && !resolution.trim())) return { ok: false, code: 'invalid' };
+      if (dismiss) {
+        // Only a brain's own card: a main-owned card (hand-off, proposal) and
+        // the memory card have their own answers.
+        const cur = workspaceId === MOA_MEMORY_DECISION_KEY ? null : loadWorkspaceDecision(workspaceId);
+        if (!cur || cur.id !== id || cur.status !== 'pending') return { ok: false, code: 'not_pending' };
+        if (isMainOwnedDecision(cur)) return { ok: false, code: 'not_dismissible' };
+      }
       // A "Remember this?" card is not a workspace's decision: no brain waits
       // on it and no turn resumes. The lane saves or discards, then clears it.
       if (workspaceId === MOA_MEMORY_DECISION_KEY) {
@@ -3224,7 +3554,21 @@ export function registerDeckHandler(
         if (r.ok) emitMoaChanged();
         return r.ok ? { ok: true } : { ok: false, code: r.code ?? 'not_pending' };
       }
-      const decision = await resolveDecision(workspaceId, id, resolution);
+      // A Moa hand-off card: by id only, the answer is main's to act on. Edit
+      // needs the operator's text, which only the hand-off card carries
+      // (DECK_MOA_HANDOFF_RESOLVE); a bare "Edit" leaves the card up.
+      const current = loadWorkspaceDecision(workspaceId);
+      if (current && current.id === id && current.origin === 'moa-handoff') {
+        const answer = resolution.trim();
+        if (answer === HANDOFF_OPTIONS.edit) return { ok: false, code: 'edit_needs_body' };
+        const action = answer === HANDOFF_OPTIONS.handOff ? 'handoff' as const
+          : answer === HANDOFF_NOTICE_OPTION ? 'ack' as const
+          : 'cancel' as const;
+        const r = moaHandoffs ? await moaHandoffs.resolve(workspaceId, id, action) : null;
+        if (!r) return { ok: false, code: 'not_pending' };
+        return r.ok ? { ok: true } : { ok: false, code: r.code };
+      }
+      const decision = await resolveDecision(workspaceId, id, resolution, undefined, 'human', { dismissed: dismiss });
       if (!decision || decision.status !== 'resolved') {
         // Stale id, already resolved, or empty answer — nothing to resume.
         return { ok: false, code: 'not_pending' };
@@ -3233,7 +3577,7 @@ export function registerDeckHandler(
       if (await moaProposals.handleResolved(workspaceId, decision)) return { ok: true, decision };
       // The operator answered one of Moa's own decisions: offer to keep the
       // answer as a precedent. A no-op while Moa or proposals are off.
-      if (workspaceId === getHqWorkspaceId()) {
+      if (workspaceId === getHqWorkspaceId() && !decision.dismissed) {
         void moaMemory.offerPrecedent({
           decisionId: decision.id,
           question: decision.question,
@@ -3265,7 +3609,7 @@ export function registerDeckHandler(
       // reject is fine — the resolution rides withLoopContext on the next turn
       // (event / schedule / human) and is consumed then. Fire-and-forget: the
       // renderer only needs the resolve's accept, not the turn's outcome.
-      void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, { queued: true }).catch(() => {
+      void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => {
         /* best-effort resume — the durable resolved decision rides the next turn */
       });
       return { ok: true, decision };
@@ -3424,6 +3768,10 @@ export function registerDeckHandler(
     for (const [workspaceId, decision] of Object.entries(loadDeckDecisions())) {
       // Moa's memory card key is not a workspace: never resume a brain for it.
       if (workspaceId === MOA_MEMORY_DECISION_KEY) continue;
+      if (decision.status === 'resolved' && decision.origin === 'moa-handoff') {
+        await clearResolvedDecision(workspaceId, decision.id).catch(() => undefined);
+        continue;
+      }
       if (decision.status === 'resolved' && !(await moaProposals.handleResolved(workspaceId, decision))) {
         // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
         // resumes as the brain's OWN answer, never as "the operator resolved".
@@ -3532,6 +3880,11 @@ export function registerDeckHandler(
   return () => {
     app.removeListener('before-quit', disposeAll);
     moaIssueProposals.dispose();
+    setMoaHandoffService(null);
+    setMoaReadRootsRefresher(null);
+    ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RESOLVE);
+    ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RECEIPTS);
+    ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_STOP);
     if (reconcileTimer) clearTimeout(reconcileTimer);
     clearInterval(ledgerReconcileTimer);
     stopOrphanReconcile();
@@ -3553,6 +3906,9 @@ export function registerDeckHandler(
     offDecisionsChanged();
     moaTranscript.dispose();
     ipcMain.removeHandler(IPC.DECK_MOA_DECISIONS);
+    ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_APPROVALS);
+    ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_ANSWER);
+    ipcMain.removeHandler(IPC.DECK_MOA_TASK_RESULT);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_STATUS);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);
@@ -3569,6 +3925,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_LIST);
     ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_ACK);
     ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
+    ipcMain.removeHandler(IPC.DECK_MOA_SHADOW_STATS);
     ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_LIST);
     ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_DELETE);
     ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_CARD);

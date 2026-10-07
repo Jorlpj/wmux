@@ -1,7 +1,7 @@
 // #1772 — the Moa pane's own permission dialog as a `terminal_prompt` record:
 // created from main's pushed dialog, expired on every way the Moa pane or its
 // dialog can go, and answered from the desktop behind the registry's fences.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,6 +43,24 @@ const FETCH = [
 ];
 const INPUT = { command: 'rm -rf build/cache', description: 'Remove the build cache' };
 const SID = 'brain-hq';
+
+// The registry writes approvals.json (real disk I/O) inside each mutation and
+// emits that mutation's events only after the write lands, so no fixed number
+// of ticks is enough on a loaded CI runner. Every write is tracked so `flush`
+// can await them.
+const diskWrites = vi.hoisted(() => new Set<Promise<boolean>>());
+vi.mock('../../approvals/approvalStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../approvals/approvalStore')>();
+  return {
+    ...actual,
+    saveApprovalState: (...args: Parameters<typeof actual.saveApprovalState>) => {
+      const write = actual.saveApprovalState(...args);
+      diskWrites.add(write);
+      void write.finally(() => diskWrites.delete(write));
+      return write;
+    },
+  };
+});
 
 let tmpDir: string;
 
@@ -120,9 +138,24 @@ const withDialog = (fingerprint = 'aa11', over: Partial<NonNullable<MoaPaneFact[
 });
 const noDialog = (sessionId = SID): MoaPaneFact => ({ sessionId, workspaceId: 'ws-hq' });
 
-/** Lets the queued notes, expiries and screen checks run. */
+/**
+ * Lets the queued notes, expiries and screen checks run to the end. Everything
+ * here but the disk write is microtasks (screen reads and delays are injected),
+ * so the work is done once a few ticks pass with no write in flight. A write's
+ * events can start more work (a press starts a screen check), hence the loop.
+ */
 async function flush(): Promise<void> {
-  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  let quiet = 0;
+  for (let i = 0; quiet < 3; i++) {
+    if (i >= 1_000) throw new Error('flush: the registry never went quiet');
+    await new Promise((r) => setTimeout(r, 0));
+    if (diskWrites.size === 0) {
+      quiet += 1;
+      continue;
+    }
+    quiet = 0;
+    await Promise.allSettled([...diskWrites]);
+  }
 }
 const pending = (h: Harness) => h.registry.list().pending;
 
@@ -430,5 +463,45 @@ describe('MoaPromptSync — the desktop answer', () => {
     expect(await h.sync.answer({ approvalId: view.id, choiceKey: '1' })).toEqual({ ok: false, reason: 'invalid' });
     expect(await answer(h, view, '7')).toEqual({ ok: false, reason: 'invalid-choice' });
     expect(h.writes).toEqual([]);
+  });
+});
+
+describe('MoaPromptSync — a delegated agent\'s prompt answered from Moa\'s panel', () => {
+  async function bound(h: Harness) {
+    h.push(withDialog());
+    await flush();
+    const view = h.sync.view()!;
+    expect(view.answerable).toBe(true);
+    h.clock.now += TERMINAL_PROMPT_MIN_ANSWER_AGE_MS;
+    return view;
+  }
+  const delegated = (h: Harness, view: { id: string; promptFingerprint?: string }, sessionId: string, choiceKey = '1') =>
+    h.sync.answerDelegated({ approvalId: view.id, choiceKey, promptFingerprint: view.promptFingerprint, sessionId });
+
+  it('never presses the Moa pane\'s own prompt (that has its own answer)', async () => {
+    const h = harness();
+    const view = await bound(h);
+    expect(await delegated(h, view, SID)).toEqual({ ok: false, reason: 'not-pending' });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('refuses a record of another pane than the one main named, and an answer with no pane', async () => {
+    const h = harness();
+    const view = await bound(h);
+    h.resolves = false; // the record's pane is not the Moa pane any more
+    expect(await delegated(h, view, 'pty-worker')).toEqual({ ok: false, reason: 'not-pending' });
+    expect(await h.sync.answerDelegated({ approvalId: view.id, choiceKey: '1', promptFingerprint: view.promptFingerprint })).toEqual({ ok: false, reason: 'invalid' });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('presses a worker pane\'s bound prompt once, as "desktop", with every fence of a phone answer', async () => {
+    const h = harness();
+    const view = await bound(h);
+    h.resolves = false; // the same record, now on a pane that is not Moa's
+    expect(await delegated(h, view, SID, '2')).toMatchObject({ ok: true });
+    expect(h.writes).toEqual([{ sessionId: SID, data: '2' }]);
+    expect(pending(h)[0]).toMatchObject({ resolvedBy: 'desktop', selectedChoiceKey: '2', decision: 'deny' });
+    expect(await delegated(h, view, SID, '1')).toEqual({ ok: false, reason: 'already-answered' });
+    expect(h.writes).toHaveLength(1);
   });
 });

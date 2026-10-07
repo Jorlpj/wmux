@@ -17,6 +17,7 @@
 
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { TERMINAL_STATES } from '../../shared/types';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { loadDeckDecisions, onDecisionsChanged } from '../deck/deckDecisionStore';
@@ -121,8 +122,13 @@ export class WorkLinkStore {
         : prev.origin === 'manual' && input.origin === 'issue'
           ? 'issue'
           : prev.origin;
+      // A task that is live again (reopened) has no final report yet: the old
+      // one belongs to a turn that ended, and a later end without text must
+      // not inherit it.
+      const reopened = input.a2aState !== undefined && !TERMINAL_STATES.includes(input.a2aState);
       const merged = parseWorkLink({
         ...(prev ?? { state: 'queued', decisionIds: [], createdAt: now }),
+        ...(reopened ? { result: undefined } : {}),
         ...stripUndefined(input),
         id: prev?.id ?? input.id ?? randomUUID(),
         origin,
@@ -159,6 +165,20 @@ export class WorkLinkStore {
       console.warn('[workLinks] setState failed:', err);
       return null;
     }
+  }
+
+  /** Settle the links whose owner workspace is gone. A closed workspace's
+   *  task can never finish, so its link would otherwise read `running` or
+   *  `queued` forever (the daemon fails only the tasks it still tracks). A
+   *  link with a PR is left alone: the PR outlives the workspace and its own
+   *  state still says where the work stands. Returns how many were settled. */
+  async abandonOrphaned(isLive: (workspaceId: string) => boolean): Promise<number> {
+    let settled = 0;
+    for (const link of [...this.cache().values()]) {
+      if (link.state === 'done' || link.state === 'abandoned' || link.pr || isLive(link.owner.workspaceId)) continue;
+      if (await this.setState(link.id, 'abandoned')) settled += 1;
+    }
+    return settled;
   }
 
   /** Record that a decision is about this link's work, then re-derive. */

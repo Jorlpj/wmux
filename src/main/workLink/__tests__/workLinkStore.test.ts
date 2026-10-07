@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { MAX_WORK_LINKS, WorkLinkStore, getWorkLinkPath } from '../workLinkStore';
+import { workLinkOwnerLive } from '../../deck/deckOrphanReconcile';
 
 let dir: string;
 let pending: Set<string>;
@@ -23,6 +24,25 @@ afterEach(() => {
 const sent = { origin: 'manual' as const, a2aTaskId: 'task-1', a2aState: 'submitted' as const, owner: { workspaceId: 'ws-1' } };
 
 describe('WorkLinkStore', () => {
+  it('drops the old report when the task is reopened, so a later end without text has none', async () => {
+    const a = make();
+    await a.upsert(sent);
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'completed', result: { summary: 'First run.', at: 5 } });
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'working' });
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'completed' });
+    expect(a.list({})[0].result).toBeUndefined();
+  });
+
+  it('keeps a finished task\'s report across later state-only updates and a reload', async () => {
+    const a = make();
+    await a.upsert(sent);
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'completed', result: { summary: 'Done; tests pass.', verification: '1/1', at: 5 } });
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'completed' });
+    await a.flush();
+    const [link] = make().list({});
+    expect(link.result).toEqual({ summary: 'Done; tests pass.', verification: '1/1', at: 5 });
+  });
+
   it('round-trips through the file', async () => {
     const a = make();
     const link = (await a.upsert({ ...sent, title: 'Fix it', requester: { workspaceId: 'ws-0', paneId: 'p-1' } }))!;
@@ -220,3 +240,39 @@ describe('WorkLinkStore', () => {
     expect(s.list()).toHaveLength(MAX_WORK_LINKS);
   });
 });
+
+describe('WorkLinkStore.abandonOrphaned', () => {
+  it('settles open links owned by a workspace that is gone, and only those', async () => {
+    const a = make();
+    await a.upsert({ ...sent, a2aState: 'working' });
+    await a.upsert({ origin: 'manual', a2aTaskId: 'task-2', a2aState: 'working', owner: { workspaceId: 'ws-live' } });
+    await a.upsert({ origin: 'manual', a2aTaskId: 'task-3', a2aState: 'completed', owner: { workspaceId: 'ws-1' } });
+    expect(a.getByTaskId('task-1')?.state).toBe('running');
+
+    expect(await a.abandonOrphaned((id) => id === 'ws-live')).toBe(1);
+
+    expect(a.getByTaskId('task-1')?.state).toBe('abandoned');
+    expect(a.getByTaskId('task-2')?.state).toBe('running');
+    expect(a.getByTaskId('task-3')?.state).toBe('done');
+    // It holds: a later state-only update of the dead task does not revive it.
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'working' });
+    expect(a.getByTaskId('task-1')?.state).toBe('abandoned');
+  });
+
+  it('leaves a link with a PR alone (the PR outlives the workspace)', async () => {
+    const a = make();
+    await a.upsert({ ...sent, a2aState: 'completed', pr: { host: 'github.com', owner: 'o', repo: 'r', number: 7, url: 'https://github.com/o/r/pull/7' } });
+    expect(await a.abandonOrphaned(() => false)).toBe(0);
+    expect(a.getByTaskId('task-1')?.state).not.toBe('abandoned');
+  });
+
+  it('the startup settle keeps links owned by a missing HQ (it comes back under the same id)', async () => {
+    const a = make();
+    await a.upsert({ origin: 'manual', a2aTaskId: 'task-hq', a2aState: 'working', owner: { workspaceId: 'ws-hq' } });
+    await a.upsert({ origin: 'manual', a2aTaskId: 'task-gone', a2aState: 'working', owner: { workspaceId: 'ws-gone' } });
+    expect(await a.abandonOrphaned(workLinkOwnerLive(new Set(['ws-live']), 'ws-hq'))).toBe(1);
+    expect(a.getByTaskId('task-hq')?.state).toBe('running');
+    expect(a.getByTaskId('task-gone')?.state).toBe('abandoned');
+  });
+});
+

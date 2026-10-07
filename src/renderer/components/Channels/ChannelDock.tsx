@@ -8,7 +8,7 @@
 // in AppLayout's root row, so it reflows the panes instead of floating over
 // them. Mounted only when `channelDockVisible` (uiSlice); auto-opens when a
 // channel is selected (channelsSlice.setActiveChannel), and opens AND closes
-// from the titlebar's DeckToggle (2026-08-18) — this component carries no
+// from Moa's titlebar button (it is drawn only while Moa is on) — this component carries no
 // collapse control of its own, because one command deserves one button and a
 // chevron here was that command a second time.
 //
@@ -40,7 +40,7 @@ import { MoaPanelTop, renderMoaChat } from '../Moa/panel/MoaPanelTop';
 import { MoaHqProblemCard, MoaOffCard, MoaSetupHint } from '../Moa/panel/MoaPanelCards';
 import { DeckLedgerPanel } from '../Deck/DeckLedgerPanel';
 import { useShallow } from 'zustand/react/shallow';
-import { selectMissionChannelIds } from '../../stores/selectors/missions';
+import { findMission, selectMissionChannelIds } from '../../stores/selectors/missions';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
 //
@@ -68,7 +68,12 @@ function CardModeLedger({ workspaceId, t }: { workspaceId: string; t: (key: stri
   const channelByTaskId = useStore(useShallow((s) => selectMissionChannelIds(s.missionsByWorkspace)));
   const finishedExpanded = useStore((s) => s.deckLedgerFinishedExpanded);
   const setFinishedExpanded = useStore((s) => s.setDeckLedgerFinishedExpanded);
-  const openChannel = useCallback((channelId: string) => useStore.getState().setActiveChannel(channelId), []);
+  // The mission channel reads in Fleet, as the task's conversation.
+  const openChannel = useCallback((channelId: string) => {
+    const st = useStore.getState();
+    const task = findMission(st.missionsByWorkspace, (item) => item.missionChannelId === channelId);
+    if (task) st.openTaskConversation(task.id);
+  }, []);
   const jumpToWorkspace = useCallback((id: string) => useStore.getState().setActiveWorkspace(id), []);
   const onLedgerPush = useCallback(() => {
     if (workspaceId) void useStore.getState().refreshMissions(workspaceId);
@@ -187,19 +192,20 @@ export default function ChannelDock(): React.ReactElement {
         showChannels={false}
         onSelect={() => undefined}
         commanderModelLabel={commanderModelLabel}
-        commanderModelOptions={MODEL_OPTIONS}
-        commanderModelValue={deckBrainModel}
-        onCommanderModelSelect={setDeckBrainModel}
         {...(moaOwnsTab
+          // Moa's model is chosen in its ⋯ › Model; the tab is a label.
           ? {
               commanderTitle: t('moa.panel.title'),
-              commanderSubtitle: t('moa.panel.subtitle'),
               commanderIcon: <MoaMascot state={mascot} size={28} />,
               commanderStatusLabel: mascot === 'idle' ? undefined : t(`moa.panel.mascot.${mascot}`),
             }
-          : {})}
-        /* No collapse button here any more. The titlebar's DeckToggle closes
-           the deck as well as opening it (2026-08-18), so a second chevron in
+          : {
+              commanderModelOptions: MODEL_OPTIONS,
+              commanderModelValue: deckBrainModel,
+              onCommanderModelSelect: setDeckBrainModel,
+            })}
+        /* No collapse button here any more. Moa's titlebar button closes
+           the panel as well as opening it, so a second chevron in
            this header was the same command twice, ~30px apart. One control in
            one fixed place beats two that move depending on whether the deck
            happens to be open. */

@@ -66,12 +66,16 @@ import {
   MOA_ISSUE_POLL_MINUTES_DEFAULT,
   MOA_ISSUE_POLL_MINUTES_RANGE,
   MOA_ISSUE_LIST_MAX,
+  MOA_AUTO_DAILY_CAP_DEFAULT,
+  MOA_AUTO_DAILY_CAP_RANGE,
   parseIgnoredRepos,
   parseTrustedAuthors,
   type MoaLevel,
   type MoaConfig,
   type MoaConfigPatch,
 } from '../../shared/moa';
+import { MOA_ASK_MODES, type MoaAskMode } from '../../shared/moaAsk';
+import { sanitizeAutoRules } from '../../shared/moaDecision';
 export type { MoaLevel, MoaConfig, MoaConfigPatch };
 
 export interface ArchivedHqDecision {
@@ -102,12 +106,27 @@ interface HqFile {
   moaMemoryProposals?: boolean;
   /** Issue / outside-PR proposals opt-in (moaIssueProposals.ts). Absent = off. */
   moaIssueProposals?: boolean;
+  /** Moa may hand off to a danger-mode workspace without a card (moaHandoff.ts),
+   *  while the HQ is in danger mode too. Absent = on. */
+  moaAutoHandoff?: boolean;
+  /** Moa reads its delegated repos without a prompt (moaReadGate.ts). Absent = on. */
+  moaReadWithoutAsking?: boolean;
+  /** Shadow judge opt-in (moaShadowFeed.ts): records only. Absent = off. */
+  moaShadowJudge?: boolean;
   /** Logins whose `wmux:auto` items may be handed off without a card. */
   moaTrustedAuthors?: string[];
   /** Minutes between proposal scans; absent = the default. */
   moaIssuePollMinutes?: number;
   /** Repo keys the proposals skip ("Ignore this repo"). */
   moaIgnoredRepos?: string[];
+  /** moa_ask mode (moaAskService.ts). Absent or unknown = off. */
+  moaAskMode?: MoaAskMode;
+  /** Rule ids the owner allowed to settle by themselves. Absent = none. */
+  moaAutoRules?: string[];
+  /** Auto answers per local day. Absent = MOA_AUTO_DAILY_CAP_DEFAULT. */
+  moaAutoDailyCap?: number;
+  /** The auto kill switch. Absent = off. */
+  moaAutoPaused?: boolean;
   /** Archived decisions up to this archivedAt have been acknowledged. */
   archiveAckedAt?: number;
   /** Set once the non-HQ migration has completed for `hqWorkspaceId`. */
@@ -137,7 +156,7 @@ function isValidHqFile(data: unknown): data is Record<string, unknown> {
   if (o.hqMaxTurnsPerHour !== undefined
     && !(typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1)) return false;
   if (o.archivedDecisions !== undefined && !Array.isArray(o.archivedDecisions)) return false;
-  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaMemoryProposals', 'moaIssueProposals'] as const) {
+  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaMemoryProposals', 'moaIssueProposals', 'moaAutoHandoff', 'moaReadWithoutAsking', 'moaShadowJudge'] as const) {
     if (o[k] !== undefined && typeof o[k] !== 'boolean') return false;
   }
   if (o.moaLevel !== undefined && o.moaLevel !== 1 && o.moaLevel !== 2 && o.moaLevel !== 3) return false;
@@ -167,12 +186,22 @@ function sanitize(o: Record<string, unknown>): HqFile {
   if (typeof o.moaMemoryProposals === 'boolean') out.moaMemoryProposals = o.moaMemoryProposals;
   if (typeof o.archiveAckedAt === 'number') out.archiveAckedAt = o.archiveAckedAt;
   if (typeof o.moaIssueProposals === 'boolean') out.moaIssueProposals = o.moaIssueProposals;
+  if (typeof o.moaAutoHandoff === 'boolean') out.moaAutoHandoff = o.moaAutoHandoff;
+  if (typeof o.moaReadWithoutAsking === 'boolean') out.moaReadWithoutAsking = o.moaReadWithoutAsking;
+  if (typeof o.moaShadowJudge === 'boolean') out.moaShadowJudge = o.moaShadowJudge;
   if (Array.isArray(o.moaTrustedAuthors)) out.moaTrustedAuthors = parseTrustedAuthors(o.moaTrustedAuthors);
   if (typeof o.moaIssuePollMinutes === 'number') {
     const n = issuePollMinutes(o.moaIssuePollMinutes);
     if (n !== null) out.moaIssuePollMinutes = n;
   }
   if (Array.isArray(o.moaIgnoredRepos)) out.moaIgnoredRepos = parseIgnoredRepos(o.moaIgnoredRepos);
+  // The delegate's fields fail closed one by one (an unknown value reads as
+  // off / none), so they never mark the whole file corrupt.
+  if (typeof o.moaAskMode === 'string' && (MOA_ASK_MODES as readonly string[]).includes(o.moaAskMode)) out.moaAskMode = o.moaAskMode as MoaAskMode;
+  if (Array.isArray(o.moaAutoRules)) out.moaAutoRules = sanitizeAutoRules(o.moaAutoRules);
+  const cap = autoDailyCap(o.moaAutoDailyCap);
+  if (cap !== null) out.moaAutoDailyCap = cap;
+  if (typeof o.moaAutoPaused === 'boolean') out.moaAutoPaused = o.moaAutoPaused;
   return out;
 }
 
@@ -412,10 +441,36 @@ export function getMoaConfig(dir?: string): MoaConfig {
     approvalPress: file.hqApprovalPress === true,
     memoryProposals: file.moaMemoryProposals !== false,
     issueProposals: file.moaIssueProposals === true,
+    autoHandoff: file.moaAutoHandoff !== false,
+    readWithoutAsking: file.moaReadWithoutAsking !== false,
+    shadowJudge: file.moaShadowJudge === true,
     trustedAuthors: file.moaTrustedAuthors ?? [],
     issuePollMinutes: file.moaIssuePollMinutes ?? MOA_ISSUE_POLL_MINUTES_DEFAULT,
     ignoredRepos: file.moaIgnoredRepos ?? [],
+    askMode: corrupt ? 'off' : file.moaAskMode ?? 'off',
+    autoRules: file.moaAutoRules ?? [],
+    autoDailyCap: file.moaAutoDailyCap ?? MOA_AUTO_DAILY_CAP_DEFAULT,
+    autoPaused: file.moaAutoPaused === true,
   };
+}
+
+/** A whole number within the auto cap's range, or null. */
+function autoDailyCap(n: unknown): number | null {
+  return typeof n === 'number' && Number.isInteger(n)
+    && n >= MOA_AUTO_DAILY_CAP_RANGE.min && n <= MOA_AUTO_DAILY_CAP_RANGE.max ? n : null;
+}
+
+/** The owner's per-rule auto toggles (renderer IPC only, through the Moa
+ *  delegate service). Returns false while the store is corrupt. */
+export async function setMoaAutoRules(ids: readonly string[], dir?: string): Promise<boolean> {
+  const next = sanitizeAutoRules([...ids]);
+  try {
+    await mutate(dir, (file) => write(dir, { ...file, moaAutoRules: next }));
+    return true;
+  } catch (err) {
+    if (err instanceof HqStoreCorruptError) return false;
+    throw err;
+  }
 }
 
 /** A whole number of minutes within the accepted range, or null. */
@@ -460,10 +515,17 @@ export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise
   if (typeof patch.approvalPress === 'boolean') next.hqApprovalPress = patch.approvalPress;
   if (typeof patch.memoryProposals === 'boolean') next.moaMemoryProposals = patch.memoryProposals;
   if (typeof patch.issueProposals === 'boolean') next.moaIssueProposals = patch.issueProposals;
+  if (typeof patch.autoHandoff === 'boolean') next.moaAutoHandoff = patch.autoHandoff;
+  if (typeof patch.readWithoutAsking === 'boolean') next.moaReadWithoutAsking = patch.readWithoutAsking;
+  if (typeof patch.shadowJudge === 'boolean') next.moaShadowJudge = patch.shadowJudge;
   if (patch.trustedAuthors !== undefined) next.moaTrustedAuthors = parseTrustedAuthors(patch.trustedAuthors);
   const minutes = issuePollMinutes(patch.issuePollMinutes);
   if (minutes !== null) next.moaIssuePollMinutes = minutes;
   if (patch.ignoredRepos !== undefined) next.moaIgnoredRepos = parseIgnoredRepos(patch.ignoredRepos);
+  if (typeof patch.askMode === 'string' && (MOA_ASK_MODES as readonly string[]).includes(patch.askMode)) next.moaAskMode = patch.askMode;
+  const cap = autoDailyCap(patch.autoDailyCap);
+  if (cap !== null) next.moaAutoDailyCap = cap;
+  if (typeof patch.autoPaused === 'boolean') next.moaAutoPaused = patch.autoPaused;
   try {
     await mutate(dir, (file) => write(dir, { ...file, ...next }));
     return true;

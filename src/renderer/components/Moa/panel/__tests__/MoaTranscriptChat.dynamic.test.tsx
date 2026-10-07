@@ -4,9 +4,12 @@
 // the shared useTranscript and drawn by the shared Chat components, with the
 // composer routed to the brain send instead of the pane chat bridge.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import MoaTranscriptChat, { tidyMoaUserText, type MoaApprovalApi, type MoaTranscriptApi } from '../MoaTranscriptChat';
+import { setDeckHeaderSlot } from '../../../Deck/deckHeaderSlot';
+import MoaTranscriptChat, { hideMoaWakes, tidyMoaUserText, type MoaApprovalApi, type MoaTranscriptApi } from '../MoaTranscriptChat';
 import type { MoaApproval, MoaApprovalAnswerResult } from '../../../../../shared/moa';
 import type { TranscriptAppendData, TranscriptPage, TurnEvent } from '../../../../../shared/transcript/turnEvents';
 
@@ -77,6 +80,151 @@ describe('MoaTranscriptChat', () => {
     await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
     expect(onSend).toHaveBeenCalledWith('Check the release');
     expect(host.querySelector('[data-moa-chat-pending]')?.textContent).toContain('Check the release');
+  });
+
+  it('a prompt the transcript records before the send resolves shows one bubble, not two', async () => {
+    const { api, push } = fakeApi();
+    let finish: (r: { ok: boolean }) => void = () => undefined;
+    const onSend = vi.fn(() => new Promise<{ ok: boolean }>((resolve) => { finish = resolve; }));
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    await type('Check the release');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    expect(onSend).toHaveBeenCalledWith('Check the release');
+    await act(async () => push({ seq: 1, events: [{ id: 'u2', kind: 'user_text', text: 'Check the release', ts: 3 }], cursor: { ...cursor, tailOffset: 150, fileSize: 150 } }));
+    await act(async () => finish({ ok: true }));
+    expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
+    expect([...host.querySelectorAll('.wmux-chat-user')].filter((n) => n.textContent?.includes('Check the release'))).toHaveLength(1);
+  });
+
+  it('tool activity is hidden; while Moa works a header control says so and opens it', async () => {
+    const slot = document.createElement('div');
+    document.body.append(slot);
+    setDeckHeaderSlot(slot);
+    try {
+      const { api } = fakeApi();
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      const chat = host.querySelector('[data-moa-chat]') as HTMLElement;
+      expect(chat.dataset.activity).toBe('hidden');
+      const toggle = slot.querySelector('[data-moa-working-toggle]') as HTMLButtonElement;
+      expect(toggle.tagName).toBe('BUTTON');
+      expect(toggle.dataset.busy).toBe('true');
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(toggle.getAttribute('aria-label')).toBe('moa.panel.activityShow');
+      await act(async () => { toggle.click(); });
+      expect(chat.dataset.activity).toBe('shown');
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      // Idle and collapsed: the control goes away.
+      await act(async () => { toggle.click(); });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      expect(slot.querySelector('[data-moa-working-toggle]')).toBeNull();
+    } finally {
+      setDeckHeaderSlot(null);
+      slot.remove();
+    }
+  });
+
+  it('with Moa idle, folded activity can still be opened, labelled as activity (not as working); failed calls fold with it', async () => {
+    const slot = document.createElement('div');
+    document.body.append(slot);
+    setDeckHeaderSlot(slot);
+    try {
+      const evs: TurnEvent[] = [
+        { id: 'u1', kind: 'user_text', text: 'Go', ts: 1 },
+        { id: 't1', kind: 'tool_use', toolUseId: 'x1', name: 'Read', argSummary: 'a', ts: 2 } as unknown as TurnEvent,
+        { id: 'r1', kind: 'tool_result', toolUseId: 'x1', ok: true, ts: 3 } as unknown as TurnEvent,
+        { id: 'a1', kind: 'assistant_text', text: 'Done.', ts: 4, turnComplete: true },
+      ];
+      const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: evs, cursor, hasMore: false, truncatedHead: false })) as never });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      const toggle = slot.querySelector('[data-moa-working-toggle]') as HTMLButtonElement;
+      expect(toggle).not.toBeNull();
+      expect(toggle.dataset.busy).toBeUndefined();
+      expect(toggle.getAttribute('aria-label')).toBe('moa.panel.activityShowIdle');
+      await act(async () => { toggle.click(); });
+      expect((host.querySelector('[data-moa-chat]') as HTMLElement).dataset.activity).toBe('shown');
+    } finally {
+      setDeckHeaderSlot(null);
+      slot.remove();
+    }
+    // The hide rule covers the fold, the working line and a failed tool row
+    // (Moa's own retry): the operator reads replies, not tool errors.
+    const css = readFileSync(path.join(__dirname, '../../moa.css'), 'utf8');
+    const rule = css.slice(css.indexOf('[data-moa-chat][data-activity="hidden"]'));
+    expect(rule.slice(0, rule.indexOf('}'))).toContain('.wmux-chat-tool');
+  });
+
+  it('an empty result answer (a transient miss) is asked again instead of remembered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { api } = fakeApi();
+      const link = { id: 'l2', origin: 'moa', title: 'Retry me', a2aTaskId: 't2', owner: { workspaceId: 'ws-w' }, state: 'done', decisionIds: [], createdAt: 1, updatedAt: 1.5 };
+      const linksApi = { list: vi.fn(async () => [link]), onChanged: vi.fn(() => () => undefined) };
+      const taskResult = vi.fn()
+        .mockResolvedValueOnce({ result: null })
+        .mockResolvedValue({ result: { summary: 'second time lucky', verified: 0, checks: 1 } });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} resultApi={{ taskResult }} />));
+      for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
+      expect(host.querySelector('[data-moa-result-card="l2"] [data-moa-result-summary]')).toBeNull();
+      await act(async () => { vi.advanceTimersByTime(3_000); });
+      for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
+      expect(taskResult).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('[data-moa-result-card="l2"] [data-moa-result-summary]')?.textContent).toBe('second time lucky');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a delegated task that finished, before Moa closed the work, shows its report card where it finished: not checked by Moa, the agent\'s words folded', async () => {
+    const { api } = fakeApi();
+    const link = {
+      id: 'l1', origin: 'moa', title: 'Add subtract to math.js', a2aTaskId: 't1', owner: { workspaceId: 'ws-w', paneId: 'p1' },
+      state: 'done', decisionIds: [], createdAt: 1, updatedAt: 1.5,
+    };
+    const linksApi = { list: vi.fn(async () => [link]), onChanged: vi.fn(() => () => undefined) };
+    const resultApi = { taskResult: vi.fn(async () => ({ result: { summary: 'subtract() added', verified: 1, checks: 2, files: ['math.js'] } })) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} resultApi={resultApi} />));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const card = host.querySelector('[data-moa-result-card="l1"]') as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(resultApi.taskResult).toHaveBeenCalledWith({ workspaceId: 'ws-w', taskId: 't1' });
+    const report = card.closest('[data-moa-report]') as HTMLElement;
+    expect(report.querySelector('[data-moa-report-title]')?.textContent).toBe('Add subtract to math.js');
+    expect(report.querySelector('[data-moa-report-checked]')?.getAttribute('data-moa-report-checked')).toBe('agent');
+    // The agent's own words: folded, rendered as text (markdown), not raw.
+    const details = card.querySelector('[data-moa-result-details]') as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(card.querySelector('[data-moa-result-summary]')?.textContent).toBe('subtract() added');
+    expect(card.querySelector('[data-moa-result-files]')?.textContent).toBe('math.js');
+    expect(card.querySelector('[data-moa-result-open]')?.textContent).toBe('moa.panel.openPane');
+    expect(host.textContent).not.toContain('moa.result.checks');
+    // Placed by time: after the user row (ts 1), before the reply (ts 2).
+    const order = [...host.querySelectorAll('.wmux-chat-user, [data-moa-result-card], .wmux-chat-assistant')].map((n) => n.matches('[data-moa-result-card]') ? 'card' : n.matches('.wmux-chat-user') ? 'user' : 'reply');
+    expect(order).toEqual(['user', 'card', 'reply']);
+  });
+
+  it('Moa\'s own decision and fan-out calls read as purpose cards outside the activity fold, waiting state from Waiting on you', async () => {
+    const callEvents: TurnEvent[] = [
+      { id: 'u1', kind: 'user_text', text: 'Ship it', ts: 1 },
+      { id: 'c1', kind: 'tool_use', toolUseId: 'tu1', name: 'mcp__wmux__deck_ask_decision', argSummary: 'x', input: { n: 1, bytes: 10, inline: '{"question":"Ship to main?","context":"CI is red on one flaky test"}' }, ts: 2 } as unknown as TurnEvent,
+      { id: 'r1', kind: 'tool_result', toolUseId: 'tu1', ok: true, bytes: 10, output: { n: 1, bytes: 10, inline: '{"ok":true,"id":"d1"}' }, ts: 3 } as unknown as TurnEvent,
+      { id: 'c2', kind: 'tool_use', toolUseId: 'tu2', name: 'mcp__wmux__fanout_start', argSummary: 'x', input: { n: 1, bytes: 10, inline: '{"titles":["lint","tests"]}' }, ts: 4 } as unknown as TurnEvent,
+      { id: 'c3', kind: 'tool_use', toolUseId: 'tu3', name: 'mcp__wmux__pane_list', argSummary: 'x', input: { n: 1, bytes: 2, inline: '{}' }, ts: 5 } as unknown as TurnEvent,
+    ];
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: callEvents, cursor, hasMore: false, truncatedHead: false })) as never });
+    const decisionsApi = { decisions: vi.fn(async () => ({ decisions: [{ workspaceId: 'ws-hq', decision: { id: 'd1', question: 'Ship to main?', options: [], context: '', raisedAt: 2 } }] })), onChanged: vi.fn(() => () => undefined) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} decisionsApi={decisionsApi as never} />));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const decision = host.querySelector('[data-moa-purpose="decision"]') as HTMLElement;
+    expect(decision).not.toBeNull();
+    expect(decision.closest('.wmux-chat-activity')).toBeNull();
+    expect(decision.textContent).toContain('Ship to main?');
+    expect(decision.textContent).toContain('CI is red on one flaky test');
+    expect(decision.querySelector('[data-moa-purpose-waiting]')).not.toBeNull();
+    expect(decision.querySelector('[data-moa-purpose-raw] pre')?.textContent).toContain('"question"');
+    const fanout = host.querySelector('[data-moa-purpose="fanout"]') as HTMLElement;
+    expect([...fanout.querySelectorAll('[data-moa-purpose-tasks] li')].map((li) => li.textContent)).toEqual(['lint', 'tests']);
+    // Ordinary tool calls stay in the (hidden) activity.
+    expect(host.querySelectorAll('[data-moa-purpose]')).toHaveLength(2);
   });
 
   it('a brain with no conversation yet reads as empty, not as a connection error', async () => {
@@ -282,6 +430,17 @@ describe('MoaTranscriptChat — code blocks', () => {
 });
 
 describe('tidyMoaUserText', () => {
+  it('wake prompts main types for Moa never draw as the operator\'s bubble; the operator\'s own words do', () => {
+    const shown = hideMoaWakes([
+      { id: 'w1', kind: 'user_text', text: '[pane-events] (UNTRUSTED terminal/A2A signals)\n  seq=1 ...\nwork-request: ACTIVE — this wake belongs to a direct human request', ts: 1 },
+      { id: 'w2', kind: 'user_text', text: 'The operator DISMISSED the decision you raised as not needed.', ts: 2 },
+      { id: 'h1', kind: 'user_text', text: 'Tell wmux to start the Fleet revamp', ts: 3 },
+      { id: 'h2', kind: 'user_text', text: 'Why did [pane-events] show up?', ts: 4 },
+    ]);
+    expect(shown.map((e) => e.kind)).toEqual(['meta', 'meta', 'user_text', 'user_text']);
+    expect(shown[0]).toMatchObject({ id: 'moa-wake:w1', subtype: 'turn_started', label: '' });
+  });
+
   it('shows one short line instead of any pasted wire, as Claude records it', () => {
     const out = tidyMoaUserText([
       // The real shape: an id on both tags, and the TUI's split leaves the
@@ -292,5 +451,282 @@ describe('tidyMoaUserText', () => {
       { id: '4', kind: 'assistant_text', text: '<pasted_content id="c">quoted</pasted_content>' },
     ], 'Instructions sent to Moa');
     expect(out.map((e) => e.text)).toEqual(['Instructions sent to Moa', 'Instructions sent to Moa', 'plain', '<pasted_content id="c">quoted</pasted_content>']);
+  });
+});
+
+// The sequence from a real run (2026-10-05): a cross-workspace request, a
+// refused direct send, a hand-off, a wake, Moa checking the file, the
+// delegation finishing, and Moa closing the work with its final reply.
+const RUN_LINK = {
+  id: 'l1', origin: 'moa', title: 'math.js에 빼기 함수 추가', a2aTaskId: 't-run', owner: { workspaceId: 'ws-demo', paneId: 'p1' },
+  state: 'done', decisionIds: [], createdAt: 1, updatedAt: 11.5,
+};
+const tool = (id: string, toolUseId: string, name: string, inline: string, ts: number) =>
+  ({ id, kind: 'tool_use', toolUseId, name, argSummary: name, input: { n: 1, bytes: inline.length, inline }, ts }) as unknown as TurnEvent;
+const toolResult = (id: string, toolUseId: string, ok: boolean, inline: string, ts: number) =>
+  ({ id, kind: 'tool_result', toolUseId, ok, bytes: inline.length, output: { n: 1, bytes: inline.length, inline }, ts }) as unknown as TurnEvent;
+const RUN: TurnEvent[] = [
+  { id: 'u1', kind: 'user_text', text: 'math.js에 빼기 함수 추가해줘', ts: 1 },
+  tool('t1', 'x1', 'mcp__wmux__terminal_send', '{}', 2),
+  toolResult('r1', 'x1', false, 'cross-workspace send refused', 3),
+  { id: 'a1', kind: 'assistant_text', text: 'Proposing the handoff to the agent in the other workspace, since direct send was refused.', ts: 4 },
+  tool('t2', 'x2', 'mcp__wmux__moa_propose_handoff', '{"title":"math.js에 빼기 함수 추가"}', 5),
+  toolResult('r2', 'x2', true, '{"ok":true,"id":"h1"}', 6),
+  { id: 'a2', kind: 'assistant_text', text: '승인 카드를 올렸습니다.', ts: 7, turnComplete: true },
+  { id: 'w1', kind: 'user_text', text: '[pane-events] stop', ts: 8 },
+  { id: 'a3', kind: 'assistant_text', text: "I have the checkout path, so I'll read math.js directly.", ts: 9 },
+  tool('t3', 'x3', 'Read', '{}', 10),
+  toolResult('r3', 'x3', true, 'export function subtract', 10.5),
+  { id: 'a4', kind: 'assistant_text', text: 'Verified: subtract exists. Closing the task and the work.', ts: 11 },
+  tool('t4', 'x4', 'mcp__wmux__deck_complete_work', '{"summary":"math.js에 subtract(a,b)를 추가함","verification":"math.js 2행을 직접 읽어 확인"}', 12),
+  toolResult('r4', 'x4', true, '{"ok":true}', 12.5),
+  { id: 'a5', kind: 'assistant_text', text: 'math.js에 `subtract(a,b)`를 추가했습니다.', ts: 13, turnComplete: true },
+];
+
+describe('MoaTranscriptChat — one job, one report', () => {
+  async function renderRun() {
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: RUN, cursor, hasMore: false, truncatedHead: false })) as never });
+    const linksApi = { list: vi.fn(async () => [RUN_LINK]), onChanged: vi.fn(() => () => undefined) };
+    const resultApi = { taskResult: vi.fn(async () => ({ result: { summary: '**✓ 완료**\n\n| 항목 | 내용 |\n|---|---|\n| math.js | subtract 추가 |', verified: 0, checks: 1, files: ['math.js'] } })) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} resultApi={resultApi} />));
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+  const visibleReplies = () => [...host.querySelectorAll('.wmux-chat-assistant .wmux-chat-prose')]
+    .filter((n) => !n.closest('.wmux-chat-activity') && !n.closest('.wmux-chat-thinking'))
+    .map((n) => n.textContent);
+
+  it('the turn that closed the work draws ONE report: Moa\'s reply, what Moa checked, the agent\'s report folded, a jump', async () => {
+    await renderRun();
+    const reports = host.querySelectorAll('[data-moa-report]');
+    expect(reports).toHaveLength(1);
+    const report = reports[0] as HTMLElement;
+    expect(report.querySelector('[data-moa-report-reply]')?.textContent).toContain('subtract(a,b)');
+    const checked = report.querySelector('[data-moa-report-checked]') as HTMLElement;
+    expect(checked.dataset.moaReportChecked).toBe('moa');
+    expect(checked.textContent).toBe('moa.report.checked');
+    // The delegation's result lives inside the report, never as a card of its own.
+    expect(host.querySelectorAll('[data-moa-result-card]')).toHaveLength(1);
+    expect(report.querySelector('[data-moa-result-card="l1"]')).not.toBeNull();
+    // Its markdown is rendered (a table), not shown as raw pipes.
+    expect(report.querySelector('[data-moa-result-summary] table')).not.toBeNull();
+    expect(report.querySelector('[data-moa-result-summary]')?.textContent).not.toContain('|');
+    expect(report.querySelector('[data-moa-result-open]')).not.toBeNull();
+    // No separate "Work completed" card, and the reply is not drawn twice.
+    expect(host.querySelector('[data-moa-purpose="complete"]')).toBeNull();
+    expect(visibleReplies().filter((t) => t?.includes('subtract(a,b)'))).toHaveLength(0);
+  });
+
+  it('only each turn\'s final reply reads as a message; narration and failed calls fold into the activity', async () => {
+    await renderRun();
+    expect(visibleReplies()).toEqual(['승인 카드를 올렸습니다.']);
+    for (const line of ['Proposing the handoff', 'checkout path', 'Closing the task']) {
+      const at = [...host.querySelectorAll('.wmux-chat-thinking')].find((n) => n.textContent?.includes(line));
+      expect(at?.closest('.wmux-chat-activity'), line).not.toBeNull();
+    }
+    // The refused send is a tool row (hidden with the activity by moa.css), and
+    // the hand-off that went through keeps its card.
+    const failed = [...host.querySelectorAll('.wmux-chat-tool')].find((n) => n.textContent?.includes('mcp__wmux__terminal_send'));
+    expect(failed).toBeDefined();
+    expect(host.querySelectorAll('[data-moa-purpose="handoff"]')).toHaveLength(1);
+  });
+
+  it('a call of Moa\'s own that did not go through shows only with the activity', async () => {
+    const slot = document.createElement('div');
+    document.body.append(slot);
+    setDeckHeaderSlot(slot);
+    try {
+      const evs: TurnEvent[] = [
+        { id: 'u1', kind: 'user_text', text: 'Go', ts: 1 },
+        tool('t1', 'x1', 'mcp__wmux__moa_propose_handoff', '{"title":"x"}', 2),
+        toolResult('r1', 'x1', false, 'missing body', 3),
+        { id: 'a1', kind: 'assistant_text', text: 'Proposed.', ts: 4, turnComplete: true },
+      ];
+      const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: evs, cursor, hasMore: false, truncatedHead: false })) as never });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      expect(host.querySelector('[data-moa-purpose-failed]')).toBeNull();
+      await act(async () => { (slot.querySelector('[data-moa-working-toggle]') as HTMLButtonElement).click(); });
+      expect(host.querySelector('[data-moa-purpose-failed]')).not.toBeNull();
+    } finally {
+      setDeckHeaderSlot(null);
+      slot.remove();
+    }
+  });
+});
+
+describe('MoaTranscriptChat — send feedback and the first screen', () => {
+  it('the operator\'s bubble shows the moment they send, before the brain\'s transcript records it', async () => {
+    const { api } = fakeApi();
+    const onSend = vi.fn(() => new Promise<{ ok: boolean }>(() => undefined));
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    await type('Check the release');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    expect(host.querySelector('[data-moa-chat-pending]')?.textContent).toContain('Check the release');
+  });
+
+  it('a send Moa refuses takes its bubble back', async () => {
+    const { api } = fakeApi();
+    const onSend = vi.fn(async () => ({ ok: false }));
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    await type('Check the release');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
+  });
+
+  it('pages back on its own until the operator\'s first message is in view, and stops at a bound', async () => {
+    const tail: TurnEvent[] = [{ id: 'a9', kind: 'assistant_text', text: 'Done.', ts: 9, turnComplete: true }];
+    const head: TurnEvent[] = [{ id: 'u1', kind: 'user_text', text: 'Add subtract', ts: 1 }];
+    const snapshot = vi.fn(async (opts?: { before?: number }) => (opts?.before === undefined
+      ? { events: tail, cursor: { ...cursor, headOffset: 50 }, hasMore: true, truncatedHead: false }
+      : { events: head, cursor: { ...cursor, headOffset: 0 }, hasMore: false, truncatedHead: false }));
+    const { api } = fakeApi({ snapshot: snapshot as never });
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(snapshot).toHaveBeenCalledWith({ before: 50 });
+    expect(host.querySelector('.wmux-chat-user')?.textContent).toContain('Add subtract');
+
+    // A transcript with no operator message at all is not read to its start.
+    act(() => root.unmount());
+    root = createRoot(host);
+    let head2 = 1000;
+    const endless = vi.fn(async () => ({ events: [{ id: `a${head2}`, kind: 'assistant_text', text: 'x', ts: head2 }], cursor: { ...cursor, headOffset: head2-- }, hasMore: true, truncatedHead: false }));
+    const { api: api2 } = fakeApi({ snapshot: endless as never });
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq2" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api2} />));
+    for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(endless.mock.calls.length).toBeLessThanOrEqual(7);
+  });
+
+  it('a brain whose transcript holds only main\'s own wake prompts shows the first-run guidance', async () => {
+    const evs: TurnEvent[] = [{ id: 'w1', kind: 'user_text', text: '[fleet-snapshot] nothing yet', ts: 1 }];
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: evs, cursor, hasMore: false, truncatedHead: false })) as never });
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    const empty = host.querySelector('[data-moa-chat-empty]');
+    expect(empty?.textContent).toContain('moa.panel.chatEmptyHint');
+  });
+});
+
+describe('MoaTranscriptChat — the first send', () => {
+  it('a message sent before the brain existed shows as the sent bubble when the chat mounts mid-turn', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({
+        moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never,
+        brainThreads: { 'ws-hq': { status: 'busy', messages: [{ id: 'm1', role: 'user', text: 'math.js에 빼기 함수 추가해줘', ts: Date.now() }] } } as never,
+      });
+      const { api, push } = fakeApi({ snapshot: vi.fn(async () => ({ events: [], cursor, hasMore: false, truncatedHead: false })) as never });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      expect(host.querySelector('[data-moa-chat-pending]')?.textContent).toContain('math.js에 빼기 함수 추가해줘');
+      expect(host.querySelector('[data-moa-chat-empty]')).toBeNull();
+      // The transcript records it: one bubble, not two.
+      await act(async () => push({ seq: 1, events: [{ id: 'u1', kind: 'user_text', text: 'math.js에 빼기 함수 추가해줘', ts: 2 }], cursor: { ...cursor, tailOffset: 150, fileSize: 150 } }));
+      expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
+      expect(host.querySelectorAll('.wmux-chat-user')).toHaveLength(1);
+    } finally {
+      useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
+    }
+  });
+});
+
+describe('MoaTranscriptChat — review fixes (#1808)', () => {
+  it('a done link whose updatedAt moves after the closing turn still lands in that turn\'s single report', async () => {
+    // main rewrites updatedAt on done links (a decision attached, a task
+    // state recorded): the result is timed by its own completion instead.
+    const moved = { ...RUN_LINK, id: 'l-moved', a2aTaskId: 't-moved', updatedAt: 99, result: { summary: 'subtract added', at: 11.5 } };
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: RUN, cursor, hasMore: false, truncatedHead: false })) as never });
+    const linksApi = { list: vi.fn(async () => [moved]), onChanged: vi.fn(() => () => undefined) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} />));
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const reports = host.querySelectorAll('[data-moa-report]');
+    expect(reports).toHaveLength(1);
+    expect(reports[0].querySelector('[data-moa-report-checked]')?.getAttribute('data-moa-report-checked')).toBe('moa');
+    expect(reports[0].querySelector('[data-moa-result-card="l-moved"]')).not.toBeNull();
+  });
+
+  it('a report covering two delegations names each task and gives each jump its own label', async () => {
+    const a = { ...RUN_LINK, id: 'la', a2aTaskId: 'ta', title: 'Add subtract', agent: 'claude', owner: { workspaceId: 'ws-a' }, result: { summary: 'done a', at: 11.2 } };
+    const b = { ...RUN_LINK, id: 'lb', a2aTaskId: 'tb', title: 'Add multiply', agent: 'codex', owner: { workspaceId: 'ws-b' }, result: { summary: 'done b', at: 11.4 } };
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: RUN, cursor, hasMore: false, truncatedHead: false })) as never });
+    const linksApi = { list: vi.fn(async () => [a, b]), onChanged: vi.fn(() => () => undefined) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} />));
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const report = host.querySelector('[data-moa-report]') as HTMLElement;
+    expect([...report.querySelectorAll('[data-moa-result-title]')].map((n) => n.textContent)).toEqual(['Add subtract', 'Add multiply']);
+    expect([...report.querySelectorAll('[data-moa-result-open]')].map((n) => n.textContent)).toEqual(['moa.report.openIn', 'moa.report.openIn']);
+    // With the real interpolation each jump names its agent and workspace.
+    const { MoaReportCard } = await import('../MoaResultCard');
+    const tv = (key: string, vars?: Record<string, string | number>) => (vars ? `${key}:${Object.values(vars).join('/')}` : key);
+    const names: Record<string, string> = { 'ws-a': 'api', 'ws-b': 'web' };
+    await act(async () => root.render(<MoaReportCard links={[a, b] as never} workspaceName={(id) => names[id]} onOpen={vi.fn()} t={tv} />));
+    expect([...host.querySelectorAll('[data-moa-result-open]')].map((n) => n.textContent)).toEqual(['moa.report.openIn:Claude Code/api', 'moa.report.openIn:Codex/web']);
+  });
+
+  it('a refusal that arrives after the send was taken as accepted keeps the bubble, marked not sent, with Retry and the draft restored', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({ moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never, brainThreads: {} });
+      const { api } = fakeApi();
+      // The composer's verdict window passed: the send reads as accepted.
+      const onSend = vi.fn(async () => ({ ok: true }));
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      await type('Check the release');
+      await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      // Main refuses late: the store's open turn closes with an error.
+      await act(async () => {
+        useStore.setState({ brainThreads: { 'ws-hq': { status: 'idle', messages: [
+          { id: 'm1', role: 'user', text: 'Check the release', ts: Date.now() },
+          { id: 'm2', role: 'assistant', text: '', ts: Date.now(), status: 'error', errorText: 'Moa is off for this workspace' },
+        ] } } as never });
+        root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />);
+      });
+      const bubble = host.querySelector('[data-moa-chat-pending]') as HTMLElement;
+      expect(bubble?.textContent).toContain('Check the release');
+      expect(bubble.querySelector('[data-moa-chat-not-sent]')?.textContent).toContain('moa.panel.notSentReason');
+      expect(input().value).toBe('Check the release');
+      await act(async () => { (bubble.querySelector('[data-moa-chat-retry]') as HTMLButtonElement).click(); });
+      expect(onSend).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('[data-moa-chat-not-sent]')).toBeNull();
+    } finally {
+      useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
+    }
+  });
+
+  it('a send refused by a dialog only the TUI shows says what it asks and opens the terminal view', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({ moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never, brainThreads: {} });
+      const { api } = fakeApi();
+      const onSend = vi.fn(async () => ({ ok: true }));
+      const onTerminal = vi.fn();
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={onTerminal} api={api} />));
+      await type('Check the release');
+      await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={onSend} onInterrupt={vi.fn()} onTerminal={onTerminal} api={api} />));
+      await act(async () => {
+        useStore.setState({ brainThreads: { 'ws-hq': { status: 'idle', messages: [
+          { id: 'm1', role: 'user', text: 'Check the release', ts: Date.now() },
+          { id: 'm2', role: 'assistant', text: '', ts: Date.now(), status: 'error',
+            errorText: 'Claude Code is waiting on a prompt of its own. Answer it in the terminal, then send your message again.',
+            tuiDialog: { excerpt: 'Do you trust the files in this folder?\n1. Yes, proceed\n2. No, exit' } },
+        ] } } as never });
+        root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={onTerminal} api={api} />);
+      });
+      const bubble = host.querySelector('[data-moa-chat-pending]') as HTMLElement;
+      const dialog = bubble.querySelector('[data-moa-chat-dialog]') as HTMLElement;
+      expect(dialog.textContent).toContain('moa.panel.terminalHint');
+      expect(dialog.querySelector('[data-moa-chat-dialog-excerpt]')?.textContent).toBe('Do you trust the files in this folder?\n1. Yes, proceed\n2. No, exit');
+      const button = dialog.querySelector('[data-moa-chat-dialog-terminal]') as HTMLButtonElement;
+      expect(button.textContent).toBe('moa.panel.answerInTerminal');
+      await act(async () => { button.click(); });
+      expect(onTerminal).toHaveBeenCalledTimes(1);
+      // Answering there is the user's job; nothing was sent again on the click.
+      expect(onSend).toHaveBeenCalledTimes(1);
+    } finally {
+      useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
+    }
   });
 });

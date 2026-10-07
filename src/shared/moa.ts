@@ -1,6 +1,8 @@
 // Moa (the HQ main bot) — the shapes the renderer reads over the deck bridge.
 // Main is the source of truth (src/main/deck/deckHqStore.ts); these mirror it.
 
+import type { MoaAskMode } from './moaAsk';
+
 export type MoaLevel = 1 | 2 | 3;
 
 export type MoaHqState = 'unset' | 'ok' | 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt';
@@ -31,9 +33,52 @@ export interface MoaConfig {
   issuePollMinutes?: number;
   /** Repos (host/owner/repo, lowercase) Moa no longer proposes from. */
   ignoredRepos?: string[];
+  /** Moa may hand off to a workspace in danger mode without a card, while the
+   *  HQ is in danger mode too. Never applies to any other target. Absent = on. */
+  autoHandoff?: boolean;
+  /** Moa reads files (Read, Grep, Glob) in the repos it delegated to without a
+   *  permission prompt (moaReadGate.ts). Absent = on. */
+  readWithoutAsking?: boolean;
+  /** Opt-in: Moa's shadow judge records what it would answer agents' questions
+   *  from the policy book, and whether the owner agreed. It answers nothing.
+   *  Absent = off. */
+  shadowJudge?: boolean;
+  /** moa_ask (shared/moaAsk.ts): off, records only, suggests in the panel, or
+   *  may answer by itself where a rule is auto-eligible. Absent = 'off'. */
+  askMode?: MoaAskMode;
+  /** Policy rule ids the owner allowed to settle by themselves (the per-rule
+   *  toggle, set only through DECK_MOA_DELEGATE_AUTO_SET). Absent = none. */
+  autoRules?: string[];
+  /** Most decisions Moa may settle by itself per local day (auto mode).
+   *  Absent = MOA_AUTO_DAILY_CAP_DEFAULT. */
+  autoDailyCap?: number;
+  /** The kill switch: true stops every automatic answer and merge at once,
+   *  whatever the mode and the per-rule toggles say. Absent = off. */
+  autoPaused?: boolean;
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos'>>;
+/** Auto answers per local day when the owner set no cap. */
+export const MOA_AUTO_DAILY_CAP_DEFAULT = 10;
+/** Bounds on the auto cap Settings accepts. */
+export const MOA_AUTO_DAILY_CAP_RANGE = { min: 0, max: 200 } as const;
+
+/** The shadow judge's readout (Settings › Moa). */
+export interface MoaShadowStats {
+  decisions: number;
+  answered: number;
+  escalations: number;
+  /** Ended questions where both the judge and the owner named a choice. */
+  compared: number;
+  agreed: number;
+  tokensToday: number;
+  callsToday: number;
+  /** Decisions this run could not write (memory only). */
+  unwritten: number;
+  /** The shadow log is full: nothing more is judged. */
+  full: boolean;
+}
+
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff' | 'readWithoutAsking' | 'shadowJudge' | 'askMode' | 'autoDailyCap' | 'autoPaused'>>;
 
 export interface MoaState {
   config: MoaConfig;
@@ -146,6 +191,28 @@ export interface MoaPendingDecision {
     context: string;
     raisedAt: number;
   };
+  /** Present on a hand-off Moa proposed (origin 'moa-handoff'). */
+  handoff?: import('./moaHandoff').MoaHandoffCardInfo;
+  /** A brain's own card: the operator may close it as not needed. */
+  dismissible?: true;
+}
+
+/** A permission prompt of an agent Moa delegated work to (Waiting on you).
+ *  `what` is agent-authored text (the command or file): render it as text. */
+export interface MoaDelegatedApproval {
+  id: string;
+  ptyId: string;
+  workspaceId: string;
+  workspaceName?: string;
+  agentName: string;
+  toolName?: string;
+  what?: string;
+  createdAt: number;
+  /** The plain Yes and No of a dialog the daemon bound to its call (agent
+   *  text labels). Present only when it can be answered in place. */
+  choices?: Array<{ key: string; label: string; decision: 'approve' | 'deny' }>;
+  /** Echoed back with an answer: the daemon refuses it if the dialog changed. */
+  promptFingerprint?: string;
 }
 
 /** Moa's mascot states (the panel header, the titlebar icon). */

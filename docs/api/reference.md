@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v3.67.0 sources.** This file is produced by
+> **Generated from wmux v4.0.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **196** methods (`ALL_RPC_METHODS` in
+Total: **200** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -307,8 +307,10 @@ Total: **196** methods (`ALL_RPC_METHODS` in
 | `deck.completeWork` | `null` |  |
 | `deck.requestDecision` | `null` |  |
 | `deck.resolveDecision` | `null` |  |
+| `deck.proposeHandoff` | `null` |  |
 | `deck.state.prune` | `wmux.internal` |  |
 | `usage.rateLimits` | `wmux.internal` |  |
+| `deck.moaReadRoots` | `wmux.internal` |  |
 | `task.mission.start` | `a2a.channel.send` | `a2a` |
 | `task.mission.close` | `a2a.channel.send` | `a2a` |
 | `task.mission.list` | `a2a.channel.read` | `a2a` |
@@ -316,6 +318,8 @@ Total: **196** methods (`ALL_RPC_METHODS` in
 | `task.fanout.start` | `a2a.execute` | `a2a` |
 | `ledger.list` | `ledger.read` | `a2a` |
 | `ledger.update` | `ledger.write` | `a2a` |
+| `moa.ask` | `wmux.internal` |  |
+| `moa.askStatus` | `wmux.internal` |  |
 | `task.gate.run` | `task.write` | `a2a` |
 | `task.gate.cancel` | `task.write` | `a2a` |
 | `task.adopt` | `task.write` | `a2a` |

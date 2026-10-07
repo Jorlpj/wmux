@@ -1,4 +1,6 @@
 import type { BrowserWindow } from 'electron';
+import { getDeliveryCheck } from '../deliveryGuards';
+import { refuseHandoffMarker } from '../handoffMarkerTripwire';
 import { usageLimitHoldDetail } from '../../usageLimit/paneUsageLimits';
 import {
   DELIVERY_RESERVE_MS,
@@ -814,6 +816,29 @@ export interface DeliveryGuard {
 }
 
 /**
+ * Add the check main registered for this delivery (deliveryGuards.ts) after
+ * the hand-off guard's own, at both points. A key with no check refuses.
+ */
+export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefined): DeliveryGuard {
+  if (!key) return guard;
+  const run = async (at: 'beforePaste' | 'beforeEnter'): Promise<GatedSubmitRefusal | null> => {
+    const check = getDeliveryCheck(key);
+    if (!check) return { ok: false, reason: 'guard_refused', detail: 'delivery: the check this delivery asked for is gone' };
+    let why: string | null;
+    try {
+      why = await check[at]();
+    } catch (err) {
+      why = err instanceof Error ? err.message : String(err);
+    }
+    return why ? { ok: false, reason: 'guard_refused', detail: `delivery: ${why}` } : null;
+  };
+  return {
+    beforePaste: async () => (await guard.beforePaste()) ?? run('beforePaste'),
+    beforeEnter: async () => (await guard.beforeEnter()) ?? run('beforeEnter'),
+  };
+}
+
+/**
  * Paste `text` into `ptyId` and submit it, gated as one operation in main. The
  * gate runs before the paste AND again right before the Enter, because the
  * Enter follows the paste after an agent-specific delay and a dialog drawn in
@@ -1109,6 +1134,12 @@ export function registerInputRpc(
       throw new Error('input.send: text exceeds 100KB limit');
     }
 
+    // Tripwire: the hand-off provenance line is written only by main's operator
+    // lane (moaHandoff.ts). A label, not an authentication boundary. Checked on
+    // the text as given and again on what is actually written (below).
+    const marked = refuseHandoffMarker('input.send', text, ctx);
+    if (marked) throw new Error(marked.error);
+
     const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
 
     // #1680 — the caller says this text starts a NEW task, so a pane whose role
@@ -1237,6 +1268,9 @@ export function registerInputRpc(
     // ran a shell command and then an empty line.
     const submitRequested = params['submit'] === true;
     const bodyText = submitRequested ? stripTrailingEnter(safeText) : safeText;
+    // Again on exactly what is written (after sanitizing and any rewrite).
+    const markedAfter = refuseHandoffMarker('input.send', bodyText, ctx);
+    if (markedAfter) throw new Error(markedAfter.error);
     // Resolve the receipt workspace BEFORE the first write so its round-trip
     // never lands inside the text→Enter gap the delay below protects (nor
     // between a fresh-context command and the text). On the owner lane the pane
@@ -1663,7 +1697,7 @@ export function registerInputRpc(
       if (opts?.waitQuiet) {
         const prepared = await prepareHandoffGuard(ptyId, opts);
         if (!prepared.ok) return prepared.refusal;
-        guard = prepared.guard;
+        guard = withRegisteredCheck(prepared.guard, opts.guardKey);
         noteOwnWrite = prepared.noteOwnWrite;
       }
       if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard);

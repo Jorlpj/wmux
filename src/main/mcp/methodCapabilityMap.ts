@@ -307,6 +307,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Brain self-resolve of a stale decision (WP3). Same commander-token auth +
   // server-side auto/staleness/substance gate, so no capability gate either.
   'deck.resolveDecision': { capability: null },
+  // Moa hand-off proposal. Own commander-token auth (HQ brain only) in
+  // deck.rpc.ts, and it only raises an operator card, so no capability gate.
+  'deck.proposeHandoff': { capability: null },
   // Orphan Deck state prune (`wmux deck state --prune --yes`). Runs inside the
   // app so its writes share the stores' in-process locks and caches; it
   // deletes state, so it carries the same internal gate as workspace.close.
@@ -535,6 +538,13 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'ledger.list':   { capability: 'ledger.read',  riskClass: 'a2a' },
   'ledger.update': { capability: 'ledger.write', riskClass: 'a2a' },
 
+  // --- Moa's delegate (pipe/handlers/moa.rpc.ts). Only the bundled server's
+  //     moa_ask / moa_ask_status call these (first-party lane); no plugin may
+  //     declare them. The handler stamps the asker from senderPtyId and answers
+  //     `off` while the delegate is off.
+  'moa.ask':       { capability: 'wmux.internal' },
+  'moa.askStatus': { capability: 'wmux.internal' },
+
   // --- Task lifecycle (pipe/handlers/worktask.rpc.ts) ---
   // The reads answer "what did this task produce"; the writes run the task's
   // own gate script, patch the parent repository, push a branch or remove a
@@ -599,6 +609,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Live Claude Code rate limits from the bundled statusline script — the same
   // internal caller class as hooks.signal.
   'usage.rateLimits': { capability: 'wmux.internal' },
+  // Moa's read gate asks which repositories it may read without a prompt.
+  // Read-only, answered from main's memory; the same internal caller class.
+  'deck.moaReadRoots': { capability: 'wmux.internal' },
 };
 
 /**

@@ -856,10 +856,11 @@ export class DaemonClient extends EventEmitter {
       // metadata + notification + toast, critical → approval request.
       switch (event.type) {
         case 'session.died': {
-          const data = event.data as { exitCode?: number | null } | null;
+          const data = event.data as { exitCode?: number | null; signal?: number } | null;
           this.emit('session:died', {
             sessionId: event.sessionId,
             exitCode: data?.exitCode ?? null,
+            ...(typeof data?.signal === 'number' ? { signal: data.signal } : {}),
           });
           break;
         }
@@ -948,6 +949,14 @@ export class DaemonClient extends EventEmitter {
             sessionId: event.sessionId,
             slug: data?.slug ?? null,
           });
+          break;
+        }
+        case 'agent.transcriptActivity': {
+          // The last tool of an agent with no per-tool hook, from its transcript.
+          const data = event.data as { activity?: unknown } | null;
+          if (typeof data?.activity === 'string') {
+            this.emit('session:transcriptActivity', { sessionId: event.sessionId, activity: data.activity });
+          }
           break;
         }
         case 'prompt.event':

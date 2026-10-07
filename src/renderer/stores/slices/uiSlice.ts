@@ -87,6 +87,14 @@ export function siteGuidesAutoEnablePatch(input: {
 }
 import type { FleetSortMode } from '../selectors/fleet';
 import { EMPTY_FILTER, type WorkspaceFilter } from '../../components/Sidebar/workspaceFilter';
+import {
+  DEFAULT_ATTENTION_BLINK,
+  DEFAULT_ATTENTION_BLINK_FINISHED,
+  DEFAULT_ATTENTION_REMIND_MS,
+  type AttentionBlinkFinished,
+  type AttentionBlinkMode,
+  type AttentionRemindMs,
+} from '../../components/Sidebar/attentionBlink';
 import { initialGitPageState, type GitDragContext, type GitHandoffOpen, type GitPageState } from '../../components/Git/gitPageState';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import {
@@ -251,10 +259,20 @@ export interface UISlice {
   // collapsed to one summary row. Session-only: not in buildSessionData.
   fleetIdleExpanded: boolean;
   setFleetIdleExpanded: (expanded: boolean) => void;
+  // The same for the Finished section (turns that ended, not yet looked at).
+  fleetFinishedExpanded: boolean;
+  setFleetFinishedExpanded: (expanded: boolean) => void;
   // One-shot request from the sidebar's `N to review` link: Fleet consumes it
   // (focuses the first Ready to review row) and clears it. Session-only.
   fleetFocusReview: boolean;
   setFleetFocusReview: (focus: boolean) => void;
+  // One-shot request from an "Open conversation" link (Moa's task cards and
+  // Waiting on you, the deck ledger): a WorkTask id. Fleet consumes it — it
+  // selects that task and shows its conversation — and clears it. Session-only.
+  fleetFocusTask: string | null;
+  setFleetFocusTask: (taskId: string | null) => void;
+  /** Go to Fleet and show a fan-out task's conversation there. */
+  openTaskConversation: (taskId: string) => void;
   // Fleet's "changed since you last looked" baseline, written when the overlay
   // closes. Session-only: not in buildSessionData; null until the first close.
   fleetLastSeen: FleetSeenSnapshot | null;
@@ -400,6 +418,15 @@ export interface UISlice {
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
   setSplitInheritsCwd: (enabled: boolean) => void;
+
+  // #1838: a shell that exits cleanly (code 0) closes its tab (default on).
+  closeTabOnShellExit: boolean;
+  setCloseTabOnShellExit: (enabled: boolean) => void;
+
+  // #1839: the tab waiting on the close-tab confirm (tab × or the shortcut).
+  closeTabConfirm: { workspaceId: string; paneId: string; surfaceId: string } | null;
+  requestCloseTab: (target: { workspaceId: string; paneId: string; surfaceId: string }) => void;
+  dismissCloseTab: () => void;
 
   // Idle-clearing of xterm's hidden IME textarea (issue #167, AutoGLM-style
   // voice injectors). Default OFF since v3.1.1: the programmatic wipe is the
@@ -598,6 +625,16 @@ export interface UISlice {
   sidebarShowPaneCoordinates: boolean;
   setSidebarShowPaneCoordinates: (enabled: boolean) => void;
 
+  /** Attention blink (2026-10-07): how a row waiting on a question or approval
+   *  pulses, the "once + remind" interval, and whether a finished turn pulses
+   *  once beside its done dot. Per user, persisted in the session. */
+  attentionBlink: AttentionBlinkMode;
+  attentionBlinkRemindMs: AttentionRemindMs;
+  attentionBlinkFinished: AttentionBlinkFinished;
+  setAttentionBlink: (mode: AttentionBlinkMode) => void;
+  setAttentionBlinkRemindMs: (ms: AttentionRemindMs) => void;
+  setAttentionBlinkFinished: (mode: AttentionBlinkFinished) => void;
+
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: boolean;
   setToastEnabled: (enabled: boolean) => void;
@@ -712,6 +749,11 @@ export interface UISlice {
   // default; each pane can override it from its limit chip.
   usageLimitAutoResume: boolean;
   setUsageLimitAutoResume: (enabled: boolean) => void;
+  // #1826: when on, a pane recovered at app start that was running Claude Code
+  // gets its resume line typed and submitted instead of only showing the
+  // Resume pill. Off by default.
+  claudeResumeOnStart: boolean;
+  setClaudeResumeOnStart: (enabled: boolean) => void;
   anthropicUsage: {
     status:
       | 'idle'
@@ -1187,11 +1229,26 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.fleetIdleExpanded = expanded;
   }),
 
+  fleetFinishedExpanded: false,
+
+  setFleetFinishedExpanded: (expanded) => set((state) => {
+    state.fleetFinishedExpanded = expanded;
+  }),
+
   fleetFocusReview: false,
 
   setFleetFocusReview: (focus) => set((state) => {
     state.fleetFocusReview = focus;
   }),
+
+  fleetFocusTask: null,
+  setFleetFocusTask: (taskId) => set((state) => {
+    state.fleetFocusTask = taskId;
+  }),
+  openTaskConversation: (taskId) => {
+    get().setFleetFocusTask(taskId);
+    get().setFleetViewVisible(true);
+  },
 
   fleetLastSeen: null,
 
@@ -1411,6 +1468,24 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.splitInheritsCwd = enabled;
   }),
 
+  closeTabOnShellExit: true,
+
+  setCloseTabOnShellExit: (enabled) => set((state) => {
+    state.closeTabOnShellExit = enabled;
+  }),
+
+  closeTabConfirm: null,
+
+  // A confirm already on screen keeps its tab: a second request must not
+  // retarget the dialog under the user's pointer.
+  requestCloseTab: (target) => set((state) => {
+    if (!state.closeTabConfirm) state.closeTabConfirm = target;
+  }),
+
+  dismissCloseTab: () => set((state) => {
+    state.closeTabConfirm = null;
+  }),
+
   imeResidueGuardEnabled: false,
 
   setImeResidueGuardEnabled: (enabled) => set((state) => {
@@ -1623,7 +1698,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.sidebarPosition = position;
   }),
 
-  sidebarAttentionFirst: true,
+  sidebarAttentionFirst: false,
 
   setSidebarAttentionFirst: (enabled) => set((state) => {
     state.sidebarAttentionFirst = enabled;
@@ -1631,7 +1706,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.sidebarSortModeChosen = true;
   }),
 
-  sidebarSortMode: 'attention',
+  sidebarSortMode: 'manual',
   sidebarSortModeChosen: false,
   sidebarSortMigrated: false,
   clearSidebarSortMigrated: () => set((state) => { state.sidebarSortMigrated = false; }),
@@ -1683,6 +1758,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setSidebarShowPaneCoordinates: (enabled) => set((state) => {
     state.sidebarShowPaneCoordinates = enabled;
   }),
+
+  attentionBlink: DEFAULT_ATTENTION_BLINK,
+  attentionBlinkRemindMs: DEFAULT_ATTENTION_REMIND_MS,
+  attentionBlinkFinished: DEFAULT_ATTENTION_BLINK_FINISHED,
+  setAttentionBlink: (mode) => set((state) => { state.attentionBlink = mode; }),
+  setAttentionBlinkRemindMs: (ms) => set((state) => { state.attentionBlinkRemindMs = ms; }),
+  setAttentionBlinkFinished: (mode) => set((state) => { state.attentionBlinkFinished = mode; }),
 
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: true,
@@ -1777,6 +1859,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   usageLimitAutoResume: false,
   setUsageLimitAutoResume: (enabled) => set((state) => {
     state.usageLimitAutoResume = enabled;
+  }),
+  claudeResumeOnStart: false,
+  setClaudeResumeOnStart: (enabled) => set((state) => {
+    state.claudeResumeOnStart = enabled;
   }),
   anthropicUsageEnabled: false,
   setAnthropicUsageEnabled: (enabled) => {

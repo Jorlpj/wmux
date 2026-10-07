@@ -65,8 +65,9 @@ import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import type { WebTlsConfig } from '../shared/web';
-import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
+import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
+import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
 import { screenShowsAgentDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
@@ -91,7 +92,7 @@ import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
 import { WorkTaskService } from './worktask/WorkTaskService';
-import { isTaskState, type AgentStatus, type Message } from '../shared/types';
+import { isTaskState, type AgentStatus, type Message, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
 import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
@@ -125,7 +126,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
@@ -134,6 +135,7 @@ import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
+import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
 import { CodexCwdBinder, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
@@ -253,6 +255,9 @@ let automationEngine: AutomationEngine | null = null;
 // handle at fire time and a null is simply "not configured yet".
 let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
+// Fleet's now-doing line for panes with no per-tool hook (setup-hooks installs,
+// Codex): tails the agent's own transcript. Guarded like the projector.
+let transcriptActivity: TranscriptActivityWatcher | null = null;
 // Phone native chat bridge (contract v0.3.1). Built in registerRpcHandlers next
 // to the services it wraps; the web server reads it lazily per request.
 let chatBridge: ChatBridge | null = null;
@@ -583,7 +588,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
         cols: managed.meta.cols ?? 80,
         rows: managed.meta.rows ?? 24,
         scrollback: 0,
-        initial: managed.ringBuffer.readAll(),
+        initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
       });
       if (!outcome.ok) return null;
       return outcome.rows.map((r) => r.text);
@@ -1229,6 +1234,8 @@ function spoolRecordToBinding(rec: Record<string, unknown>): { ptyId: string; bi
   const cwd = typeof rec.cwd === 'string' ? rec.cwd : null;
   const agent = typeof rec.agent === 'string' ? rec.agent : 'claude';
   if (!ptyId || !sessionId || !cwd || !KNOWN_AGENT_SLUGS.has(agent)) return null;
+  // #1823: a spooled rollout stem under agent 'claude' would re-poison at boot.
+  if (!isPlausibleResumeSessionId(agent, sessionId)) return null;
   const permissionMode = typeof rec.permissionMode === 'string' && KNOWN_PERMISSION_MODES.has(rec.permissionMode)
     ? (rec.permissionMode as ResumeBinding['permissionMode'])
     : undefined;
@@ -2579,7 +2586,7 @@ function registerRpcHandlers(
           cols: live?.meta.cols ?? managed.meta.cols ?? 80,
           rows: live?.meta.rows ?? managed.meta.rows ?? 24,
         };
-      });
+      }, () => sessionManager.getSession(p.id)?.bridge.outputModes ?? managed.bridge.outputModes);
       sessionPipes.set(p.id, pipe);
 
       // #557: demote a stuck-'attached' session to 'detached' if its authed
@@ -2731,33 +2738,16 @@ function registerRpcHandlers(
     if (!managed) {
       throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     }
-    const MAX_RPC_PAYLOAD_BYTES = 512 * 1024; // base64 ×1.37 + JSON stays < 1 MB
-    const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 2000, 10_000);
-    const base = {
-      cols: managed.meta.cols,
-      rows: managed.meta.rows,
-      initial: managed.ringBuffer.readAll(),
-    };
-    let outcome = await generateSnapshot({ ...base, scrollback });
-    if (outcome.ok && outcome.payload.length > MAX_RPC_PAYLOAD_BYTES) {
-      outcome = await generateSnapshot({ ...base, scrollback: 0 });
-    }
-    if (!outcome.ok) {
-      log('info', `[serialize] session=${p.id} unavailable reason=${outcome.reason}`);
-      return { ok: true, mode: 'unavailable', reason: outcome.reason };
-    }
-    if (outcome.payload.length > MAX_RPC_PAYLOAD_BYTES) {
-      log('info', `[serialize] session=${p.id} unavailable reason=too-large bytes=${outcome.payload.length}`);
-      return { ok: true, mode: 'unavailable', reason: 'too-large' };
-    }
-    log('info', `[serialize] session=${p.id} mode=snapshot payload=${outcome.payload.length}`);
-    return {
-      ok: true,
-      mode: 'snapshot',
-      payloadBase64: outcome.payload.toString('base64'),
-      cols: managed.meta.cols,
-      rows: managed.meta.rows,
-    };
+    return serializeSession(
+      {
+        ringBuffer: managed.ringBuffer,
+        outputModes: managed.bridge.outputModes,
+        cols: managed.meta.cols,
+        rows: managed.meta.rows,
+      },
+      p.scrollback,
+      (line) => log('info', `[serialize] session=${p.id} ${line}`),
+    );
   });
 
   // daemon.readSessionText (TASK-9 cold-park) — read-only PLAIN-TEXT snapshot
@@ -3433,6 +3423,12 @@ function registerRpcHandlers(
     // A binding without its folder can never be resumed (`--resume` is
     // cwd-scoped) and must not be stored: refuse it like an empty one.
     if (!managed || !isUsableResumeBinding(resumeBinding)) return false;
+    // #1823: the RPC and main's hooks.signal fallback reach here without
+    // HookIngest's checks; an id the agent cannot resume is never stored.
+    if (!isPlausibleResumeSessionId(resumeBinding.agent, resumeBinding.sessionId)) {
+      log('warn', `[resume] refused ${resumeBinding.agent} binding for ${id}: session id is not ${resumeBinding.agent}-shaped`);
+      return false;
+    }
     // The daemon's own hook ingest validates the claimed transcript path before
     // it gets here, but this function is ALSO the body of the
     // `daemon.setResumeBinding` RPC, and main's hooks.signal fallback calls that
@@ -3556,29 +3552,31 @@ function registerRpcHandlers(
   // Guarded like hookIngest: a second registerRpcHandlers call must not mint a
   // second projector, or the first one's fs.watch handles and poll timers would
   // be orphaned with no owner to tear them down.
+  // The persisted binding is the ONLY source of the transcript path — no
+  // cwd→slug derivation (agentResume.ts rejects that mapping as
+  // version-drift-prone, which is why the path is persisted at all). Shared by
+  // the projector and the activity watcher, so both read the same file.
+  const resolveTranscriptBinding = (id: string): ResumeBinding | undefined => {
+    const pane = sessionManager.getSession(id);
+    const live = codexPaneRelays.liveSelection(id, pane);
+    if (live.live) {
+      const selection = live.selection;
+      return selection ? { agent: 'codex', sessionId: selection.threadId, cwd: selection.cwd,
+        transcriptPath: selection.transcriptPath, ts: Date.now() } : undefined;
+    }
+    // The Moa pane's transcript is known only to main (a brain's hooks go
+    // there), so it arrives with the pushed fact and is read from memory —
+    // never persisted, see web/moaPane.ts. Only while the fact still
+    // resolves to this live brain pane.
+    const fact = currentMoaPane();
+    const binding = pane?.meta.resumeBinding
+      ?? (fact?.sessionId === id && resolveMoaPane(fact, (sid) => sessionManager.getSession(sid)) ? fact.binding : undefined);
+    const current = agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '');
+    return current && binding?.agent !== current ? undefined : binding;
+  };
   if (!transcriptProjector) {
     transcriptProjector = new TranscriptProjector({
-      // The persisted binding is the ONLY source of the transcript path — no
-      // cwd→slug derivation (agentResume.ts rejects that mapping as
-      // version-drift-prone, which is why the path is persisted at all).
-      getResumeBinding: (id) => {
-        const pane = sessionManager.getSession(id);
-        const live = codexPaneRelays.liveSelection(id, pane);
-        if (live.live) {
-          const selection = live.selection;
-          return selection ? { agent: 'codex', sessionId: selection.threadId, cwd: selection.cwd,
-            transcriptPath: selection.transcriptPath, ts: Date.now() } : undefined;
-        }
-        // The Moa pane's transcript is known only to main (a brain's hooks go
-        // there), so it arrives with the pushed fact and is read from memory —
-        // never persisted, see web/moaPane.ts. Only while the fact still
-        // resolves to this live brain pane.
-        const fact = currentMoaPane();
-        const binding = pane?.meta.resumeBinding
-          ?? (fact?.sessionId === id && resolveMoaPane(fact, (sid) => sessionManager.getSession(sid)) ? fact.binding : undefined);
-        const current = agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '');
-        return current && binding?.agent !== current ? undefined : binding;
-      },
+      getResumeBinding: resolveTranscriptBinding,
       // #782 — splits an absent binding into `stale-session` (agent running, no
       // binding yet) vs `no-hook` (no agent detected → hooks not installed).
       getDetectedAgent: (id) => sessionManager.getSession(id)?.meta.lastDetectedAgent,
@@ -3614,6 +3612,23 @@ function registerRpcHandlers(
     pipeServer.onClientClose((clientId) => projectorForClose.dropClient(clientId));
   }
   const projector = transcriptProjector;
+  if (!transcriptActivity) {
+    transcriptActivity = new TranscriptActivityWatcher({
+      listSessionIds: () => sessionManager.listLiveSessions().map((s) => s.id),
+      // Moa's brain reports its tools through its own hooks, to main.
+      getBinding: (id) => (currentMoaPane()?.sessionId === id ? undefined : resolveTranscriptBinding(id)),
+      // Process truth when the tracker attributed one; a Codex pane driven
+      // through the shared app-server counts while its relay is live.
+      isAgentAlive: (id) => (codexPaneRelays.liveSelection(id, sessionManager.getSession(id)).live
+        ? true
+        : agentProcessTracker.statusFor(id)),
+      emit: (sessionId, activity) => {
+        const event: DaemonEvent = { type: 'agent.transcriptActivity', sessionId, data: { activity } };
+        pipeServer.broadcast(event);
+      },
+    });
+    transcriptActivity.start();
+  }
 
   // Chat View — F9 early availability. Guarded like the projector: a second
   // registerRpcHandlers call must not mint a second searcher, or the first
@@ -3924,7 +3939,7 @@ function registerRpcHandlers(
         cols: managed.meta.cols ?? 80,
         rows: managed.meta.rows ?? 24,
         scrollback: 0,
-        initial: managed.ringBuffer.readAll(),
+        initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
         // The composer check tells a dimmed suggested prompt from typed input.
         undimmed: true,
       });
@@ -3948,7 +3963,7 @@ function registerRpcHandlers(
     queue: chatQueue,
     onQueueEvent: (event) => webTerminalServer?.emitChatQueue(event),
     onCancelEvent: (event) => webTerminalServer?.emitChatCancel(event),
-    idleShell: (pid, env) => agentProcessTracker.idleShellState(pid, env),
+    idleShell: (pid, env, anyShell) => agentProcessTracker.idleShellState(pid, env, anyShell),
     installedAgents: (env) => installedAgentLaunchOptions(env),
     relays: {
       retire: (id) => codexPaneRelays.retire(id),
@@ -4123,6 +4138,10 @@ function registerRpcHandlers(
         }
       },
       applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
+      liveAgentFor: (id) => {
+        const tracked = agentProcessTracker.identityFor(id);
+        return tracked?.alive ? tracked.slug : undefined;
+      },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
@@ -4142,6 +4161,8 @@ function registerRpcHandlers(
       // no Chat surface open.
       onTranscriptNudge: (sessionId, kind, agentSessionId) => {
         projector.nudge(sessionId, kind, agentSessionId);
+        // A hook-fed session's own activity line wins over the transcript.
+        transcriptActivity?.noteHookSignal(sessionId, kind);
         // #782 — phone turn-view nudge. Non-recording: bypasses attentionLog so
         // a busy pane cannot evict a pending approval and blank the badge on
         // replay (CRITICAL 3). Delivered only to devices watching this pane; a
@@ -4436,6 +4457,13 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.moa.answerPrompt', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'daemon.moa.answerPrompt')) return { ok: false, reason: 'first-party-only' };
     return moaPromptRpc ? moaPromptRpc.answer(params) : { ok: false, reason: 'not-pending' };
+  });
+  // The prompt of an agent Moa delegated work to, answered from Moa's panel.
+  // First-party only like the two above: main scopes it to Moa's delegated
+  // panes, and no agent, CLI verb or phone route reaches it.
+  pipeServer.onRpc('daemon.moa.answerDelegatedPrompt', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.moa.answerDelegatedPrompt')) return { ok: false, reason: 'first-party-only' };
+    return moaPromptRpc ? moaPromptRpc.answerDelegated(params) : { ok: false, reason: 'not-pending' };
   });
 
   const readDaemonAgentState = (id: string): {
@@ -4767,7 +4795,7 @@ function registerRpcHandlers(
         cols: managed.meta.cols ?? 80,
         rows: managed.meta.rows ?? 24,
         scrollback: 0,
-        initial: managed.ringBuffer.readAll(),
+        initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
       });
       return outcome.ok ? outcome.rows.map((r) => r.text).join('\n') : '';
     },
@@ -5420,23 +5448,28 @@ function registerRpcHandlers(
     // (로그)에서 force-fail한다 — 렌더러 캐시에서만 죽이면 재시작 시 restoreFromLog가
     // 부활시켜 정본이 실제와 어긋난다. per-member purge(paneSlice)는 teardown이
     // 아니므로 제외. 로그 커밋을 await해 응답 전 내구화(데몬 미가용 아님 — 동일 프로세스).
+    // Tasks this purge failed, returned to main so their work links record the
+    // failure and its reason like any other transition.
+    const failedA2aTasks: Task[] = [];
     if (a2aTaskService && memberId === undefined && principalId === undefined) {
       try {
         const n = await a2aTaskService.failTasksForWorkspaceRemoved(
           workspaceId,
           'Receiver workspace was removed before this task completed.',
+          (task) => { failedA2aTasks.push(task); },
         );
         if (n > 0) log('info', `A2A: force-failed ${n} task(s) for removed workspace ${workspaceId}`);
       } catch (err) {
         log('warn', `A2A: failTasksForWorkspaceRemoved(${workspaceId}) failed:`, err);
       }
     }
-    return channelService.purgeMembership({
+    const purged = await channelService.purgeMembership({
       workspaceId,
       verifiedWorkspaceId,
       ...(memberId !== undefined ? { memberId } : {}),
       ...(principalId !== undefined ? { principalId } : {}),
     });
+    return failedA2aTasks.length > 0 && purged && typeof purged === 'object' ? { ...purged, failedA2aTasks } : purged;
   });
 
   // a2a.channel.operatorJoin — 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에
@@ -5941,6 +5974,7 @@ function wireEvents(
     chatSessions?.drop(payload.id);
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
+    transcriptActivity?.dropSession(payload.id);
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -5950,7 +5984,9 @@ function wireEvents(
       const event: DaemonEvent = {
         type: 'session.died',
         sessionId: payload.id,
-        data: { exitCode: payload.exitCode },
+        // signal: a killed shell reports exitCode 0 with the signal beside it,
+        // so the renderer needs both to tell `exit` from `kill -9` (#1838).
+        data: { exitCode: payload.exitCode, ...(typeof payload.signal === 'number' ? { signal: payload.signal } : {}) },
       };
       pipeServer.broadcast(event);
     } catch (err) {
@@ -6531,6 +6567,7 @@ function wireEvents(
     chatSessions?.drop(payload.id);
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
+    transcriptActivity?.dropSession(payload.id);
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -6768,6 +6805,7 @@ async function shutdown(
   for (const timer of chatPushTimers.values()) clearTimeout(timer);
   chatPushTimers.clear(); chatSubscribers.clear();
   transcriptProjector?.dispose();
+  transcriptActivity?.dispose();
   terminalChat?.dispose();
   // Same for the discovery searches — unref'd watch handles and poll timers.
   transcriptDiscovery?.dispose();
