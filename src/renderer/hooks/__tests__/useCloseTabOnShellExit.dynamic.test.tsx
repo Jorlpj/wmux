@@ -107,6 +107,8 @@ describe('useCloseTabOnShellExit', () => {
     await exit('pty-one', 0);
     expect(surfaceIds()).toEqual(['two']);
     expect(dispose).toHaveBeenCalledWith('pty-one');
+    // An exit is not a user close: it never raises the close-tab confirm (#1839).
+    expect(useStore.getState().closeTabConfirm).toBeNull();
   });
 
   it('keeps the tab on a non-zero exit', async () => {
