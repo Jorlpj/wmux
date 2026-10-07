@@ -36,6 +36,7 @@ import {
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPromptCarry, noteCodexEndedByPrompt } from '../terminal/newlineKeys';
+import { resolveMacLineDeleteByte } from '../terminal/macLineDeleteKey';
 import { isWslShell } from '../../shared/imagePaste';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
@@ -2164,6 +2165,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (customKeybindings.some((kb) => kb.key === combo)) {
           return false; // let useKeyboard handle it
         }
+      }
+
+      // ⌘Backspace deletes to the start of the line (xterm encodes no ⌘ chord).
+      // Below the shortcut checks so a user binding on it still wins.
+      const lineDeleteByte = resolveMacLineDeleteByte(e, isMac);
+      if (lineDeleteByte !== null) {
+        e.preventDefault();
+        window.electronAPI.pty.write(ptyId, lineDeleteByte);
+        noteUserKeystroke(lineDeleteByte);
+        return false;
       }
 
       // macOS-native clipboard: ⌘C copies the selection, ⌘V pastes. The Ctrl
