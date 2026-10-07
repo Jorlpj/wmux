@@ -1899,6 +1899,8 @@ function TabTerminal() {
   const setImagePasteMode = useStore((s) => s.setImagePasteMode);
   const splitInheritsCwd = useStore((s) => s.splitInheritsCwd);
   const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
+  const closeTabOnShellExit = useStore((s) => s.closeTabOnShellExit);
+  const setCloseTabOnShellExit = useStore((s) => s.setCloseTabOnShellExit);
   const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
   const setImeResidueGuardEnabled = useStore((s) => s.setImeResidueGuardEnabled);
   const hiddenPaneRetentionEnabled = useStore((s) => s.hiddenPaneRetentionEnabled);
@@ -2001,6 +2003,13 @@ function TabTerminal() {
             checked={splitInheritsCwd}
             onChange={setSplitInheritsCwd}
             label={t('settings.splitInheritsCwd')}
+          />
+        </SettingRow>
+        <SettingRow id="closeonexit" label={t('settings.closeTabOnShellExit')} description={t('settings.closeTabOnShellExitDesc')}>
+          <Toggle
+            checked={closeTabOnShellExit}
+            onChange={setCloseTabOnShellExit}
+            label={t('settings.closeTabOnShellExit')}
           />
         </SettingRow>
       </SettingsSection>
