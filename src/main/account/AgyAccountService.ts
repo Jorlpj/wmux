@@ -113,7 +113,8 @@ export interface AgyLoginState {
  * active account, so the user knows another account still has quota.
  */
 function heldOnActive(accounts: readonly AgyAccountRow[], availableAtMs: number | null): AgyLaunchDecision {
-  const otherHasQuota = accounts.some((a) => !a.active && a.state === 'ready');
+  // Any other account not known to be out (ready, or one that only needs signing in again).
+  const otherHasQuota = accounts.some((a) => !a.active && a.state !== 'exhausted');
   return { ok: false, reason: otherHasQuota ? 'active-exhausted' : 'all-exhausted', availableAtMs };
 }
 

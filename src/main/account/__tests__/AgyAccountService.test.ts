@@ -240,6 +240,19 @@ describe('AgyAccountService', () => {
     expect(s.snapshot().accounts.find((a) => a.email === 'a@x.com')?.state).toBe('needs-reauth');
   });
 
+  it('does not claim every account is out while another only needs signing in again', async () => {
+    const s = make();
+    await withAccounts(s, ['a@x.com', 'b@x.com']); // b is live; switching is off
+    snapshots.set('a@x.com', quota(0.9));
+    snapshots.set('b@x.com', quota(0));
+    backend.remove(copyTarget('a@x.com'));
+    await s.setAutoRotate(true);
+    await s.prepareLaunch(); // a's lost copy marks it needs-reauth
+    await s.setAutoRotate(false);
+    expect(s.snapshot().accounts.find((r) => r.email === 'a@x.com')?.state).toBe('needs-reauth');
+    expect(await s.prepareLaunch()).toMatchObject({ ok: false, reason: 'active-exhausted' });
+  });
+
   it('clears needs-reauth once the active account is signed in again outside wmux', async () => {
     const s = make();
     await withAccounts(s, ['a@x.com', 'b@x.com']); // b is live
