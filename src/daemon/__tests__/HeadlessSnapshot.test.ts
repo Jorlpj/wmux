@@ -121,15 +121,32 @@ describe('HeadlessSnapshot — fidelity round-trips', () => {
     expect(res.payload.toString('utf8')).toContain('\x1b[?1006h');
   });
 
-  it('degrades on the alternate screen buffer', async () => {
-    const res = await generateSnapshot({
-      cols: 80,
-      rows: 24,
-      initial: Buffer.from('\x1b[?1049h\x1b[HVIM-LIKE CONTENT\r\n'),
-    });
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.reason).toBe('alt-screen');
+  it('round-trips the alternate screen buffer, with the normal buffer behind it', async () => {
+    const bytes = Buffer.from('shell history line\r\n\x1b[?1049h\x1b[H\x1b[2JFULL SCREEN FRAME\r\nrow two');
+    const res = await generateSnapshot({ cols: 80, rows: 24, initial: bytes });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const ref = await referenceTerminal(bytes, 80, 24);
+    const restored = await restoredTerminal(res.payload, 80, 24);
+    expect(restored.buffer.active.type).toBe('alternate');
+    const text = (t: typeof ref) => {
+      const lines: string[] = [];
+      for (let i = 0; i < t.rows; i++) lines.push(t.buffer.alternate.getLine(i)?.translateToString(true) ?? '');
+      return lines;
+    };
+    expect(text(restored)).toEqual(text(ref));
+    expect(restored.buffer.active.cursorX).toBe(ref.buffer.active.cursorX);
+    expect(restored.buffer.active.cursorY).toBe(ref.buffer.active.cursorY);
+    // Leaving the alternate screen lands back on the shell's history.
+    await writeAsync(restored, '\x1b[?1049l');
+    expect(restored.buffer.normal.getLine(0)?.translateToString(true)).toBe('shell history line');
+  });
+
+  it('restores a hidden cursor, and leaves a shown one alone', async () => {
+    const hidden = await generateSnapshot({ cols: 80, rows: 24, initial: Buffer.from('\x1b[?1049h\x1b[?25lTUI') });
+    expect(hidden.ok && hidden.payload.toString('utf8').endsWith('\x1b[?25l')).toBe(true);
+    const shown = await generateSnapshot({ cols: 80, rows: 24, initial: Buffer.from('\x1b[?25lbusy\x1b[?25hdone') });
+    expect(shown.ok && shown.payload.toString('utf8').includes('\x1b[?25l')).toBe(false);
   });
 
   it('degrades while DECSTBM margins are active, but not after they are cleared', async () => {
@@ -251,4 +268,27 @@ describe('HeadlessSnapshot — fidelity round-trips', () => {
     expect(text).toContain('한글 boundary check');
     expect(text).not.toContain('�');
   }, 30000);
+});
+
+describe('generateSnapshot — cursor visibility', () => {
+  it('shows the cursor on a renderer that still has it hidden when the stream showed it again', async () => {
+    const outcome = await generateSnapshot({
+      cols: 40,
+      rows: 6,
+      initial: Buffer.from('\x1b[?25lworking...\r\n\x1b[?25hdone\r\n$ ', 'utf8'),
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    // A reflush lands on the existing renderer behind a RIS, and xterm.js
+    // keeps DECTCEM across RIS, so the payload itself must show the cursor.
+    const renderer = new Terminal({ cols: 40, rows: 6, allowProposedApi: true });
+    const write = (d: string | Uint8Array) => new Promise<void>((r) => renderer.write(d, r));
+    await write('\x1b[?25l');
+    await write('\x1bc');
+    await write(outcome.payload);
+    const core = (renderer as unknown as { _core: { coreService: { isCursorHidden: boolean } } })._core;
+    expect(core.coreService.isCursorHidden).toBe(false);
+    renderer.dispose();
+  });
 });
