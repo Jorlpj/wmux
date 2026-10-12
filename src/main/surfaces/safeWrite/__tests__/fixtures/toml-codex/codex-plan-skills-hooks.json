@@ -1,0 +1,190 @@
+{
+  "skills": {
+    "tomlEdits": [
+      {
+        "arrayTable": [
+          "skills",
+          "config"
+        ],
+        "match": {
+          "path": "<home>/.codex/skills/abs/SKILL.md"
+        },
+        "key": "enabled",
+        "op": "set",
+        "value": true
+      },
+      {
+        "arrayTable": [
+          "skills",
+          "config"
+        ],
+        "match": {
+          "path": "skills/rel/SKILL.md"
+        },
+        "key": "enabled",
+        "op": "set",
+        "value": true
+      },
+      {
+        "arrayTable": [
+          "skills",
+          "config"
+        ],
+        "match": {
+          "path": "<home>/.codex/skills/new/SKILL.md"
+        },
+        "key": "enabled",
+        "op": "set",
+        "value": false
+      }
+    ],
+    "edits": [
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set skills.config path = \"<home>/.codex/skills/abs/SKILL.md\" enabled = true"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set skills.config path = \"skills/rel/SKILL.md\" enabled = true"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set skills.config path = \"<home>/.codex/skills/new/SKILL.md\" enabled = false"
+      }
+    ],
+    "applicableItemIds": [
+      "codex:skill::abs",
+      "codex:skill::rel",
+      "codex:skill::new"
+    ]
+  },
+  "skillsDottedKey": {
+    "tomlEdits": [
+      {
+        "arrayTable": [
+          "skills",
+          "config"
+        ],
+        "match": {
+          "path": "<home>/.codex/skills/rel/SKILL.md"
+        },
+        "key": "enabled",
+        "op": "set",
+        "value": true
+      }
+    ],
+    "edits": [
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set skills.config path = \"<home>/.codex/skills/rel/SKILL.md\" enabled = true"
+      }
+    ],
+    "applicableItemIds": [
+      "codex:skill::rel"
+    ]
+  },
+  "skillWithoutOrigin": {
+    "thrown": "Skill 'x' is missing an originPath."
+  },
+  "hooks": {
+    "tomlEdits": [
+      {
+        "table": [
+          "hooks",
+          "state",
+          "<home>/.codex/hooks.json:pre_tool_use:0:0"
+        ],
+        "key": "enabled",
+        "op": "set",
+        "value": false
+      },
+      {
+        "table": [
+          "hooks",
+          "state",
+          "<home>/.codex/hooks.json:session_start:0:1"
+        ],
+        "key": "enabled",
+        "op": "set",
+        "value": true
+      },
+      {
+        "table": [
+          "hooks",
+          "state",
+          "<home>/.codex/hooks.json:stop:0:2"
+        ],
+        "key": "enabled",
+        "op": "set",
+        "value": false
+      },
+      {
+        "table": [
+          "hooks",
+          "state",
+          "<home>/.codex/flat.json:stop:0:0"
+        ],
+        "key": "enabled",
+        "op": "set",
+        "value": true
+      }
+    ],
+    "edits": [
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set hooks.state.\"<home>/.codex/hooks.json:pre_tool_use:0:0\".enabled = false"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set hooks.state.\"<home>/.codex/hooks.json:session_start:0:1\".enabled = true"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set hooks.state.\"<home>/.codex/hooks.json:stop:0:2\".enabled = false"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set hooks.state.\"<home>/.codex/flat.json:stop:0:0\".enabled = true"
+      }
+    ],
+    "applicableItemIds": [
+      "codex:hook::first",
+      "codex:hook::second",
+      "codex:hook::third",
+      "codex:hook::only"
+    ]
+  },
+  "reusesExistingStateKey": true,
+  "hookNoEvent": {
+    "thrown": "Cannot determine hook event for 'third' in <home>/.codex/hooks.json"
+  },
+  "hookBadConfig": {
+    "thrown": "Invalid hook config for 'bad' in <home>/.codex/hooks.json"
+  },
+  "hookMissing": {
+    "thrown": "Hook 'nope' not found in <home>/.codex/hooks.json"
+  },
+  "hookFileMissing": {
+    "thrown": "Hooks file not found: <home>/none.json"
+  },
+  "hookFileInvalid": {
+    "thrown": "Failed to parse hooks file at <home>/bad.json"
+  },
+  "hookFileArray": {
+    "thrown": "Invalid hooks JSON structure at <home>/arr.json"
+  },
+  "wmuxHooks": [
+    {
+      "thrown": "Hooks owned by wmux are handled by the dispatcher."
+    },
+    {
+      "thrown": "Hooks owned by wmux are handled by the dispatcher."
+    },
+    {
+      "thrown": "Hooks owned by wmux are handled by the dispatcher."
+    },
+    {
+      "thrown": "Hooks owned by wmux are handled by the dispatcher."
+    }
+  ]
+}

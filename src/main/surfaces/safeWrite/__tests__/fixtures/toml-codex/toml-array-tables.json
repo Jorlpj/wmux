@@ -1,0 +1,20 @@
+{
+  "setExistingKey": "# top comment\nmodel = \"gpt-5\"   # inline\napproval = \"never\"\n\n[mcp_servers.alpha]\n  command = \"node\"\n  disabled_tools = [\n    \"a\", # first\n    \"b\",\n  ]\n\n[mcp_servers.\"with.dot\"]\ncommand = 'C:\\tools\\x.exe'\n\n[[skills.config]]\npath = \"/s/one\"\nenabled = true\n\n[[skills.config]]\npath = \"/s/two\"\n\n[features]\nweb_search = \"live\" # keep\n",
+  "setNewKeyInEntry": "# top comment\nmodel = \"gpt-5\"   # inline\napproval = \"never\"\n\n[mcp_servers.alpha]\n  command = \"node\"\n  disabled_tools = [\n    \"a\", # first\n    \"b\",\n  ]\n\n[mcp_servers.\"with.dot\"]\ncommand = 'C:\\tools\\x.exe'\n\n[[skills.config]]\npath = \"/s/one\"\nenabled = false\n\n[[skills.config]]\npath = \"/s/two\"\nenabled = false\n\n[features]\nweb_search = \"live\" # keep\n",
+  "deleteKey": "# top comment\nmodel = \"gpt-5\"   # inline\napproval = \"never\"\n\n[mcp_servers.alpha]\n  command = \"node\"\n  disabled_tools = [\n    \"a\", # first\n    \"b\",\n  ]\n\n[mcp_servers.\"with.dot\"]\ncommand = 'C:\\tools\\x.exe'\n\n[[skills.config]]\npath = \"/s/one\"\n\n[[skills.config]]\npath = \"/s/two\"\n\n[features]\nweb_search = \"live\" # keep\n",
+  "deleteNoEntry": "# top comment\nmodel = \"gpt-5\"   # inline\napproval = \"never\"\n\n[mcp_servers.alpha]\n  command = \"node\"\n  disabled_tools = [\n    \"a\", # first\n    \"b\",\n  ]\n\n[mcp_servers.\"with.dot\"]\ncommand = 'C:\\tools\\x.exe'\n\n[[skills.config]]\npath = \"/s/one\"\nenabled = false\n\n[[skills.config]]\npath = \"/s/two\"\n\n[features]\nweb_search = \"live\" # keep\n",
+  "deleteNoKey": "# top comment\nmodel = \"gpt-5\"   # inline\napproval = \"never\"\n\n[mcp_servers.alpha]\n  command = \"node\"\n  disabled_tools = [\n    \"a\", # first\n    \"b\",\n  ]\n\n[mcp_servers.\"with.dot\"]\ncommand = 'C:\\tools\\x.exe'\n\n[[skills.config]]\npath = \"/s/one\"\nenabled = false\n\n[[skills.config]]\npath = \"/s/two\"\n\n[features]\nweb_search = \"live\" # keep\n",
+  "appendAfterLastEntry": "# top comment\nmodel = \"gpt-5\"   # inline\napproval = \"never\"\n\n[mcp_servers.alpha]\n  command = \"node\"\n  disabled_tools = [\n    \"a\", # first\n    \"b\",\n  ]\n\n[mcp_servers.\"with.dot\"]\ncommand = 'C:\\tools\\x.exe'\n\n[[skills.config]]\npath = \"/s/one\"\nenabled = false\n\n[[skills.config]]\npath = \"/s/two\"\n\n[[skills.config]]\npath = \"/s/three\"\nenabled = false\n\n[features]\nweb_search = \"live\" # keep\n",
+  "firstEntryAtEnd": "a = 1\n\n[[skills.config]]\npath = 'C:\\s\\x'\nenabled = false\n",
+  "firstEntryEmpty": "[[skills.config]]\npath = \"/x\"\nname = \"n\"\nenabled = true\n",
+  "matchKeyIsEditKey": "[[a]]\nk = \"v\"\n",
+  "matchByNumber": "[[a]]\nid = 2\nx = 5\n",
+  "protectedKey": "TomlEditError: Cannot modify protected key: trusted_hash",
+  "invalidOriginal": "TomlEditError: Original text is not valid TOML: <parse error>",
+  "setUnderArrayTablePath": "TomlEditError: Edited text is not valid TOML: <parse error>",
+  "tableWhereScalar": "TomlEditError: Edited text is not valid TOML: <parse error>",
+  "deleteThroughScalar": "t = 1\n",
+  "arrayDeleteThroughScalar": "a = 1\n",
+  "arrayWhereTable": "TomlEditError: Edited text is not valid TOML: <parse error>",
+  "dottedKeyLine": "TomlEditError: Edited text is not valid TOML: <parse error>"
+}
