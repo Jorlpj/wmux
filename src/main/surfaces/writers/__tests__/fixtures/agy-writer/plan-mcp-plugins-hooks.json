@@ -1,0 +1,287 @@
+{
+  "mcp": {
+    "filePath": "<home>/.gemini/config/mcp_config.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabled"
+        ],
+        "value": true
+      },
+      {
+        "op": "delete",
+        "path": [
+          "mcpServers",
+          "u",
+          "disabled"
+        ]
+      },
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ],
+        "value": [
+          "old",
+          "keep",
+          "new"
+        ]
+      },
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ],
+        "value": [
+          "old",
+          "keep",
+          "new"
+        ]
+      },
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ],
+        "value": [
+          "old",
+          "new"
+        ]
+      },
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "t",
+          "disabledTools"
+        ],
+        "value": [
+          "a"
+        ]
+      },
+      {
+        "op": "delete",
+        "path": [
+          "mcpServers",
+          "t",
+          "disabledTools"
+        ]
+      },
+      {
+        "op": "delete",
+        "path": [
+          "mcpServers",
+          "",
+          "disabledTools"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "set mcpServers.\"s\".disabled = true"
+      },
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "delete mcpServers.\"u\".disabled"
+      },
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "add \"new\" to mcpServers.\"s\".disabledTools"
+      },
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "add \"old\" to mcpServers.\"s\".disabledTools"
+      },
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "remove \"keep\" from mcpServers.\"s\".disabledTools"
+      },
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "add \"a\" to mcpServers.\"t\".disabledTools"
+      },
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "remove \"a\" from mcpServers.\"t\".disabledTools"
+      },
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "remove \"x\" from mcpServers.\"\".disabledTools"
+      }
+    ],
+    "itemIds": [
+      "agy:mcp-server::s",
+      "agy:mcp-server::u",
+      "agy:mcp-tool:s:new",
+      "agy:mcp-tool:s:old",
+      "agy:mcp-tool:s:keep",
+      "agy:mcp-tool:t:a",
+      "agy:mcp-tool:t:a",
+      "agy:mcp-tool::x"
+    ]
+  },
+  "lastToolBack": {
+    "filePath": "<home>/.gemini/config/mcp_config.json",
+    "jsonEdits": [
+      {
+        "op": "delete",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "remove \"only\" from mcpServers.\"s\".disabledTools"
+      }
+    ],
+    "itemIds": [
+      "agy:mcp-tool:s:only"
+    ]
+  },
+  "plugins": {
+    "filePath": "<home>/.gemini/config/config.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "plugins",
+          "by-name",
+          "enabled"
+        ],
+        "value": false
+      },
+      {
+        "op": "set",
+        "path": [
+          "plugins",
+          "dir-name",
+          "enabled"
+        ],
+        "value": true
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/config.json",
+        "summary": "set plugins.\"by-name\".enabled = false"
+      },
+      {
+        "path": "<home>/.gemini/config/config.json",
+        "summary": "set plugins.\"dir-name\".enabled = true"
+      }
+    ],
+    "itemIds": [
+      "agy:plugin::by-name",
+      "agy:plugin::by-dir"
+    ]
+  },
+  "hooksNested": {
+    "filePath": "<home>/.gemini/config/hooks.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "hooks",
+          "h1",
+          "enabled"
+        ],
+        "value": false
+      },
+      {
+        "op": "delete",
+        "path": [
+          "hooks",
+          "h2",
+          "enabled"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/hooks.json",
+        "summary": "set hooks.h1.enabled = false"
+      },
+      {
+        "path": "<home>/.gemini/config/hooks.json",
+        "summary": "delete hooks.h2.enabled"
+      }
+    ],
+    "itemIds": [
+      "agy:hook::h1",
+      "agy:hook::h2"
+    ]
+  },
+  "hooksTopLevel": {
+    "filePath": "<home>/.gemini/config/hooks.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "h1",
+          "enabled"
+        ],
+        "value": false
+      },
+      {
+        "op": "delete",
+        "path": [
+          "h2",
+          "enabled"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/hooks.json",
+        "summary": "set h1.enabled = false"
+      },
+      {
+        "path": "<home>/.gemini/config/hooks.json",
+        "summary": "delete h2.enabled"
+      }
+    ],
+    "itemIds": [
+      "agy:hook::h1",
+      "agy:hook::h2"
+    ]
+  },
+  "hooksArray": {
+    "filePath": "<home>/.gemini/config/hooks.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "h1",
+          "enabled"
+        ],
+        "value": false
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/hooks.json",
+        "summary": "set h1.enabled = false"
+      }
+    ],
+    "itemIds": [
+      "agy:hook::h1"
+    ]
+  },
+  "unsupported": {
+    "thrown": "Unsupported item kind: builtin-tool"
+  }
+}

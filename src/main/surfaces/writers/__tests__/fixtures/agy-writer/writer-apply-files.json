@@ -1,0 +1,98 @@
+{
+  "preview": {
+    "provider": "agy",
+    "edits": [
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "set mcpServers.\"s\".disabled = true"
+      },
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "add \"t\" to mcpServers.\"s\".disabledTools"
+      },
+      {
+        "path": "<home>/.gemini/config/config.json",
+        "summary": "set plugins.\"p\".enabled = false"
+      },
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "add \"user-skill\" to exclude"
+      },
+      {
+        "path": "<project>/.agents/skills.json",
+        "summary": "add \"proj-skill\" to exclude"
+      },
+      {
+        "path": "<home>/.gemini/config/hooks.json",
+        "summary": "set hooks.h.enabled = false"
+      }
+    ],
+    "requiresNewSession": true
+  },
+  "result": {
+    "provider": "agy",
+    "ok": true,
+    "appliedItemIds": [
+      "agy:mcp-server::s",
+      "agy:mcp-tool:s:t",
+      "agy:plugin::p",
+      "agy:skill::user-skill",
+      "agy:skill::proj-skill",
+      "agy:hook::h"
+    ],
+    "backups": 2,
+    "error": null
+  },
+  "files": {
+    "<home>/.gemini/config/mcp_config.json": {
+      "mcpServers": {
+        "s": {
+          "command": "x",
+          "disabled": true,
+          "disabledTools": [
+            "t"
+          ]
+        }
+      }
+    },
+    "<home>/.gemini/config/config.json": {
+      "plugins": {
+        "p": {
+          "enabled": false
+        }
+      }
+    },
+    "<home>/.gemini/config/skills.json": {
+      "exclude": [
+        "user-skill"
+      ]
+    },
+    "<home>/.gemini/config/hooks.json": {
+      "hooks": {
+        "h": {
+          "command": "y",
+          "enabled": false
+        }
+      }
+    },
+    "<project>/.agents/skills.json": {
+      "exclude": [
+        "proj-skill"
+      ]
+    }
+  },
+  "store": {
+    "version": 1,
+    "intents": {
+      "agy": {
+        "agy:mcp-server::s": false,
+        "agy:mcp-tool:s:t": false,
+        "agy:plugin::p": false,
+        "agy:skill::user-skill": false,
+        "agy:skill::proj-skill": false,
+        "agy:hook::h": false
+      }
+    },
+    "removedHooks": {}
+  }
+}

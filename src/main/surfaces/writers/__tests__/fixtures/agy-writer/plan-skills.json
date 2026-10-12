@@ -1,0 +1,186 @@
+{
+  "enableAllSpellings": {
+    "filePath": "<home>/.gemini/config/skills.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "exclude"
+        ],
+        "value": [
+          7,
+          null,
+          "other"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "remove \"folder-name\", \"Front Name\", \"item-name\" from exclude"
+      }
+    ],
+    "itemIds": [
+      "agy:skill::item-name"
+    ]
+  },
+  "enableNothingMatched": {
+    "filePath": "<home>/.gemini/config/skills.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "exclude"
+        ],
+        "value": [
+          "folder-name",
+          "Front Name",
+          "item-name",
+          7,
+          null,
+          "other",
+          "folder-name"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "remove \"plain\" from exclude"
+      }
+    ],
+    "itemIds": [
+      "agy:skill::absent"
+    ]
+  },
+  "enableLastLeaves": {
+    "filePath": "<home>/.gemini/config/skills.json",
+    "jsonEdits": [
+      {
+        "op": "delete",
+        "path": [
+          "exclude"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "remove \"solo\" from exclude"
+      }
+    ],
+    "itemIds": [
+      "agy:skill::solo"
+    ]
+  },
+  "originGone": {
+    "filePath": "<home>/.gemini/config/skills.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "exclude"
+        ],
+        "value": [
+          "x"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "remove \"missing\" from exclude"
+      }
+    ],
+    "itemIds": [
+      "agy:skill::gone"
+    ]
+  },
+  "disableTwice": {
+    "filePath": "<home>/.gemini/config/skills.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "exclude"
+        ],
+        "value": [
+          "a"
+        ]
+      },
+      {
+        "op": "set",
+        "path": [
+          "exclude"
+        ],
+        "value": [
+          "a",
+          "plain"
+        ]
+      },
+      {
+        "op": "set",
+        "path": [
+          "exclude"
+        ],
+        "value": [
+          "a",
+          "plain"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "add \"a\" to exclude"
+      },
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "add \"plain\" to exclude"
+      },
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "add \"a\" to exclude"
+      }
+    ],
+    "itemIds": [
+      "agy:skill::a",
+      "agy:skill::b",
+      "agy:skill::a"
+    ]
+  },
+  "disableThenEnable": {
+    "filePath": "<home>/.gemini/config/skills.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "exclude"
+        ],
+        "value": [
+          "z"
+        ]
+      },
+      {
+        "op": "delete",
+        "path": [
+          "exclude"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "add \"z\" to exclude"
+      },
+      {
+        "path": "<home>/.gemini/config/skills.json",
+        "summary": "remove \"z\" from exclude"
+      }
+    ],
+    "itemIds": [
+      "agy:skill::z",
+      "agy:skill::z"
+    ]
+  }
+}

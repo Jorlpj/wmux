@@ -1,0 +1,128 @@
+{
+  "fromDisk": {
+    "filePath": "<home>/.gemini/config/mcp_config.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ],
+        "value": [
+          "t",
+          "u"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "add \"u\" to mcpServers.\"s\".disabledTools"
+      }
+    ],
+    "itemIds": [
+      "agy:mcp-tool:s:u"
+    ]
+  },
+  "missingFile": {
+    "filePath": "<home>/.gemini/config/none.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ],
+        "value": [
+          "u"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/none.json",
+        "summary": "add \"u\" to mcpServers.\"s\".disabledTools"
+      }
+    ],
+    "itemIds": [
+      "agy:mcp-tool:s:u"
+    ]
+  },
+  "invalidSnapshot": {
+    "filePath": "<home>/.gemini/config/mcp_config.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ],
+        "value": [
+          "u"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "add \"u\" to mcpServers.\"s\".disabledTools"
+      }
+    ],
+    "itemIds": [
+      "agy:mcp-tool:s:u"
+    ]
+  },
+  "nullSnapshot": {
+    "filePath": "<home>/.gemini/config/mcp_config.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ],
+        "value": [
+          "u"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "add \"u\" to mcpServers.\"s\".disabledTools"
+      }
+    ],
+    "itemIds": [
+      "agy:mcp-tool:s:u"
+    ]
+  },
+  "nullJson": {
+    "filePath": "<home>/.gemini/config/mcp_config.json",
+    "jsonEdits": [
+      {
+        "op": "set",
+        "path": [
+          "mcpServers",
+          "s",
+          "disabledTools"
+        ],
+        "value": [
+          "u"
+        ]
+      }
+    ],
+    "previewEdits": [
+      {
+        "path": "<home>/.gemini/config/mcp_config.json",
+        "summary": "add \"u\" to mcpServers.\"s\".disabledTools"
+      }
+    ],
+    "itemIds": [
+      "agy:mcp-tool:s:u"
+    ]
+  }
+}
