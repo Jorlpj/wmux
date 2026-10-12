@@ -3604,6 +3604,8 @@ function TabAppearance() {
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const sidebarSortMode = useStore((s) => s.sidebarSortMode);
   const setSidebarSortMode = useStore((s) => s.setSidebarSortMode);
+  const sidebarShowPorts = useStore((s) => s.sidebarShowPorts);
+  const setSidebarShowPorts = useStore((s) => s.setSidebarShowPorts);
   const sidebarShowPaneCoordinates = useStore((s) => s.sidebarShowPaneCoordinates);
   const setSidebarShowPaneCoordinates = useStore((s) => s.setSidebarShowPaneCoordinates);
   const attentionBlink = useStore((s) => s.attentionBlink);
@@ -3765,6 +3767,13 @@ function TabAppearance() {
               { value: 'manual', label: t('settings.sidebarSortManual') },
               { value: 'recent', label: t('settings.sidebarSortRecent') },
             ]}
+          />
+        </SettingRow>
+        <SettingRow id="sidebarports" label={t('settings.sidebarShowPorts')} description={t('settings.sidebarShowPortsDesc')}>
+          <Toggle
+            checked={sidebarShowPorts}
+            onChange={setSidebarShowPorts}
+            label={t('settings.sidebarShowPorts')}
           />
         </SettingRow>
         {/* #1326 — on by default: turning it off is an explicit opt-out, not a
