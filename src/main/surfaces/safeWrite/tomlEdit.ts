@@ -60,17 +60,7 @@ function splitTomlKeyPath(path: string): string[] {
   return segs;
 }
 
-function formatHeaderKey(segment: string): string {
-  if (/^[A-Za-z0-9_-]+$/.test(segment)) {
-    return segment;
-  }
-  if (segment.includes('\\') && !segment.includes("'")) {
-    return `'${segment}'`;
-  }
-  return JSON.stringify(segment);
-}
-
-function formatKey(key: string): string {
+export function formatTomlKey(key: string): string {
   if (/^[A-Za-z0-9_-]+$/.test(key)) {
     return key;
   }
@@ -80,7 +70,7 @@ function formatKey(key: string): string {
   return JSON.stringify(key);
 }
 
-function formatTomlValue(value: string | number | boolean | string[]): string {
+export function formatTomlValue(value: string | number | boolean | string[]): string {
   if (typeof value === 'boolean') {
     return value ? 'true' : 'false';
   }
@@ -250,62 +240,57 @@ function cloneDeep<T>(value: T): T {
 
 function applyEditToExpected(expected: Record<string, unknown>, edit: TomlEdit): void {
   if (isArrayTableEdit(edit)) {
-    let cur: any = expected;
-    for (let i = 0; i < edit.arrayTable.length; i++) {
-      const seg = edit.arrayTable[i];
-      if (i === edit.arrayTable.length - 1) {
-        if (!Array.isArray(cur[seg])) {
-          if (edit.op === 'set') {
-            cur[seg] = [];
-          } else {
-            return;
-          }
-        }
-        cur = cur[seg];
-      } else {
-        if (cur[seg] === undefined || typeof cur[seg] !== 'object' || Array.isArray(cur[seg])) {
-          if (edit.op === 'set') {
-            cur[seg] = {};
-          } else {
-            return;
-          }
-        }
-        cur = cur[seg];
-      }
-    }
-    const arr = cur as Record<string, unknown>[];
-    const matchEntry = arr.find((item) =>
-      Object.entries(edit.match).every(([k, v]) => String(item[k]) === String(v)),
-    );
-    if (matchEntry) {
-      if (edit.op === 'set') {
-        matchEntry[edit.key] = edit.value;
-      } else {
-        delete matchEntry[edit.key];
-      }
-    } else if (edit.op === 'set') {
-      const newEntry: Record<string, unknown> = { ...edit.match };
-      newEntry[edit.key] = edit.value;
-      arr.push(newEntry);
-    }
+    applyArrayTableEditToExpected(expected, edit);
   } else {
-    const tablePath = edit.table ?? [];
-    let cur: any = expected;
-    for (const seg of tablePath) {
-      if (cur[seg] === undefined || typeof cur[seg] !== 'object' || Array.isArray(cur[seg])) {
-        if (edit.op === 'set') {
-          cur[seg] = {};
-        } else {
-          return;
-        }
-      }
-      cur = cur[seg];
+    applyTableEditToExpected(expected, edit);
+  }
+}
+
+/** The table at `path`, created level by level for a set; null when a delete meets a missing level. */
+function tableAt(root: Record<string, unknown>, path: string[], create: boolean): any {
+  let cur: any = root;
+  for (const seg of path) {
+    if (cur[seg] === undefined || typeof cur[seg] !== 'object' || Array.isArray(cur[seg])) {
+      if (!create) return null;
+      cur[seg] = {};
     }
+    cur = cur[seg];
+  }
+  return cur;
+}
+
+function applyTableEditToExpected(expected: Record<string, unknown>, edit: TomlTableEdit): void {
+  const table = tableAt(expected, edit.table ?? [], edit.op === 'set');
+  if (table === null) return;
+  if (edit.op === 'set') {
+    table[edit.key] = edit.value;
+  } else {
+    delete table[edit.key];
+  }
+}
+
+function applyArrayTableEditToExpected(expected: Record<string, unknown>, edit: TomlArrayTableEdit): void {
+  const parent = tableAt(expected, edit.arrayTable.slice(0, -1), edit.op === 'set');
+  if (parent === null) return;
+  const last = edit.arrayTable[edit.arrayTable.length - 1];
+  if (!Array.isArray(parent[last])) {
+    if (edit.op !== 'set') return;
+    parent[last] = [];
+  }
+  const arr = parent[last] as Record<string, unknown>[];
+  const matchEntry = arr.find((item) =>
+    Object.entries(edit.match).every(([k, v]) => String(item[k]) === String(v)),
+  );
+  if (matchEntry) {
     if (edit.op === 'set') {
-      cur[edit.key] = edit.value;
+      matchEntry[edit.key] = edit.value;
     } else {
-      delete cur[edit.key];
+      delete matchEntry[edit.key];
     }
+  } else if (edit.op === 'set') {
+    const newEntry: Record<string, unknown> = { ...edit.match };
+    newEntry[edit.key] = edit.value;
+    arr.push(newEntry);
   }
 }
 
@@ -363,216 +348,160 @@ export function editTomlKeys(text: string, edits: TomlEdit[]): string {
   return newText;
 }
 
-function applyTableEdit(lines: string[], edit: TomlTableEdit): string[] {
-  const table = edit.table ?? [];
-  const isRoot = table.length === 0;
+/** The key/value lines under one header: `[start, end)`. */
+interface Section {
+  start: number;
+  end: number;
+}
 
-  let start = -1;
-  let end = lines.length;
-
-  if (isRoot) {
-    start = 0;
-    for (let i = 0; i < lines.length; i++) {
-      if (parseHeaderLine(lines[i])) {
-        end = i;
-        break;
-      }
-    }
-  } else {
-    for (let i = 0; i < lines.length; i++) {
-      const h = parseHeaderLine(lines[i]);
-      if (h && h.type === 'table' && segmentsMatch(h.segments, table)) {
-        start = i + 1;
-        break;
-      }
-    }
-    if (start !== -1) {
-      for (let i = start; i < lines.length; i++) {
-        if (parseHeaderLine(lines[i])) {
-          end = i;
-          break;
-        }
-      }
-    }
+/** Index of the next header at or after `from`, or the end of the file. */
+function sectionEnd(lines: string[], from: number): number {
+  for (let i = from; i < lines.length; i++) {
+    if (parseHeaderLine(lines[i])) return i;
   }
+  return lines.length;
+}
 
-  if (start === -1) {
-    if (edit.op === 'delete') {
-      return lines;
-    }
-    const headerStr = '[' + table.map(formatHeaderKey).join('.') + ']';
-    const kvLine = `${formatKey(edit.key)} = ${formatTomlValue(edit.value!)}`;
-    const trimmed = [...lines];
-    while (trimmed.length > 0 && trimmed[trimmed.length - 1].trim() === '') {
-      trimmed.pop();
-    }
-    if (trimmed.length > 0) {
-      return [...trimmed, '', headerStr, kvLine];
-    }
-    return [headerStr, kvLine];
+/** Where a new key goes in a section: after its last non-blank line. */
+function insertionPoint(lines: string[], section: Section): number {
+  let insertIdx = section.end;
+  while (insertIdx > section.start && lines[insertIdx - 1].trim() === '') {
+    insertIdx--;
   }
+  return insertIdx;
+}
 
-  let keyLineIdx = -1;
-  for (let i = start; i < end; i++) {
+/** Appends a block at the end of the file, one blank line after the last non-blank one. */
+function appendBlock(lines: string[], block: string[]): string[] {
+  const trimmed = [...lines];
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1].trim() === '') {
+    trimmed.pop();
+  }
+  return trimmed.length > 0 ? [...trimmed, '', ...block] : block;
+}
+
+function keyLineIn(lines: string[], section: Section, key: string): number {
+  for (let i = section.start; i < section.end; i++) {
     const kv = parseKeyValueLine(lines[i]);
-    if (kv && kv.key === edit.key) {
-      keyLineIdx = i;
-      break;
-    }
+    if (kv && kv.key === key) return i;
   }
+  return -1;
+}
 
+function firstIndentIn(lines: string[], section: Section): string {
+  for (let i = section.start; i < section.end; i++) {
+    const kv = parseKeyValueLine(lines[i]);
+    if (kv) return kv.indent;
+  }
+  return '';
+}
+
+/**
+ * Sets or deletes one key in a section. A set replaces the whole value (all lines of a multi-line one)
+ * and keeps a one-line value's inline comment; a new key takes the section's indent.
+ */
+function editKeyInSection(
+  lines: string[],
+  section: Section,
+  edit: { key: string; op: 'set' | 'delete'; value?: string | number | boolean | string[] },
+): string[] {
+  const keyLineIdx = keyLineIn(lines, section, edit.key);
   if (keyLineIdx !== -1) {
     const span = valueLineSpan(lines, keyLineIdx);
+    const nextLines = [...lines];
     if (edit.op === 'delete') {
-      const nextLines = [...lines];
       nextLines.splice(keyLineIdx, span);
       return nextLines;
     }
     const existing = parseKeyValueLine(lines[keyLineIdx])!;
     const commentPart = existing.inlineComment && span === 1 ? ` ${existing.inlineComment.trim()}` : '';
-    const newLine = `${existing.indent}${formatKey(edit.key)} = ${formatTomlValue(edit.value!)}${commentPart}`;
-    const nextLines = [...lines];
-    nextLines.splice(keyLineIdx, span, newLine);
+    nextLines.splice(keyLineIdx, span, `${existing.indent}${formatTomlKey(edit.key)} = ${formatTomlValue(edit.value!)}${commentPart}`);
     return nextLines;
   }
 
   if (edit.op === 'delete') {
     return lines;
   }
-
-  let insertIdx = end;
-  while (insertIdx > start && lines[insertIdx - 1].trim() === '') {
-    insertIdx--;
-  }
-
-  let indent = '';
-  for (let i = start; i < end; i++) {
-    const kv = parseKeyValueLine(lines[i]);
-    if (kv) {
-      indent = kv.indent;
-      break;
-    }
-  }
-
-  const newLine = `${indent}${formatKey(edit.key)} = ${formatTomlValue(edit.value!)}`;
   const nextLines = [...lines];
-  nextLines.splice(insertIdx, 0, newLine);
+  nextLines.splice(insertionPoint(lines, section), 0, `${firstIndentIn(lines, section)}${formatTomlKey(edit.key)} = ${formatTomlValue(edit.value!)}`);
   return nextLines;
 }
 
-function applyArrayTableEdit(lines: string[], edit: TomlArrayTableEdit): string[] {
-  const entries: { start: number; end: number }[] = [];
+function tableSection(lines: string[], table: string[]): Section | null {
+  if (table.length === 0) {
+    return { start: 0, end: sectionEnd(lines, 0) };
+  }
   for (let i = 0; i < lines.length; i++) {
     const h = parseHeaderLine(lines[i]);
-    if (h && h.type === 'arrayTable' && segmentsMatch(h.segments, edit.arrayTable)) {
-      const entryStart = i + 1;
-      let entryEnd = lines.length;
-      for (let j = entryStart; j < lines.length; j++) {
-        if (parseHeaderLine(lines[j])) {
-          entryEnd = j;
-          break;
-        }
-      }
-      entries.push({ start: entryStart, end: entryEnd });
+    if (h && h.type === 'table' && segmentsMatch(h.segments, table)) {
+      return { start: i + 1, end: sectionEnd(lines, i + 1) };
     }
   }
+  return null;
+}
 
-  let matchingEntry: { start: number; end: number } | null = null;
-  for (const entry of entries) {
-    const kvMap = new Map<string, unknown>();
-    for (let i = entry.start; i < entry.end; i++) {
-      const kv = parseKeyValueLine(lines[i]);
-      if (kv) {
-        kvMap.set(kv.key, parseTomlScalar(kv.rawValue));
-      }
-    }
-    const matchesAll = Object.entries(edit.match).every(
-      ([k, v]) => String(kvMap.get(k)) === String(v),
-    );
-    if (matchesAll) {
-      matchingEntry = entry;
-      break;
-    }
+function applyTableEdit(lines: string[], edit: TomlTableEdit): string[] {
+  const table = edit.table ?? [];
+  const section = tableSection(lines, table);
+  if (section) {
+    return editKeyInSection(lines, section, edit);
   }
-
-  if (matchingEntry) {
-    let keyLineIdx = -1;
-    for (let i = matchingEntry.start; i < matchingEntry.end; i++) {
-      const kv = parseKeyValueLine(lines[i]);
-      if (kv && kv.key === edit.key) {
-        keyLineIdx = i;
-        break;
-      }
-    }
-
-    if (keyLineIdx !== -1) {
-      const span = valueLineSpan(lines, keyLineIdx);
-      if (edit.op === 'delete') {
-        const nextLines = [...lines];
-        nextLines.splice(keyLineIdx, span);
-        return nextLines;
-      }
-      const existing = parseKeyValueLine(lines[keyLineIdx])!;
-      const commentPart = existing.inlineComment && span === 1 ? ` ${existing.inlineComment.trim()}` : '';
-      const newLine = `${existing.indent}${formatKey(edit.key)} = ${formatTomlValue(edit.value!)}${commentPart}`;
-      const nextLines = [...lines];
-      nextLines.splice(keyLineIdx, span, newLine);
-      return nextLines;
-    }
-
-    if (edit.op === 'delete') {
-      return lines;
-    }
-
-    let insertIdx = matchingEntry.end;
-    while (insertIdx > matchingEntry.start && lines[insertIdx - 1].trim() === '') {
-      insertIdx--;
-    }
-
-    let indent = '';
-    for (let i = matchingEntry.start; i < matchingEntry.end; i++) {
-      const kv = parseKeyValueLine(lines[i]);
-      if (kv) {
-        indent = kv.indent;
-        break;
-      }
-    }
-
-    const newLine = `${indent}${formatKey(edit.key)} = ${formatTomlValue(edit.value!)}`;
-    const nextLines = [...lines];
-    nextLines.splice(insertIdx, 0, newLine);
-    return nextLines;
-  }
-
   if (edit.op === 'delete') {
     return lines;
   }
+  return appendBlock(lines, [
+    '[' + table.map(formatTomlKey).join('.') + ']',
+    `${formatTomlKey(edit.key)} = ${formatTomlValue(edit.value!)}`,
+  ]);
+}
 
-  const header = '[[' + edit.arrayTable.map(formatHeaderKey).join('.') + ']]';
-  const entryLines: string[] = [header];
+function arrayTableEntries(lines: string[], arrayTable: string[]): Section[] {
+  const entries: Section[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const h = parseHeaderLine(lines[i]);
+    if (h && h.type === 'arrayTable' && segmentsMatch(h.segments, arrayTable)) {
+      entries.push({ start: i + 1, end: sectionEnd(lines, i + 1) });
+    }
+  }
+  return entries;
+}
+
+/** Every `match` key holds the same value (compared as text) in this entry. */
+function entryMatches(lines: string[], entry: Section, match: Record<string, string>): boolean {
+  const kvMap = new Map<string, unknown>();
+  for (let i = entry.start; i < entry.end; i++) {
+    const kv = parseKeyValueLine(lines[i]);
+    if (kv) {
+      kvMap.set(kv.key, parseTomlScalar(kv.rawValue));
+    }
+  }
+  return Object.entries(match).every(([k, v]) => String(kvMap.get(k)) === String(v));
+}
+
+function newEntryLines(edit: TomlArrayTableEdit): string[] {
+  const entryLines: string[] = ['[[' + edit.arrayTable.map(formatTomlKey).join('.') + ']]'];
   for (const [mKey, mVal] of Object.entries(edit.match)) {
     if (mKey === edit.key) continue;
-    entryLines.push(`${formatKey(mKey)} = ${formatTomlValue(mVal)}`);
+    entryLines.push(`${formatTomlKey(mKey)} = ${formatTomlValue(mVal)}`);
   }
-  entryLines.push(`${formatKey(edit.key)} = ${formatTomlValue(edit.value!)}`);
+  entryLines.push(`${formatTomlKey(edit.key)} = ${formatTomlValue(edit.value!)}`);
+  return entryLines;
+}
 
+/** Edits the first entry that matches; a set with no match adds an entry after the last one (or at the end). */
+function applyArrayTableEdit(lines: string[], edit: TomlArrayTableEdit): string[] {
+  const entries = arrayTableEntries(lines, edit.arrayTable);
+  const matchingEntry = entries.find((entry) => entryMatches(lines, entry, edit.match));
+  if (matchingEntry) {
+    return editKeyInSection(lines, matchingEntry, edit);
+  }
+  if (edit.op === 'delete') {
+    return lines;
+  }
   if (entries.length > 0) {
-    const lastEntry = entries[entries.length - 1];
-    let insertIdx = lastEntry.end;
-    while (insertIdx > lastEntry.start && lines[insertIdx - 1].trim() === '') {
-      insertIdx--;
-    }
     const nextLines = [...lines];
-    nextLines.splice(insertIdx, 0, '', ...entryLines);
+    nextLines.splice(insertionPoint(lines, entries[entries.length - 1]), 0, '', ...newEntryLines(edit));
     return nextLines;
   }
-
-  const trimmed = [...lines];
-  while (trimmed.length > 0 && trimmed[trimmed.length - 1].trim() === '') {
-    trimmed.pop();
-  }
-  if (trimmed.length > 0) {
-    return [...trimmed, '', ...entryLines];
-  }
-  return entryLines;
+  return appendBlock(lines, newEntryLines(edit));
 }
