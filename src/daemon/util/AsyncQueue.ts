@@ -46,7 +46,9 @@ export class AsyncQueue {
   // tests can swap it out. T2 itself does not read wall-clock time,
   // but future diagnostics (latency sampling, stall detection) will.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(_opts: AsyncQueueOptions = {}) {}
+  constructor(_opts: AsyncQueueOptions = {}) {
+    // Nothing to set up yet; see the note above.
+  }
 
   /**
    * Enqueue a task under `key`. If a pending task already exists for

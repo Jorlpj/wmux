@@ -108,7 +108,7 @@ export function ChannelMembersView({
   joinablePanes = [],
   canJoin,
   onJoin,
-  onJoinPane = () => {},
+  onJoinPane = () => undefined,
   agentLiveness,
   paneDisplayNameFor,
   onLeave,

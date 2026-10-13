@@ -561,7 +561,7 @@ export async function clickWithApproach(
   // element was, so the approach would walk to a point outside the viewport and
   // leave the tracker pointing there.
   if (el.scrollIntoViewIfNeeded) {
-    await el.scrollIntoViewIfNeeded().catch(() => {});
+    await el.scrollIntoViewIfNeeded().catch(() => undefined);
   }
 
   const box = await el.boundingBox().catch(() => null);

@@ -291,7 +291,9 @@ export class PlaywrightEngine {
    */
   private workspaceIdResolver: (() => Promise<string>) | null = null;
 
-  private constructor() {}
+  private constructor() {
+    // Private: the one instance comes from getInstance().
+  }
 
   setWorkspaceIdResolver(resolver: () => Promise<string>): void {
     this.workspaceIdResolver = resolver;

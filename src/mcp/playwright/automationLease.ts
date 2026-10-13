@@ -589,7 +589,7 @@ export async function withAutomationLease<T>(
             // Op already ended, or a slower earlier acquire raced us and a
             // token is already held — release this duplicate immediately so
             // it cannot pin the guest unthrottled until TTL expiry.
-            sendRpc('browser.lease.release', { token: tok }).catch(() => {});
+            sendRpc('browser.lease.release', { token: tok }).catch(() => undefined);
             return;
           }
           lateToken = tok;
@@ -602,7 +602,7 @@ export async function withAutomationLease<T>(
     }, 2_000);
     (lateTimer as { unref?: () => void }).unref?.();
     const lateRenew = setInterval(() => {
-      if (lateToken) sendRpc('browser.lease.renew', { token: lateToken }).catch(() => {});
+      if (lateToken) sendRpc('browser.lease.renew', { token: lateToken }).catch(() => undefined);
     }, RENEW_INTERVAL_MS);
     (lateRenew as { unref?: () => void }).unref?.();
     const lateEvents = await drainLifecycleEvents(scope);
@@ -626,7 +626,7 @@ export async function withAutomationLease<T>(
       clearInterval(lateTimer);
       clearInterval(lateRenew);
       if (lateToken) {
-        sendRpc('browser.lease.release', { token: lateToken }).catch(() => {});
+        sendRpc('browser.lease.release', { token: lateToken }).catch(() => undefined);
       }
     }
   }

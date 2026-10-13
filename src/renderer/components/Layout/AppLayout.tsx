@@ -244,7 +244,7 @@ function dumpScrollbackBuffersSync(): Map<string, boolean> {
       const content = serializeTerminalBuffer(terminal);
       if (!content) continue;
       dumped.set(surface.id, true);
-      window.electronAPI.scrollback.dump(surface.id, content).catch(() => {});
+      window.electronAPI.scrollback.dump(surface.id, content).catch(() => undefined);
     }
   }
   return dumped;
@@ -978,7 +978,7 @@ export default function AppLayout() {
     const onResumed = (window as any).electronAPI?.system?.onResumed;
     return initAtlasWakeRecovery({
       onSystemResumed:
-        typeof onResumed === 'function' ? onResumed : () => () => {},
+        typeof onResumed === 'function' ? onResumed : () => () => undefined,
     });
   }, []);
 

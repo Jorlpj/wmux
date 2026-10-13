@@ -1552,7 +1552,7 @@ export function registerPTYHandlers(
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1, payload.signal ?? null);
       }
-      daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
+      daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => undefined);
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);

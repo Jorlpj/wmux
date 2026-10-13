@@ -688,7 +688,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               });
               applied.push(timezone ? `timezone=${timezone}` : 'timezone=reset');
             } finally {
-              await client.detach().catch(() => {});
+              await client.detach().catch(() => undefined);
             }
           }
 
@@ -701,7 +701,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
               });
               applied.push(locale ? `locale=${locale}` : 'locale=reset');
             } finally {
-              await client.detach().catch(() => {});
+              await client.detach().catch(() => undefined);
             }
           }
 
