@@ -182,3 +182,17 @@ export function hookFingerprint(
     .digest('hex')
     .slice(0, 16);
 }
+
+/**
+ * The handler of a stored removed-hook definition. Older entries stored the
+ * handler's fields next to `event` and `groupMeta` instead of under `handler`.
+ */
+export function storedHookHandler(definition: Record<string, unknown>): Record<string, unknown> {
+  const { handler } = definition;
+  if (handler && typeof handler === 'object' && !Array.isArray(handler)) return handler as Record<string, unknown>;
+  const fallback: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(definition)) {
+    if (k !== 'event' && k !== 'groupMeta') fallback[k] = v;
+  }
+  return fallback;
+}

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { HookCostHint, ProviderInventory, SurfaceItem, SurfaceSource } from '../../../shared/tokenUsage/surfaceTypes';
 import { SurfacesStore } from '../safeWrite';
+import { deepEqual } from '../safeWrite/deepEqual';
 import {
   addEffectiveWmuxTools,
   finishInventory,
@@ -16,32 +17,10 @@ import {
   safeParseJson,
   safeReaddir,
   safeReadFile,
+  storedHookHandler,
 } from './helpers';
 import { makeItem, type InventoryDeps } from './types';
 import type { WmuxServerDeclaration } from './wmuxTools';
-
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (!deepEqual(a[i], b[i])) return false;
-    }
-    return true;
-  }
-  const objA = a as Record<string, unknown>;
-  const objB = b as Record<string, unknown>;
-  const keysA = Object.keys(objA);
-  const keysB = Object.keys(objB);
-  if (keysA.length !== keysB.length) return false;
-  for (const k of keysA) {
-    if (!Object.prototype.hasOwnProperty.call(objB, k)) return false;
-    if (!deepEqual(objA[k], objB[k])) return false;
-  }
-  return true;
-}
 
 /** `disable*` keys are inverted: `disableBundledSkills: true` means the feature is off. */
 export function contextSettingEnabled(key: string, value: boolean): boolean {
@@ -408,20 +387,10 @@ function parseRemovedHook(rawEntry: unknown): RemovedHook | null {
   return {
     id,
     event: typeof definition.event === 'string' ? definition.event : 'PreToolUse',
-    handler: removedHandler(definition),
+    handler: storedHookHandler(definition),
     groupMeta: isPlainObject(definition.groupMeta) ? definition.groupMeta : undefined,
     originPath: typeof originPath === 'string' && originPath.trim().length > 0 ? originPath : null,
   };
-}
-
-function removedHandler(definition: Record<string, unknown>): Record<string, unknown> {
-  if (isPlainObject(definition.handler)) return definition.handler;
-  // Older entries stored the handler's fields next to `event` and `groupMeta`.
-  const handler: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(definition)) {
-    if (k !== 'event' && k !== 'groupMeta') handler[k] = v;
-  }
-  return handler;
 }
 
 /** The same handler is back in its settings file (same event, file and matcher group). */
