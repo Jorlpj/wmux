@@ -169,8 +169,20 @@ export class MarginTracker {
 }
 
 // eslint-disable-next-line no-control-regex
-const SGR_MOUSE_RE = /\x1b(?:\[\?(1006|1016)([hl])|c)/g;
+const SGR_MOUSE_RE = /\x1b(?:\[\?([0-9;]*)([hl])|c)/g;
 
+/** Carry for SgrMouseEncodingTracker: a whole mode list
+ *  (`ESC[?1000;1002;1003;1006h`) is longer than REGEX_CARRY_CHARS. */
+const MODE_LIST_CARRY_CHARS = 64;
+
+/**
+ * The encoding may share a sequence with other modes: the bundled OpenConsole
+ * (conpty.dll, used on every Windows build) announces a console app's mouse
+ * input as one `ESC[?1003;1006h`. Missing the `1006` there restored tracking
+ * without SGR, so the renderer's xterm fell back to the default encoding,
+ * whose reports go to `onBinary`, which wmux does not forward: wheel and drag
+ * in that pane went nowhere (#1843).
+ */
 export class SgrMouseEncodingTracker {
   private carry = '';
   private _sgr = false;
@@ -185,13 +197,14 @@ export class SgrMouseEncodingTracker {
         // RIS resets both encodings.
         this._sgr = false;
         this._sgrPixels = false;
-      } else if (m[1] === '1006') {
-        this._sgr = m[2] === 'h';
-      } else {
-        this._sgrPixels = m[2] === 'h';
+        continue;
       }
+      const on = m[2] === 'h';
+      const params = m[1].split(';');
+      if (params.includes('1006')) this._sgr = on;
+      if (params.includes('1016')) this._sgrPixels = on;
     }
-    this.carry = text.slice(-REGEX_CARRY_CHARS);
+    this.carry = text.slice(-MODE_LIST_CARRY_CHARS);
   }
 
   get sgr(): boolean {

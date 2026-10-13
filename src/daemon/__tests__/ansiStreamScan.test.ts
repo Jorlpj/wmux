@@ -170,6 +170,45 @@ describe('SgrMouseEncodingTracker', () => {
     t.feed('6h');
     expect(t.sgr).toBe(true);
   });
+
+  // #1843: the bundled OpenConsole announces a console app's mouse input as
+  // one `ESC[?1003;1006h`.
+  it.each([
+    '\x1b[?1003;1006h',
+    '\x1b[?1006;1000h',
+    '\x1b[?1002;1006;1004h',
+  ])('reads ?1006 inside a mode list (%j)', (seq) => {
+    const t = new SgrMouseEncodingTracker();
+    t.feed(seq);
+    expect(t.sgr).toBe(true);
+    expect(t.sgrPixels).toBe(false);
+  });
+
+  it('reads ?1016 and a reset inside a mode list', () => {
+    const t = new SgrMouseEncodingTracker();
+    t.feed('\x1b[?1003;1016h');
+    expect(t.sgrPixels).toBe(true);
+    t.feed('\x1b[?1003;1006h');
+    expect(t.sgr).toBe(true);
+    t.feed('\x1b[?1003;1006;1016l');
+    expect(t.sgr).toBe(false);
+    expect(t.sgrPixels).toBe(false);
+  });
+
+  it('ignores mode lists without an encoding', () => {
+    const t = new SgrMouseEncodingTracker();
+    t.feed('\x1b[?1006h');
+    t.feed('\x1b[?1003;1004l\x1b[?10060h');
+    expect(t.sgr).toBe(true);
+  });
+
+  it('detects a long mode list split across a chunk boundary', () => {
+    const t = new SgrMouseEncodingTracker();
+    t.feed('output\x1b[?1000;1002;1003;100');
+    expect(t.sgr).toBe(false);
+    t.feed('6h');
+    expect(t.sgr).toBe(true);
+  });
 });
 
 describe('incompleteUtf8SuffixLength', () => {
