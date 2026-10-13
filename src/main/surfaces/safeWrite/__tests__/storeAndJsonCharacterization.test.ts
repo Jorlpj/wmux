@@ -139,6 +139,7 @@ describe('SurfacesStore.save characterization', () => {
     emptyKept.recordIntent('claude', 'a', true);
     const notArray = loaded({ version: 1, profiles: 'nope' });
     notArray.recordIntent('claude', 'a', true);
+    writeDisk({ version: 1, intents: {} });
     const r1 = saveOutcome(noKey);
     writeDisk({ version: 1, profiles: [] });
     const r2 = saveOutcome(emptyKept);

@@ -1,7 +1,7 @@
 {
   "noKey": {
     "error": null,
-    "file": "{\n  \"version\": 1,\n  \"intents\": {\n    \"claude\": {\n      \"a\": true\n    }\n  },\n  \"removedHooks\": {},\n  \"profiles\": []\n}\n",
+    "file": "{\n  \"version\": 1,\n  \"intents\": {\n    \"claude\": {\n      \"a\": true\n    }\n  },\n  \"removedHooks\": {}\n}\n",
     "memory": {
       "intents": {
         "claude": {
