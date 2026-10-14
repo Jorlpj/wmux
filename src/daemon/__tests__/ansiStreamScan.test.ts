@@ -209,6 +209,22 @@ describe('SgrMouseEncodingTracker', () => {
     t.feed('6h');
     expect(t.sgr).toBe(true);
   });
+
+  it('keeps a mode list longer than any fixed carry across chunks', () => {
+    const t = new SgrMouseEncodingTracker();
+    const modes = Array.from({ length: 30 }, (_, i) => 2000 + i).join(';');
+    t.feed(`output\x1b[?${modes};`);
+    t.feed('1006h');
+    expect(t.sgr).toBe(true);
+  });
+
+  it('does not re-read a finished sequence carried into the next chunk', () => {
+    const t = new SgrMouseEncodingTracker();
+    t.feed('\x1b[?1006h');
+    t.feed('\x1b[?1006l');
+    t.feed('more output');
+    expect(t.sgr).toBe(false);
+  });
 });
 
 describe('incompleteUtf8SuffixLength', () => {

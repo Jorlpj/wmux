@@ -171,9 +171,11 @@ export class MarginTracker {
 // eslint-disable-next-line no-control-regex
 const SGR_MOUSE_RE = /\x1b(?:\[\?([0-9;]*)([hl])|c)/g;
 
-/** Carry for SgrMouseEncodingTracker: a whole mode list
- *  (`ESC[?1000;1002;1003;1006h`) is longer than REGEX_CARRY_CHARS. */
-const MODE_LIST_CARRY_CHARS = 64;
+/** An unfinished `ESC[?<params>` (or `ESC c`) at the end of a chunk. A mode
+ *  list has no length bound, so SgrMouseEncodingTracker carries this prefix
+ *  whole instead of a fixed-size suffix. */
+// eslint-disable-next-line no-control-regex
+const SGR_MOUSE_PREFIX_RE = /^\x1b(?:\[(?:\?[0-9;]*)?)?$/;
 
 /**
  * The encoding may share a sequence with other modes: the bundled OpenConsole
@@ -204,7 +206,9 @@ export class SgrMouseEncodingTracker {
       if (params.includes('1006')) this._sgr = on;
       if (params.includes('1016')) this._sgrPixels = on;
     }
-    this.carry = text.slice(-MODE_LIST_CARRY_CHARS);
+    const tail = text.slice(text.lastIndexOf('\x1b'));
+    this.carry =
+      tail.length <= MAX_PENDING_TAIL_CHARS && SGR_MOUSE_PREFIX_RE.test(tail) ? tail : '';
   }
 
   get sgr(): boolean {
