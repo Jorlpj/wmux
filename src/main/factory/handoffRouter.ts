@@ -397,6 +397,14 @@ export interface HandoffRouterOptions {
   log?: (msg: string, err?: unknown) => void;
 }
 
+/** A bot's refs: sanitized, without the ones only main sets (the owner's
+ *  request a thread answers). */
+function callerRefs(value: unknown): ReturnType<typeof sanitizeRefs> {
+  const refs = sanitizeRefs(value);
+  if (refs) delete refs.requestCardId;
+  return refs && Object.keys(refs).length > 0 ? refs : undefined;
+}
+
 export class HandoffRouter {
   private readonly records = new Map<string, Handoff>();
   private lines = 0;
@@ -681,7 +689,7 @@ export class HandoffRouter {
       kind,
       title,
       body: params.body,
-      refs: sanitizeRefs(params.refs) as FactRef | undefined,
+      refs: callerRefs(params.refs) as FactRef | undefined,
       namedThread,
       ...(params.replyTo !== undefined ? { replyTo: params.replyTo } : {}),
       ...(params.toWorkspaceId !== undefined ? { toWorkspaceId: params.toWorkspaceId } : {}),
@@ -1259,6 +1267,8 @@ export class HandoffRouter {
         ...(h.clientHandoffId?.startsWith('mention:') ? { mention: true } : {}),
         // wmux sent it on for a coordinator's relay, in its name.
         ...(h.relay ? { relay: true } : {}),
+        // The hop that opens a thread for the owner's request: that request's card names it.
+        ...(kind === 'handoff.received' ? this.requestCardOf(h) : {}),
       },
     };
     const ports = this.opts.ports();
@@ -1273,11 +1283,22 @@ export class HandoffRouter {
     if (rooms) writeFactCards(rooms, { ...draft, id: `local-${kind}-${h.id}`, seq: 0, dedupeKey: '' }, ports.bots);
   }
 
+  /** The owner's General card a thread-opening dispatch answers, as
+   *  `{ requestCardId }`, or nothing (a bot's own work, or no such card). */
+  private requestCardOf(h: Handoff): { requestCardId?: string } {
+    if (h.opensThread !== true || h.from.kind !== 'bot' || h.attribution.originator.kind !== 'human') return {};
+    const cardId = humanCardIdOfRun(h.runId);
+    const card = cardId ? this.opts.rooms()?.get(h.from.workspaceId, cardId) : null;
+    return card && card.kind === 'human' && card.threadId === GENERAL_THREAD ? { requestCardId: card.id } : {};
+  }
+
+  /** A party as the owner reads it: a bot by its name alone (its internal
+   *  role never reaches a room line or a wake summary). */
   private partyLabel(p: Party): string {
     if (p.kind === 'human') return 'the owner';
     if (p.kind === 'system') return 'wmux';
     const bot = safeGet(this.opts.ports().bots, p.botId);
-    return bot ? `${bot.name || bot.role} (${bot.role})` : p.botId;
+    return bot ? bot.name || bot.role : p.botId;
   }
 
   // ── ask_person ──
@@ -1304,7 +1325,7 @@ export class HandoffRouter {
       const options = sanitizeOptions(params.options);
       // A question asked in a wake about one task is about that task (the
       // owner's view counts it once with the task's own needs-input).
-      const named = sanitizeRefs(params.refs);
+      const named = callerRefs(params.refs);
       const refs = asking?.taskId && !named?.taskId ? { ...(named ?? {}), taskId: asking.taskId } : named;
       // Asked while the bot holds a hop it has not answered: the answer's
       // wake answers that hop.
@@ -1453,8 +1474,10 @@ export class HandoffRouter {
    *  (the bot read the words in the turn that just ended, so no second wake),
    *  and the card reads answered. Other words ("Hi"), or words that match
    *  several questions ("Yes"), leave them open; the bot that judges a
-   *  question answered closes it itself (question_close). Returns the
-   *  handoff ids closed or answered. */
+   *  question answered closes it itself (question_close). The greeting is
+   *  the exception: any words of the owner's that reach the bot after it
+   *  (its 1:1, the room, or the room through its coordinator) close it.
+   *  Returns the handoff ids closed or answered. */
   closeAnsweredInChat(botId: string, item: Pick<WakeItem, 'reason' | 'threadId' | 'workspaceId' | 'enqueuedAt'>): Promise<string[]> {
     const r = item.reason;
     if (r.kind !== 'human') return Promise.resolve([]);
@@ -1463,9 +1486,10 @@ export class HandoffRouter {
     // not a 1:1 answer.
     const toMe = r.room !== true && r.lead !== true;
     const text = typeof r.text === 'string' ? r.text : '';
-    const asked = (h: Handoff) => h.from.kind === 'bot' && h.from.botId === botId
+    const before = (h: Handoff) => h.from.kind === 'bot' && h.from.botId === botId
       && partyWorkspace(h.from) === item.workspaceId
-      && h.createdAt < item.enqueuedAt
+      && h.createdAt < item.enqueuedAt;
+    const asked = (h: Handoff) => before(h)
       && (h.threadId === said || (toMe && h.threadId === `handoff:${h.id}`));
     return this.serial(async () => {
       const answered: string[] = [];
@@ -1478,7 +1502,10 @@ export class HandoffRouter {
         if (option && d && (d.status ?? 'pending') === 'pending') picks.push({ h, option });
       }
       if (picks.length === 1 && (await this.answerFromChat(picks[0].h, picks[0].option))) answered.push(picks[0].h.id);
-      const closed = await this.closeWhere((h) => asked(h) && !h.payload.options?.length);
+      // The greeting ("what should I do?") is moot once the owner says
+      // anything to the bot, wherever and however addressed: words that are
+      // one of its choices answered it above; any other words are the job.
+      const closed = await this.closeWhere((h) => (asked(h) && !h.payload.options?.length) || (h.intro === true && before(h)));
       return [...answered, ...closed];
     });
   }

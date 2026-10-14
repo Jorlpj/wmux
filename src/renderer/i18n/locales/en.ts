@@ -4290,6 +4290,7 @@ export const en = {
   'botsPage.onboarding.detail': "It works in {workspace}, greets you and asks what to do.",
   'botsPage.onboarding.detailAny': "It greets you and asks what to do.",
   'botsPage.onboarding.start': "Start",
+  'botsPage.onboarding.addTeam': "Add a team (lead + 4 roles)",
   'botsPage.onboarding.notInstalled': "Bots talk through Claude Code, and it isn't installed on this computer. Install it, then check again.",
   'botsPage.onboarding.notLoggedIn': "Bots talk through Claude, and Claude isn't signed in on this computer.",
   'botsPage.onboarding.login': "Log in to Claude",
@@ -4391,6 +4392,16 @@ export const en = {
   'remoteSsh.identityChanged': "Identity changed",
   'remoteSsh.error.webStopped': "wmux web was stopped on {alias}. Start it there again with wmux web, then try again.",
   'remoteSsh.needsCheck': "SSH needs you",
+  'settings.factory.addTeam': "Add team",
+  'settings.factory.addTeamHint': "Adds {names} to this workspace. You talk to {lead}; it hands the work on.",
+  'settings.factory.addTeamTurnsOn': "Bots are off. Adding the team turns bots on.",
+  'settings.factory.addTeamFailed': "The team could not be added.",
+  'botsPage.teamName.coordinator': "Lead",
+  'botsPage.teamName.researcher': "Research",
+  'botsPage.teamName.developer': "Developer",
+  'botsPage.teamName.issue': "Issues",
+  'botsPage.teamName.reviewer': "Reviewer",
+  'room.composer.toLead': "To {name}",
 } as const;
 
 export type TranslationKey = keyof typeof en;

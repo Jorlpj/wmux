@@ -354,11 +354,13 @@ status bar badges, `fleet_triage` or the phone's sidebar.
 - **Avatars (owner decision 2026-10-14, replaces the initials tiles):** a
   bot's avatar is the picture the owner set for it, else the bot's own
   mark: its **identity colour** and one of four shapes (circle, rounded
-  square, hexagon, rounded diamond), both picked from the bot's id (two
-  bots never share a colour while the eight last: the older keeps its id's,
-  a later one takes the next free), with a
-  small friendly face (two dot eyes and a smile in `--bg-base`) — the
-  shared `BotAvatar`, the same mark everywhere. A room stacks two of its
+  square, hexagon, rounded diamond). The shape comes from the bot's id; the
+  colour is per room, oldest bot first, in a fixed spread order (teal,
+  violet, magenta, blue, slate, then the rest) so a room's bots never share
+  one while the eight last and its first five read apart; a bot keeps its
+  colour while it exists. The mark carries a small friendly face (two dot
+  eyes and a smile in `--bg-base`) — the shared `BotAvatar`, the same mark
+  everywhere. A room stacks two of its
   bots' avatars and "+N" for the rest (the chat's centred pill shows up to
   three overlapping in a row). A bot's presence dot (the room's presence
   grammar; not reported is a hollow ring) sits on its avatar's corner.
@@ -442,7 +444,9 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   in the timeline as its first card (its root) — a system line (a task's
   start) as much as a message — carrying the thread's chip when its name
   says something (a PR's or an issue's reference in mono, `acme/api#12`, or
-  a task's title; a bare kind such as "Request" is left off a root) and,
+  a task's title, or for a coordinator's request thread the first line of
+  the owner's message that opened it; a bare kind such as "Request" is left
+  off a root) and,
   when it has replies, "N replies · last 14:02" under it. The bot's newest
   reply in a thread also shows in the timeline, marked "in thread" with the
   thread's chip, so a finished task's answer is read without opening it. The chip or that line opens the thread in
@@ -504,10 +508,12 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   the text ("Message <name>"; "Reply in thread" in a thread), and the
   round primary send on the right. No microphone. A 1:1
   message is addressed to that bot alone. A room's message goes to every bot
-  of the room (they may answer each other), unless
+  of the room (they may answer each other) — or, in a room with a
+  coordinator, to the coordinator alone, which hands the work on — unless
   bots are picked: a row of `@name` chips under the box (the room's bots,
   26px, the selection fills; pressed = `--selection-emphasis`), with a muted
-  "To everyone here" while none is picked; starting the message with `@` and
+  "To everyone here" ("To <lead>" in a room with a coordinator) while none
+  is picked; starting the message with `@` and
   a bot's name (or a run of them, `@A @B …`) picks those chips, and an
   `@name` inside a sentence is plain text that addresses nobody. A bot that
   is off says so under the box and sends nothing. While a bot's approval
@@ -540,7 +546,12 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   added, one centred muted line, "<name> joined", with Open chat (to that
   1:1), instead of the greeting (the question main marks as the bot's
   greeting). A bot's `job_changed` card carries
-  Undo (secondary).
+  Undo (secondary). **Add team** (a ghost button beside Cancel, while the
+  chosen workspace has no coordinator) adds five bots at once to that
+  workspace and repository — the lead (a coordinator) first, then research,
+  developer, issues and reviewer, named in the owner's language — with no
+  name field needed; only the lead greets, and its chat opens. Its tooltip
+  names the five and says the owner talks to the lead.
 - **First run (owner decision 2026-10-14):** with no bot yet the page is
   one centred panel: "Name your first bot", one muted line (it works in
   <the current workspace>, greets you and asks what to do), a name field
@@ -548,7 +559,9 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   the bot to the current workspace and opens its 1:1, where its greeting
   arrives. When the Claude engine cannot sign in the panel says why in
   one line and offers Log in to Claude (and Check again); Start waits until
-  it can. A build that cannot tell never blocks Start.
+  it can. A build that cannot tell never blocks Start. Beside Start, a
+  secondary **Add a team (lead + 4 roles)** does the same for the five-bot
+  team (no name to type) and opens the lead's chat.
 
 ### Fleet
 
@@ -1386,6 +1399,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-14 | Owner decision (Bots onboarding and registration): the empty Bots page is one centred "Name your first bot" panel whose Start turns the bots on, adds the bot to the current workspace and opens its 1:1 (Log in to Claude when the engine cannot sign in); `+` and Add work while the bots are off, after one inline confirm; the add form always shows its repository line with Change and None, a disabled Add says why, and a new bot's chat opens at once with "Starting <name>…"; one wording, Bots on / Bots are off / Turn bots on; no HQ pinning anywhere; a bot's worker is listed only on the Bots page (sidebar, active one included, Fleet, review queue, counts, `fleet_triage`, the phone). Supersedes the 2026-10-13 first-run card and pinned HQ room, and the note that Fleet lists bot workers | Registration was hard: Add hid while the bots were off, the repository attached silently, and a new bot vanished for seconds. A pre-made HQ and Moa bot appeared that the owner never made. Bot workers in the sidebar and Fleet read as the owner's own work and duplicated the Bots page |
 | 2026-10-14 | Add PC over SSH has two entry points: a last "+ Add PC over SSH…" row in the PC switcher dropdown and a ghost "No invite? Add a PC over SSH…" link under Connect a PC's Paste tab. An SSH host that needs a person shows "SSH needs you" / "Identity changed" in its switcher row, which opens the host check (owner decision) | A server or VPS has no desktop to send an invite from; the entry belongs where computers are already chosen and where pairing starts, without a new page or rail item |
 | 2026-10-14 | Owner decision: + creates a workspace on a granted remote PC. With a paired computer selected, the sidebar header and the collapsed rail show `+` only when that host advertises workspace-create-grant and this desktop holds the grant (added over SSH); it opens a shell there and the new workspace in its list. Hosts without the grant keep no `+`. Amends the collapsed sidebar's "no new-workspace button" | The smoke showed a server added over SSH could only get a first workspace through a local pane's right-click "— remote". The grant already lets this desktop create there, and a `+` that made a local workspace instead would misstate which computer the work runs on |
+| 2026-10-15 | Orchestrator decision (team workflow track): in a room with an enabled coordinator, an owner message that names no bot goes to the coordinator alone, and the composer's muted line says "To <lead>"; Add team in the add form makes the five-bot team (lead first) in one action, a ghost button with no new chrome | The owner talks to the team's lead, who decides who works on each request; a room-wide wake of every bot would start five parallel answers to one request |
 
 ### Desktop conversation view
 

@@ -122,8 +122,8 @@ const settle = () => new Promise((r) => setTimeout(r, 20));
 
 describe('handoff.send — addressee, attribution, delivery', () => {
   it('a Moa dispatch goes to the target workspace lead: delivered, directed fact, priority-1 wake, cards in both rooms', async () => {
-    const moa = bot('hq', 'moa');
-    const lead = bot('ws1', 'lead');
+    const moa = { ...bot('hq', 'moa'), name: 'Boss' };
+    const lead = { ...bot('ws1', 'lead'), name: 'Ada' };
     const verifier = bot('ws1', 'verifier');
     const h = await harness([moa, lead, verifier]);
     const r = h.router.send(binding(moa), { kind: 'dispatch', toWorkspaceId: 'ws1', title: 'Fix the login bug', body: 'details' });
@@ -140,7 +140,9 @@ describe('handoff.send — addressee, attribution, delivery', () => {
     expect(botSeesFact(verifier, received)).toBe(false);
     expect(h.rooms.read('ws1').cards.map((c) => c.kind)).toEqual(['fact']);
     expect(h.rooms.read('hq').cards).toHaveLength(1);
-    expect(h.router.summarize(r.handoffId)).toEqual({ handoffId: r.handoffId, kind: 'dispatch', from: 'moa (moa)', title: 'Fix the login bug', body: 'details', fromWorkspaceId: 'hq' });
+    // A bot is named by its name alone: its internal role never shows.
+    expect(h.rooms.read('ws1').cards[0].title).toBe('dispatch → Ada: Fix the login bug');
+    expect(h.router.summarize(r.handoffId)).toEqual({ handoffId: r.handoffId, kind: 'dispatch', from: 'Boss', title: 'Fix the login bug', body: 'details', fromWorkspaceId: 'hq' });
   });
 
   it('any bot may dispatch into another workspace (messaging is every bot\'s); its chain starts at depth 1', async () => {
@@ -1006,6 +1008,39 @@ describe('closing questions nobody needs to answer (A5)', () => {
     expect(h.rooms.read('ws1').cards.find((c) => c.title === 'Which repo?')!.greeting).toBeUndefined();
     expect(await h.router.closeIntroQuestions(lead.id)).toEqual([greet.handoffId]);
     expect(open(h)).toEqual(['Which repo?']);
+  });
+
+  it('the greeting closes on the owner\'s next words to the bot, in any thread and through the room, choices or not', async () => {
+    const lead = bot('ws1', 'lead');
+    const other = bot('ws1', 'triage');
+    const h = await harness([lead, other]);
+    h.wake.id = { wakeId: 'w-intro', attempt: 1, reasonKind: 'intro' } as never;
+    const greet = await h.router.askPerson(binding(lead), { title: 'What should I do?', body: '', options: ['Look at the repo', 'Triage issues'] });
+    h.wake.id = { wakeId: 'w-2', attempt: 1, reasonKind: 'human' } as never;
+    const pick = await h.router.askPerson(binding(lead), { title: 'Ship it?', body: '', options: ['Yes', 'No'] });
+    if (!greet.ok || !pick.ok) throw new Error('asks failed');
+    const said = now;
+    now += 5;
+    // Another bot's words, or the owner's words from before it, leave it open.
+    expect(await h.router.closeAnsweredInChat(other.id, { ...ownerWake('general', now), reason: { kind: 'human', text: 'Fix the login bug', source: 'desktop', lead: true } })).toEqual([]);
+    expect(await h.router.closeAnsweredInChat(lead.id, { ...ownerWake('general', said - 1), reason: { kind: 'human', text: 'Fix the login bug', source: 'desktop', lead: true } })).toEqual([]);
+    // The owner just gives the lead work in the room, in a thread of its own.
+    const work = { ...ownerWake('handoff:h-xyz', now), reason: { kind: 'human' as const, text: 'Fix the login bug', source: 'desktop' as const, lead: true as const } };
+    expect(await h.router.closeAnsweredInChat(lead.id, work)).toEqual([greet.handoffId]);
+    // Other questions with choices keep the usual rule.
+    expect(open(h)).toEqual(['Ship it?']);
+  });
+
+  it('a bot cannot set the owner\'s request a thread answers (main\'s ref only)', async () => {
+    const lead = bot('ws1', 'lead');
+    const other = bot('ws1', 'triage');
+    const h = await harness([lead, other]);
+    const q = await h.router.askPerson(binding(lead), { title: 'Which?', body: '', refs: { requestCardId: 'c-1', taskId: 'wtask-1' } as never });
+    const d = h.router.send(binding(lead), { kind: 'message', toBotId: other.id, title: 'hi', body: '', refs: { requestCardId: 'c-1' } as never });
+    if (!q.ok || !d.ok) throw new Error('refused');
+    expect(h.router.get(q.handoffId)!.payload.refs).toEqual({ taskId: 'wtask-1' });
+    expect(h.router.get(d.handoffId)!.payload.refs).toBeUndefined();
+    expect(h.rooms.read('ws1').cards.some((c) => c.refs?.requestCardId)).toBe(false);
   });
 
   it('a thread whose subject ended closes its open questions', async () => {
