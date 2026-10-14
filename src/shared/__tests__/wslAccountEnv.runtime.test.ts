@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { buildWslInjection } from '../wslIntegration';
 
@@ -73,6 +73,39 @@ describe.runIf(enabled)('WSL account-home transport', () => {
       expect(receivedHome).toBe(linuxSelected);
       expect(JSON.parse(fs.readFileSync(path.join(selected, file), 'utf8'))).toEqual({ fixture: true });
       expect(fs.readFileSync(path.join(other, file), 'utf8')).toBe('other account');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  // #2202: a UNC home translates only into its own distribution.
+  it.each(['same', 'other'])('handles a \\\\wsl.localhost home in the %s distribution', (which) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-unc-'));
+    const wsl = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
+    const distroArgs = process.env.WMUX_TEST_WSL_DISTRO ? ['-d', process.env.WMUX_TEST_WSL_DISTRO] : [];
+    const execute = (args: string[]) => execFileSync(wsl, [...distroArgs, '--exec', ...args], {
+      encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    });
+    try {
+      const [distribution, user] = execute(['/bin/sh', '-c', 'printf "%s\\0%s" "$WSL_DISTRO_NAME" "$(id -un)"']).split('\0');
+      const linuxDir = execute(['wslpath', '-u', dir]).trim();
+      // A distribution name that cannot be this one, so the test needs a single distro only.
+      const homeDistro = which === 'same' ? distribution : `${distribution}-not-this-one`;
+      const home = `\\\\wsl.localhost\\${homeDistro}${linuxDir.replace(/\//g, '\\')}`;
+      const injected = buildWslInjection({
+        target: { distribution, user }, cwd: linuxDir, integrationDir: dir, wslAccountLoginEnvKey: 'CODEX_HOME',
+        env: { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows', PATH: process.env.PATH ?? '', CODEX_HOME: home, WMUX_SHELL_INTEGRATION: '0' },
+        bashInit: '', execCommand: `printf '%s' "\${CODEX_HOME-unset}"`, mcpEntryPath: null,
+      });
+      const run = spawnSync(wsl, injected.args, { env: injected.env, encoding: 'utf8', timeout: 30_000, windowsHide: true });
+      if (which === 'same') {
+        expect([run.status, run.stdout, run.stderr]).toEqual([0, linuxDir, '']);
+      } else {
+        expect(run.status).toBe(1);
+        expect(run.stdout).toBe('');
+        expect(run.stderr).not.toContain('Failed to translate');
+        expect(run.stderr).toContain(`wmux: WSL cannot translate the account directory "${home}"`);
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

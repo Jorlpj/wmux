@@ -89,11 +89,59 @@ describe('WSL per-launch Claude integration', () => {
       expect(injected.env.WSLENV.split(':')).toContain('OTHER/u');
     });
 
-    it.each(['D:/account profiles/selected', '\\\\server\\share\\selected', '//server/share/selected'])(
-      'translates the Windows path %s', (home) => {
-        expect(inject({ CODEX_HOME: home }, 'CODEX_HOME').env.WSLENV.split(':')).toContain('CODEX_HOME/pu');
-      },
-    );
+    it.each([
+      'D:/account profiles/selected',
+      '\\\\?\\C:\\account profiles\\selected',
+      '\\\\wsl.localhost\\Ubuntu\\home\\developer\\selected',
+      '\\\\wsl$\\Ubuntu\\home\\developer\\selected',
+      '\\\\WSL.LOCALHOST\\ubuntu\\home\\developer\\selected',
+      '//wsl.localhost/Ubuntu/home/developer/selected',
+    ])('translates the Windows path %s', (home) => {
+      const injected = inject({ CODEX_HOME: home }, 'CODEX_HOME');
+      expect(injected.env.WSLENV.split(':')).toContain('CODEX_HOME/pu');
+      expect(injected.env).not.toHaveProperty('WMUX_WSL_UNREACHABLE_HOME');
+    });
+
+    // #2202: wsl.exe prints "Failed to translate" into the pane for these and
+    // drops the variable, so the CLI would log into its default Linux home.
+    it.each([
+      '\\\\wsl.localhost\\Debian\\home\\developer\\selected',
+      '\\\\wsl$\\Debian\\home\\developer\\selected',
+      '\\\\wsl.localhost\\Ubuntu-old\\home\\developer\\selected',
+      '\\\\server\\share\\selected',
+      '//server/share/selected',
+      '\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\developer\\selected',
+      '\\\\.\\C:\\account profiles\\selected',
+    ])('does not transport the untranslatable path %s and flags it for the bootstrap', (home) => {
+      for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR'] as const) {
+        const injected = inject({ [key]: home }, key);
+        expect(injected.env.WSLENV.split(':').some((entry) => entry.split('/')[0] === key)).toBe(false);
+        expect(injected.env.WSLENV.split(':')).toContain('WMUX_WSL_UNREACHABLE_HOME');
+        expect(injected.env.WMUX_WSL_UNREACHABLE_HOME).toBe(home);
+        expect(injected.env[key]).toBe(home);
+      }
+    });
+
+    it.skipIf(process.platform === 'win32').each([
+      ['\\\\server\\share\\selected', 1],
+      ['C:\\accounts\\selected', 0],
+    ])('stops the login command before it runs only for an untranslatable home (%s)', (home, status) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-account-')); dirs.push(dir);
+      for (const execCommand of ["printf 'login ran'", undefined]) {
+        const injected = buildWslInjection({
+          target: { distribution: 'Ubuntu', user: 'developer' }, cwd: dir,
+          env: { CODEX_HOME: home, HOME: dir, PATH: '/usr/bin:/bin' }, integrationDir: dir, bashInit: '',
+          mcpEntryPath: null, wslAccountLoginEnvKey: 'CODEX_HOME', execCommand,
+        });
+        // On Linux the env reaches bash as is; WSLENV decides only what crosses wsl.exe.
+        const run = spawnSync('/bin/bash', injected.args.slice(injected.args.indexOf('/bin/bash') + 1), {
+          encoding: 'utf8', env: injected.env, input: execCommand === undefined ? "printf 'login ran'; exit\n" : '', timeout: 10_000,
+        });
+        expect(run.status).toBe(status);
+        expect(run.stdout.includes('login ran')).toBe(status === 0);
+        expect(run.stderr.includes(`wmux: WSL cannot translate the account directory "${home}"`)).toBe(status === 1);
+      }
+    });
 
     it.each(['claude', 'codex'] as const)('keeps two %s logins on their selected accounts without transferring the other vendor', (vendor) => {
       const first = inject({ CODEX_HOME: 'C:\\accounts\\one', CLAUDE_CONFIG_DIR: '/home/developer/claude-one' }, vendor === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR');

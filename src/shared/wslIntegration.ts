@@ -352,6 +352,28 @@ function wslMcpConfig(): string {
   return JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH] } } });
 }
 
+/**
+ * The WSLENV flag that carries a login account home into `distribution`, or
+ * null when wsl.exe cannot translate it (#2202). A drive path translates, and
+ * a UNC path only into its own distro (`\\wsl.localhost\<distro>\…` or
+ * `\\wsl$\<distro>\…`). Another distro, a share, `\\?\UNC\…` or `\\.\…` prints
+ * "Failed to translate" into the pane and drops the variable inside Linux.
+ */
+export function wslAccountHomeTransport(home: string, distribution: string): 'pu' | 'u' | null {
+  if (/^(\\\\\?\\)?[a-z]:[\\/]/i.test(home)) return 'pu';
+  const unc = /^(?:\\\\|\/\/)([^\\/]*)[\\/]?([^\\/]*)/.exec(home);
+  if (!unc) return 'u';
+  return /^wsl(\.localhost|\$)$/i.test(unc[1]) && unc[2] !== '' && unc[2].toLowerCase() === distribution.toLowerCase() ? 'pu' : null;
+}
+
+// Runs before any login command: an untranslatable home would let the CLI
+// write its default Linux home while Settings waits on the Windows one.
+const WSL_ACCOUNT_HOME_GUARD = `if [ -n "\${WMUX_WSL_UNREACHABLE_HOME:-}" ]; then
+  printf 'wmux: WSL cannot translate the account directory "%s" into this distribution; the login is not started.\\n' "$WMUX_WSL_UNREACHABLE_HOME" >&2
+  exit 1
+fi
+`;
+
 export function buildWslInjection(options: {
   target: WslTarget;
   cwd: string;
@@ -427,16 +449,20 @@ fi
   // contain Windows-only notify/MCP/hooks. Only forward the login's vendor.
   const loginKey = options.wslAccountLoginEnvKey;
   const home = loginKey ? env[loginKey] : undefined;
-  if ((loginKey === 'CODEX_HOME' || loginKey === 'CLAUDE_CONFIG_DIR') && home) {
-    const windowsPath = /^[a-z]:[\\/]/i.test(home) || home.startsWith('\\\\') || home.startsWith('//');
-    entries.push(`${loginKey}/${windowsPath ? 'pu' : 'u'}`);
+  const transport = (loginKey === 'CODEX_HOME' || loginKey === 'CLAUDE_CONFIG_DIR') && home
+    ? wslAccountHomeTransport(home, target.distribution)
+    : undefined;
+  if (transport) entries.push(`${loginKey}/${transport}`);
+  if (transport === null && home) {
+    env.WMUX_WSL_UNREACHABLE_HOME = home;
+    entries.push('WMUX_WSL_UNREACHABLE_HOME');
   }
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);
   // WSL runs bash explicitly so --rcfile reaches Linux, never wsl.exe. The
   // interactive init sources ~/.bashrc first. Exec units avoid startup output.
   const bootstrap = options.execCommand === undefined
-    ? 'exec /bin/bash --rcfile "$WMUX_WSL_BASHRC" -i'
-    : `if [ -z "$WMUX_WSL_CWD" ] || ! builtin cd -- "$WMUX_WSL_CWD"; then
+    ? `${WSL_ACCOUNT_HOME_GUARD}exec /bin/bash --rcfile "$WMUX_WSL_BASHRC" -i`
+    : `${WSL_ACCOUNT_HOME_GUARD}if [ -z "$WMUX_WSL_CWD" ] || ! builtin cd -- "$WMUX_WSL_CWD"; then
   printf 'wmux: cannot enter WSL directory "%s"; check the directory and WSLENV transport, then retry.\\n' "$WMUX_WSL_CWD" >&2
   exit 1
 fi
