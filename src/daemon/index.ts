@@ -2431,7 +2431,7 @@ function registerRpcHandlers(
       args: p.args,
       cwd: p.cwd,
       env: p.env,
-      wslAccountLogin: p.wslAccountLogin,
+      wslAccountLoginEnvKey: p.wslAccountLoginEnvKey,
       // Spawn-only (see DaemonCreateSessionParams.secretEnv): never on meta.
       ...(p.secretEnv !== undefined ? { secretEnv: p.secretEnv } : {}),
       cols: p.cols,

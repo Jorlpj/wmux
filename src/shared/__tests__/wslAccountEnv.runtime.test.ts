@@ -58,7 +58,7 @@ describe.runIf(enabled)('WSL account-home transport', () => {
       const initialCommand = `set -eu; printf '%s' "$${key}"; printf '{"fixture":true}' > "$${key}/${file}"`;
       const injected = buildWslInjection({
         target: { distribution, user }, cwd: linuxDir, integrationDir: dir,
-        wslAccountLogin: key === 'CODEX_HOME' ? 'codex' : 'claude',
+        wslAccountLoginEnvKey: key === 'CODEX_HOME' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR',
         env: {
           SystemRoot: process.env.SystemRoot ?? 'C:\\Windows',
           PATH: process.env.PATH ?? '',

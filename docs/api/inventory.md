@@ -160,11 +160,11 @@ The full list lives in `src/shared/rpc.ts` (`ALL_RPC_METHODS`). For the MCP-faci
 |---|---|---|
 | `daemon.createSession`, `daemon.destroySession`, `daemon.attachSession`, `daemon.detachSession`, `daemon.resizeSession`, `daemon.listSessions`, `daemon.getAgentName`, `daemon.getAgentState`, `daemon.deliverScheduledPromptV2`, `daemon.readPromptEvents`, `daemon.ping`, `daemon.shutdown`, `daemon.compact` | **internal** | Used by the wmux Electron client to manage PTYs and perform incarnation/identity/input-atomic scheduled delivery. `daemon.getAgentState` exposes the daemon-minted session incarnation to the trusted client; the versioned delivery method requires it to match before PTY input and makes mixed-version clients fail closed instead of reaching the legacy unbound method. External tooling should not call these — use the pane/terminal surfaces instead. |
 
-`daemon.createSession` also accepts the internal `wslAccountLogin` hint (`claude`
-or `codex`). Settings login tabs set it to transfer only that vendor's selected
+`daemon.createSession` also accepts the internal `wslAccountLoginEnvKey` hint (`CLAUDE_CONFIG_DIR`
+or `CODEX_HOME`). Settings login tabs set it to transfer only that vendor's selected
 account home through WSLENV. Ordinary workspace/account-bound panes omit it and
-retain their existing Linux profile selection; explicit user WSLENV entries
-remain authoritative. This is not a workspace/profile setting.
+retain their existing Linux profile selection and user WSLENV entries. Login
+tabs normalize flags only for the selected account key. This is not a workspace/profile setting.
 
 ### Company Mode (deferred to Phase 4 gate)
 

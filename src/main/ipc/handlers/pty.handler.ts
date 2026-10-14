@@ -112,7 +112,7 @@ interface PtyCreateSupervisionInput {
 }
 
 type PtyCreateOptions = {
-  wslAccountLogin?: 'claude' | 'codex';
+  wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
   shell?: string;
   cwd?: string;
   /** Dead-session replacement candidates. WSL validates inside its distro;
@@ -609,7 +609,7 @@ export function registerPTYHandlers(
           cols: options?.cols || 80,
           rows: options?.rows || 24,
           env: resolvedEnv,
-          wslAccountLogin: options?.wslAccountLogin,
+          wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey,
           ...(secretEnv ? { secretEnv } : {}),
           ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
           ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
@@ -739,11 +739,11 @@ export function registerPTYHandlers(
       // a spawn option. exec/supervision are daemon-only (handled above) and
       // must not reach ptyManager.create, so build a clean spawn-options object
       // from only the local-relevant fields instead of spreading the payload.
-      const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLogin } = options ?? {};
+      const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLoginEnvKey } = options ?? {};
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
       const wslArgs = wslDistroArgs(shell, getDefaultWslDistro());
-      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslAccountLogin });
+      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslAccountLoginEnvKey });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       if (botWorker) {
         try {

@@ -61,18 +61,18 @@ describe('WSL per-launch Claude integration', () => {
   });
 
   describe('account homes across the Windows/WSL boundary', () => {
-    function inject(env: Record<string, string>, wslAccountLogin?: 'claude' | 'codex') {
+    function inject(env: Record<string, string>, wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME') {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-account-')); dirs.push(dir);
       return buildWslInjection({
         target: { distribution: 'Ubuntu', user: 'developer' }, cwd: '/home/developer',
-        env, integrationDir: dir, bashInit: '', mcpEntryPath: null, wslAccountLogin,
+        env, integrationDir: dir, bashInit: '', mcpEntryPath: null, wslAccountLoginEnvKey,
       });
     }
 
     it.each(['CODEX_HOME', 'CLAUDE_CONFIG_DIR'])('transports a selected Windows %s and translates its path', (key) => {
       const home = "C:\\account profiles\\it's selected";
       const env = { [key]: home, WSLENV: `MY_VAR/p:${key}/w` };
-      const injected = inject(env, key === 'CODEX_HOME' ? 'codex' : 'claude');
+      const injected = inject(env, key === 'CODEX_HOME' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR');
       expect(injected.env[key]).toBe(home);
       expect(injected.env.WSLENV.split(':')).toContain(`${key}/pu`);
       expect(injected.env.WSLENV.split(':')).not.toContain(`${key}/w`);
@@ -82,7 +82,7 @@ describe('WSL per-launch Claude integration', () => {
 
     it.each(['CODEX_HOME', 'CLAUDE_CONFIG_DIR'])('preserves an explicit Linux %s without path translation', (key) => {
       const home = "/home/developer/account profiles/it's selected";
-      const injected = inject({ [key]: home, WSLENV: `${key}/p:OTHER/u` }, key === 'CODEX_HOME' ? 'codex' : 'claude');
+      const injected = inject({ [key]: home, WSLENV: `${key}/p:OTHER/u` }, key === 'CODEX_HOME' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR');
       expect(injected.env[key]).toBe(home);
       expect(injected.env.WSLENV.split(':')).toContain(`${key}/u`);
       expect(injected.env.WSLENV.split(':')).not.toContain(`${key}/p`);
@@ -91,13 +91,13 @@ describe('WSL per-launch Claude integration', () => {
 
     it.each(['D:/account profiles/selected', '\\\\server\\share\\selected', '//server/share/selected'])(
       'translates the Windows path %s', (home) => {
-        expect(inject({ CODEX_HOME: home }, 'codex').env.WSLENV.split(':')).toContain('CODEX_HOME/pu');
+        expect(inject({ CODEX_HOME: home }, 'CODEX_HOME').env.WSLENV.split(':')).toContain('CODEX_HOME/pu');
       },
     );
 
     it.each(['claude', 'codex'] as const)('keeps two %s logins on their selected accounts without transferring the other vendor', (vendor) => {
-      const first = inject({ CODEX_HOME: 'C:\\accounts\\one', CLAUDE_CONFIG_DIR: '/home/developer/claude-one' }, vendor);
-      const second = inject({ CODEX_HOME: 'C:\\accounts\\two', CLAUDE_CONFIG_DIR: '/home/developer/claude-two' }, vendor);
+      const first = inject({ CODEX_HOME: 'C:\\accounts\\one', CLAUDE_CONFIG_DIR: '/home/developer/claude-one' }, vendor === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR');
+      const second = inject({ CODEX_HOME: 'C:\\accounts\\two', CLAUDE_CONFIG_DIR: '/home/developer/claude-two' }, vendor === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR');
       expect(first.env.CODEX_HOME).toBe('C:\\accounts\\one');
       expect(second.env.CODEX_HOME).toBe('C:\\accounts\\two');
       expect(first.env.CLAUDE_CONFIG_DIR).toBe('/home/developer/claude-one');
@@ -110,7 +110,7 @@ describe('WSL per-launch Claude integration', () => {
 
     it.each<Record<string, string>>([{}, { CODEX_HOME: '', CLAUDE_CONFIG_DIR: '' }])('does not introduce absent or empty account homes', (env) => {
       for (const vendor of ['claude', 'codex'] as const) {
-        const injected = inject(env, vendor);
+        const injected = inject(env, vendor === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR');
         expect(injected.env.WSLENV.split(':').some((entry) => ['CODEX_HOME', 'CLAUDE_CONFIG_DIR'].includes(entry.split('/')[0]))).toBe(false);
       }
     });
@@ -131,6 +131,11 @@ describe('WSL per-launch Claude integration', () => {
       const injected = inject({ CODEX_HOME: 'C:\\accounts\\manual', CLAUDE_CONFIG_DIR: 'C:\\accounts\\inherited', WSLENV: 'CODEX_HOME/p:MY_VAR/u' });
       expect(injected.env.WSLENV.split(':')).toContain('CODEX_HOME/p');
       expect(injected.env.WSLENV.split(':').some((entry) => entry.startsWith('CLAUDE_CONFIG_DIR/'))).toBe(false);
+    });
+
+    it('ignores an unsupported account key from an untyped IPC caller', () => {
+      const injected = inject({ CODEX_HOME: 'C:\\accounts\\bound', OTHER_CONFIG_DIR: 'C:\\accounts\\other' }, 'OTHER_CONFIG_DIR' as 'CODEX_HOME');
+      expect(injected.env.WSLENV.split(':').some((entry) => /^(CODEX_HOME|OTHER_CONFIG_DIR)(\/|$)/.test(entry))).toBe(false);
     });
   });
 

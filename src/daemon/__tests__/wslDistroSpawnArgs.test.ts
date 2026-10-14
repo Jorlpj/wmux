@@ -53,12 +53,12 @@ describe('createSession — WSL distro selection and recovery target', () => {
   });
   afterEach(() => manager.disposeAll());
 
-  it.each(['claude', 'codex'] as const)('carries the %s login opt-in, without inferring it for an ordinary session', async (vendor) => {
+  it.each(['CLAUDE_CONFIG_DIR', 'CODEX_HOME'] as const)('carries the %s login opt-in, without inferring it for an ordinary session', async (vendor) => {
     const env = { CODEX_HOME: 'C:\\accounts\\codex', CLAUDE_CONFIG_DIR: 'C:\\accounts\\claude' };
-    await manager.createSessionAsync({ id: 'login', cmd: 'wsl.exe', cwd: '~', env, wslAccountLogin: vendor });
-    expect(injectionMock).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLogin: vendor }));
+    await manager.createSessionAsync({ id: 'login', cmd: 'wsl.exe', cwd: '~', env, wslAccountLoginEnvKey: vendor });
+    expect(injectionMock).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLoginEnvKey: vendor }));
     await manager.createSessionAsync({ id: 'ordinary', cmd: 'wsl.exe', cwd: '~', env });
-    expect(injectionMock).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLogin: undefined }));
+    expect(injectionMock).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLoginEnvKey: undefined }));
   });
 
   it('uses the picker selection to resolve the actual target and persisted args', async () => {

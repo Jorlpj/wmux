@@ -32,15 +32,15 @@ describe('PTYManager.createAsync WSL launches', () => {
     buildWslInjection.mockClear();
   });
 
-  it.each(['claude', 'codex'] as const)('carries only an explicit %s login opt-in through the async probe', async (vendor) => {
+  it.each(['CLAUDE_CONFIG_DIR', 'CODEX_HOME'] as const)('carries only an explicit %s login opt-in through the async probe', async (vendor) => {
     const manager = new PTYManager();
     const env = { CODEX_HOME: 'C:\\accounts\\codex', CLAUDE_CONFIG_DIR: 'C:\\accounts\\claude' };
     resolveWslCwd.mockResolvedValue({ cwd: '/home/dev', target: { distribution: 'Ubuntu', user: 'dev' } });
     try {
-      await manager.createAsync({ shell: 'wsl.exe', env, wslAccountLogin: vendor });
-      expect(buildWslInjection).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLogin: vendor }));
+      await manager.createAsync({ shell: 'wsl.exe', env, wslAccountLoginEnvKey: vendor });
+      expect(buildWslInjection).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLoginEnvKey: vendor }));
       await manager.createAsync({ shell: 'wsl.exe', env });
-      expect(buildWslInjection).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLogin: undefined }));
+      expect(buildWslInjection).toHaveBeenLastCalledWith(expect.objectContaining({ wslAccountLoginEnvKey: undefined }));
     } finally { manager.disposeAll(); }
   });
 

@@ -343,7 +343,7 @@ export class DaemonSessionManager extends EventEmitter {
   }
 
   private spawnSession(params: {
-    wslAccountLogin?: 'claude' | 'codex';
+    wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
     id: string;
     /**
      * The command to run as the pane's root process. OPTIONAL: absent means
@@ -596,7 +596,7 @@ export class DaemonSessionManager extends EventEmitter {
     if (wsl) {
       const injection = buildWslInjection({ target: wsl.target, cwd, env,
         integrationDir: getWmuxDir(), bashInit: BASH_INIT,
-        wslAccountLogin: params.wslAccountLogin,
+        wslAccountLoginEnvKey: params.wslAccountLoginEnvKey,
         execCommand: params.exec ? (params.execLaunchCommand ?? params.exec.command) : undefined,
       });
       spawnArgs = injection.args;

@@ -360,7 +360,7 @@ export function buildWslInjection(options: {
   bashInit: string;
   execCommand?: string;
   /** Only account-login tabs opt into Windows account-home transport. */
-  wslAccountLogin?: 'claude' | 'codex';
+  wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
   runtimePath?: string;
   bridgePath?: string;
   codexBridgePath?: string;
@@ -425,10 +425,9 @@ fi
   ];
   // Ordinary WSL panes keep their Linux profiles: copied Windows config can
   // contain Windows-only notify/MCP/hooks. Only forward the login's vendor.
-  const loginKey = options.wslAccountLogin === 'codex' ? 'CODEX_HOME'
-    : options.wslAccountLogin === 'claude' ? 'CLAUDE_CONFIG_DIR' : undefined;
+  const loginKey = options.wslAccountLoginEnvKey;
   const home = loginKey ? env[loginKey] : undefined;
-  if (loginKey && home) {
+  if ((loginKey === 'CODEX_HOME' || loginKey === 'CLAUDE_CONFIG_DIR') && home) {
     const windowsPath = /^[a-z]:[\\/]/i.test(home) || home.startsWith('\\\\') || home.startsWith('//');
     entries.push(`${loginKey}/${windowsPath ? 'pu' : 'u'}`);
   }
