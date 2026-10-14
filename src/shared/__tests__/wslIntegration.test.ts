@@ -107,7 +107,7 @@ describe('WSL per-launch Claude integration', () => {
       }
     });
 
-    it.each([{}, { CODEX_HOME: '', CLAUDE_CONFIG_DIR: '' }])('does not introduce absent or empty account homes', (env) => {
+    it.each<Record<string, string>>([{}, { CODEX_HOME: '', CLAUDE_CONFIG_DIR: '' }])('does not introduce absent or empty account homes', (env) => {
       const injected = inject(env);
       expect(injected.env.WSLENV.split(':').some((entry) => ['CODEX_HOME', 'CLAUDE_CONFIG_DIR'].includes(entry.split('/')[0]))).toBe(false);
     });
