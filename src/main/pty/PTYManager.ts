@@ -212,6 +212,7 @@ export class PTYManager {
   private pendingCreatesBySurface = new Map<string, Set<string>>();
 
   private spawnPrepared(options?: {
+    wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
     shell?: string;
     /**
      * #1103 — validated WSL distro selection (`['-d', '<name>']`), prepended
@@ -305,7 +306,7 @@ export class PTYManager {
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);
     const hookInjection = wsl
-      ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT })
+      ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT, wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey })
       : this.buildHookInjection(shellType, env, shell);
     const spawnArgs = wsl ? hookInjection.args : [...(options?.shellArgs ?? []), ...hookInjection.args];
 

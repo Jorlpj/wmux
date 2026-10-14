@@ -1160,6 +1160,8 @@ export interface DaemonEvent {
 // observed depending on the caller path.
 
 export interface DaemonCreateSessionParams {
+  /** Internal login-tab opt-in; never inferred from a bound/inherited account. */
+  wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
   wslTarget?: WslTarget;
   id: string;
   /** Absent means the home directory. */
