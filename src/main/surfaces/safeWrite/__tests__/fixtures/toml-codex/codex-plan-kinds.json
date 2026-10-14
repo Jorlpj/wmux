@@ -1,0 +1,228 @@
+{
+  "mixed": {
+    "tomlEdits": [
+      {
+        "table": [
+          "mcp_servers",
+          "srv one"
+        ],
+        "key": "enabled",
+        "op": "set",
+        "value": false
+      },
+      {
+        "table": [
+          "mcp_servers",
+          "s"
+        ],
+        "key": "enabled",
+        "op": "delete"
+      },
+      {
+        "table": [
+          "plugins",
+          "p@m"
+        ],
+        "key": "enabled",
+        "op": "set",
+        "value": false
+      },
+      {
+        "table": [
+          "features"
+        ],
+        "key": "web_search",
+        "op": "set",
+        "value": "disabled"
+      },
+      {
+        "table": [
+          "features"
+        ],
+        "key": "web_search",
+        "op": "set",
+        "value": "live"
+      },
+      {
+        "table": [
+          "features"
+        ],
+        "key": "shell_tool",
+        "op": "set",
+        "value": false
+      },
+      {
+        "table": [
+          "features"
+        ],
+        "key": "custom_flag",
+        "op": "set",
+        "value": true
+      },
+      {
+        "table": [
+          "mcp_servers",
+          "s"
+        ],
+        "key": "disabled_tools",
+        "op": "set",
+        "value": [
+          "keep",
+          "new"
+        ]
+      },
+      {
+        "table": [
+          "mcp_servers",
+          "s"
+        ],
+        "key": "enabled_tools",
+        "op": "set",
+        "value": [
+          "x",
+          "old"
+        ]
+      },
+      {
+        "table": [
+          "mcp_servers",
+          "t"
+        ],
+        "key": "disabled_tools",
+        "op": "delete"
+      },
+      {
+        "table": [
+          "mcp_servers",
+          "u"
+        ],
+        "key": "disabled_tools",
+        "op": "set",
+        "value": [
+          "a"
+        ]
+      }
+    ],
+    "edits": [
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set mcp_servers.\"srv one\".enabled = false"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "delete mcp_servers.s.enabled"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set plugins.\"p@m\".enabled = false"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set features.web_search = \"disabled\""
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set features.web_search = \"live\""
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set features.shell_tool = false"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set features.custom_flag = true"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set mcp_servers.s.disabled_tools = [\"keep\", \"new\"]"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set mcp_servers.s.enabled_tools = [\"x\", \"old\"]"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "delete mcp_servers.t.disabled_tools"
+      },
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set mcp_servers.u.disabled_tools = [\"a\"]"
+      }
+    ],
+    "applicableItemIds": [
+      "codex:mcp-server::srv one",
+      "codex:mcp-server::s",
+      "codex:plugin::p@m",
+      "codex:builtin-tool::web_search",
+      "codex:builtin-tool::web_search",
+      "codex:builtin-tool::shell_tool",
+      "codex:builtin-tool::custom_flag",
+      "codex:mcp-tool:s:new",
+      "codex:mcp-tool:s:old",
+      "codex:mcp-tool:s:keep",
+      "codex:mcp-tool:t:only",
+      "codex:mcp-tool:u:a",
+      "codex:mcp-tool:u:b",
+      "codex:mcp-tool:v:never-listed"
+    ]
+  },
+  "sameAsBefore": {
+    "tomlEdits": [],
+    "edits": [],
+    "applicableItemIds": [
+      "codex:mcp-tool:s:a",
+      "codex:mcp-tool:s:b"
+    ]
+  },
+  "emptyListKept": {
+    "tomlEdits": [
+      {
+        "table": [
+          "mcp_servers",
+          "s"
+        ],
+        "key": "disabled_tools",
+        "op": "delete"
+      }
+    ],
+    "edits": [
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "delete mcp_servers.s.disabled_tools"
+      }
+    ],
+    "applicableItemIds": [
+      "codex:mcp-tool:s:z"
+    ]
+  },
+  "invalidToml": {
+    "tomlEdits": [
+      {
+        "table": [
+          "features"
+        ],
+        "key": "memories",
+        "op": "set",
+        "value": false
+      }
+    ],
+    "edits": [
+      {
+        "path": "<home>/.codex/config.toml",
+        "summary": "set features.memories = false"
+      }
+    ],
+    "applicableItemIds": [
+      "codex:builtin-tool::memories"
+    ]
+  },
+  "unknownBuiltin": {
+    "thrown": "Unsupported builtin tool: nope"
+  },
+  "unsupportedKind": {
+    "thrown": "Unsupported item kind or setting: context-setting (x)"
+  },
+  "toolWithoutParent": {
+    "thrown": "MCP tool 'x' is missing a parent server."
+  }
+}
