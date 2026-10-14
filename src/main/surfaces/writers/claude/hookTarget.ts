@@ -1,5 +1,5 @@
 import type { SurfaceItem } from '../../../../shared/tokenUsage/surfaceTypes';
-import { hookFingerprint } from '../../inventory/helpers';
+import { hookFingerprint, storedHookHandler } from '../../inventory/helpers';
 import { SurfacesStore } from '../../safeWrite';
 import { deepEqual } from '../../safeWrite/deepEqual';
 import type { ResolvedChange } from '../types';
@@ -192,7 +192,7 @@ function restoreHook(root: Record<string, unknown>, change: ResolvedChange, stor
     throw new Error('Cannot enable hook: definition not found in store');
   }
   const def = entry.definition as Record<string, unknown>;
-  const handler = storedHandler(def);
+  const handler = storedHookHandler(def) as ClaudeHookHandler;
   const event = (def.event as string) || change.item.hookEvent || 'PreToolUse';
   const groupMeta = def.groupMeta as Record<string, unknown> | undefined;
   const eventList = eventListFor(root, event);
@@ -214,20 +214,6 @@ function restoreHook(root: Record<string, unknown>, change: ResolvedChange, stor
   } else {
     eventList.push({ ...groupMeta, hooks: [handler] });
   }
-}
-
-function storedHandler(def: Record<string, unknown>): ClaudeHookHandler {
-  if (def.handler && typeof def.handler === 'object' && !Array.isArray(def.handler)) {
-    return def.handler as ClaudeHookHandler;
-  }
-  // Older entries stored the handler's fields next to `event` and `groupMeta`.
-  const fallback: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(def)) {
-    if (k !== 'event' && k !== 'groupMeta') {
-      fallback[k] = v;
-    }
-  }
-  return fallback;
 }
 
 /** The event's handler list in `root.hooks`, created when missing. */
