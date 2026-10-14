@@ -1,0 +1,194 @@
+{
+  "onlyRefused": {
+    "preview": {
+      "provider": "agy",
+      "edits": [],
+      "requiresNewSession": true
+    },
+    "result": {
+      "provider": "agy",
+      "ok": false,
+      "appliedItemIds": [],
+      "backups": 0,
+      "error": "Refused to modify configuration outside allowed directories."
+    },
+    "files": {
+      "<home>/.gemini/config/mcp_config.json": null,
+      "<home>/.gemini/config/config.json": null,
+      "<home>/.gemini/config/skills.json": null,
+      "<home>/.gemini/config/hooks.json": null,
+      "<project>/.agents/skills.json": null
+    },
+    "store": null
+  },
+  "mixed": {
+    "preview": {
+      "provider": "agy",
+      "edits": [
+        {
+          "path": "<home>/.gemini/config/mcp_config.json",
+          "summary": "set mcpServers.\"ok\".disabled = true"
+        }
+      ],
+      "requiresNewSession": true
+    },
+    "result": {
+      "provider": "agy",
+      "ok": false,
+      "appliedItemIds": [
+        "agy:mcp-server::ok"
+      ],
+      "backups": 1,
+      "error": "Refused to modify configuration outside allowed directories."
+    },
+    "files": {
+      "<home>/.gemini/config/mcp_config.json": {
+        "mcpServers": {
+          "ok": {
+            "disabled": true
+          }
+        }
+      },
+      "<home>/.gemini/config/config.json": null,
+      "<home>/.gemini/config/skills.json": null,
+      "<home>/.gemini/config/hooks.json": null,
+      "<project>/.agents/skills.json": null
+    },
+    "store": {
+      "version": 1,
+      "intents": {
+        "agy": {
+          "agy:mcp-server::ok": false
+        }
+      },
+      "removedHooks": {}
+    }
+  },
+  "secondInvalid": {
+    "preview": {
+      "provider": "agy",
+      "edits": [
+        {
+          "path": "<home>/.gemini/config/mcp_config.json",
+          "summary": "set mcpServers.\"rolled-back\".disabled = true"
+        },
+        {
+          "path": "<home>/.gemini/config/config.json",
+          "summary": "set plugins.\"p\".enabled = false"
+        }
+      ],
+      "requiresNewSession": true
+    },
+    "result": {
+      "provider": "agy",
+      "ok": false,
+      "appliedItemIds": [],
+      "backups": 1,
+      "error": "Applying the change failed; no file was left half-written."
+    },
+    "files": {
+      "<home>/.gemini/config/mcp_config.json": {
+        "mcpServers": {}
+      },
+      "<home>/.gemini/config/config.json": null,
+      "<home>/.gemini/config/skills.json": null,
+      "<home>/.gemini/config/hooks.json": null,
+      "<project>/.agents/skills.json": null
+    },
+    "store": {
+      "version": 1,
+      "intents": {
+        "agy": {
+          "agy:mcp-server::ok": false
+        }
+      },
+      "removedHooks": {}
+    }
+  },
+  "secondFails": {
+    "thrown": "EISDIR: illegal operation on a directory, read",
+    "files": {
+      "<home>/.gemini/config/mcp_config.json": {
+        "mcpServers": {
+          "first": {
+            "disabled": true
+          }
+        }
+      },
+      "<home>/.gemini/config/config.json": "<directory>",
+      "<home>/.gemini/config/skills.json": null,
+      "<home>/.gemini/config/hooks.json": null,
+      "<project>/.agents/skills.json": null
+    },
+    "store": {
+      "version": 1,
+      "intents": {
+        "agy": {
+          "agy:mcp-server::ok": false
+        }
+      },
+      "removedHooks": {}
+    }
+  },
+  "nothing": {
+    "preview": {
+      "provider": "agy",
+      "edits": [],
+      "requiresNewSession": true
+    },
+    "result": {
+      "provider": "agy",
+      "ok": false,
+      "appliedItemIds": [],
+      "backups": 0,
+      "error": "Nothing to change."
+    },
+    "files": {
+      "<home>/.gemini/config/mcp_config.json": {
+        "mcpServers": {
+          "first": {
+            "disabled": true
+          }
+        }
+      },
+      "<home>/.gemini/config/config.json": "<directory>",
+      "<home>/.gemini/config/skills.json": null,
+      "<home>/.gemini/config/hooks.json": null,
+      "<project>/.agents/skills.json": null
+    },
+    "store": {
+      "version": 1,
+      "intents": {
+        "agy": {
+          "agy:mcp-server::ok": false
+        }
+      },
+      "removedHooks": {}
+    }
+  },
+  "builtinSkill": {
+    "thrown": "Skill b from source builtin cannot be toggled",
+    "files": {
+      "<home>/.gemini/config/mcp_config.json": {
+        "mcpServers": {
+          "first": {
+            "disabled": true
+          }
+        }
+      },
+      "<home>/.gemini/config/config.json": "<directory>",
+      "<home>/.gemini/config/skills.json": null,
+      "<home>/.gemini/config/hooks.json": null,
+      "<project>/.agents/skills.json": null
+    },
+    "store": {
+      "version": 1,
+      "intents": {
+        "agy": {
+          "agy:mcp-server::ok": false
+        }
+      },
+      "removedHooks": {}
+    }
+  }
+}
