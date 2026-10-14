@@ -59,6 +59,7 @@ import { atlasGuard } from '../terminal/atlasGuard';
 import { decideViewerVisibility } from '../terminal/viewerVisibility';
 import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog, describeDeclinedKey, readXtermCompositionState } from '../terminal/deadInputWatchdog';
+import { createDeadWheelWatchdog, readXtermMouseEncoding } from '../terminal/deadWheelWatchdog';
 import { formatModifiers, modifiersOf, sharedModifierPressTracker } from '../terminal/modifierPressTracker';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
@@ -1699,6 +1700,41 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     };
     terminal.textarea?.addEventListener('keydown', onWatchdogKeyDown);
 
+    // Diagnostic-only dead-wheel watchdog (#1843): wheel notches over a pane
+    // whose app tracks the mouse, none of which reached the PTY. The line says
+    // whether xterm sent the reports through onBinary (DEFAULT encoding, which
+    // wmux does not forward), the #1794 guard dropped them, or neither. It
+    // attempts no recovery.
+    const deadWheelWatchdog = createDeadWheelWatchdog({
+      report: (r) => {
+        const id = ptyIdRef.current;
+        const agent = (id ? useStore.getState().surfaceAgent[id]?.slug : undefined) ?? 'none';
+        console.warn(
+          `[wmux:dead-wheel] pty=${id} ${r.wheelCount} wheels in ${r.spanMs}ms reached no onData ` +
+          `tracking=[${r.tracking.join(',')}] encoding=[${r.encodings.join(',')}] buffer=[${r.buffers.join(',')}] ` +
+          `onBinary=${r.binaryCount} guardDropped=${r.guardDropped} agent=${agent}`,
+        );
+      },
+    });
+    const onBinaryDisposable = terminal.onBinary(() => deadWheelWatchdog.onBinary());
+    // Capture on xterm's own element: runs before xterm's wheel listener (so
+    // before its report), after the alt-screen wheel mapping on the container
+    // (whose preventDefault marks the wheels it took). Passive: it only reads.
+    const onWatchdogWheel = (e: Event): void => {
+      const we = e as WheelEvent;
+      deadWheelWatchdog.onWheel({
+        deltaY: we.deltaY,
+        deltaMode: we.deltaMode,
+        modified: we.ctrlKey || we.altKey || we.shiftKey || we.metaKey,
+        defaultPrevented: we.defaultPrevented,
+        tracking: (terminal as unknown as { modes?: { mouseTrackingMode?: string } })
+          .modes?.mouseTrackingMode ?? 'none',
+        encoding: readXtermMouseEncoding(terminal),
+        buffer: terminal.buffer.active.type,
+      });
+    };
+    terminal.element?.addEventListener('wheel', onWatchdogWheel, { capture: true, passive: true });
+
     // Paint the container backdrop with the xterm theme background so the 4px
     // padding (and the sub-cell rounding gap xterm leaves around its grid) fades
     // into the terminal content instead of exposing the app's --bg-base behind
@@ -2191,6 +2227,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const noteUserKeystroke = (data: string) => {
       useStore.getState().clearResumeHint(ptyId);
       deadInputWatchdog.onData();
+      deadWheelWatchdog.onData();
       noteTerminalInput(terminal);
       if (interruptKeystrokes.observe(ptyId, data)) {
         useStore.getState().clearSurfaceTurnOpen(ptyId);
@@ -2682,7 +2719,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // #1794: a reset is owed for leaked mouse / focus modes but has not
       // applied yet (process truth pending, or queued behind output): the
       // reports are the dead TUI's, not the shell's. Before anything else.
-      if (promptModeGuard.dropsReport(data)) return;
+      if (promptModeGuard.dropsReport(data)) {
+        deadWheelWatchdog.onGuardDrop();
+        return;
+      }
       // X6 ②: the user is driving this shell themselves — retract any pending
       // resume offer so the pill can't fire into a session they've moved on in.
       //
@@ -3467,6 +3507,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       detachAltScreenWheel();
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
+      terminal.element?.removeEventListener('wheel', onWatchdogWheel, true);
       terminal.element?.removeEventListener('contextmenu', onTerminalContextMenu);
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
@@ -3476,6 +3517,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       compositionCommitGate.dispose();
       imeAnchor.dispose();
       deadInputWatchdog.dispose();
+      deadWheelWatchdog.dispose();
+      onBinaryDisposable.dispose();
       autoCopy.dispose();
       selectionDisposable.dispose();
       charSizeDisposable?.dispose();
