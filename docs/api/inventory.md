@@ -36,7 +36,7 @@ The MCP host hosts these as tools (see [MCP tools](#mcp-tools) below). An *in-pa
 | Method | Params | Tier | Notes |
 |---|---|---|---|
 | `perf.status` | `{ includeMemory?: boolean }` | internal | Reveal counters; explicit `includeMemory: true` additionally returns Electron process IDs, types and working-set byte counters. |
-| `daemon.ping` | `{ includeMemory?: boolean }` | internal | Daemon control pipe only. Explicit `includeMemory: true` adds process memory and per-session ring/output queue counters. Ordinary health probes retain the existing lightweight response. See [memory diagnostics](../performance.md#memory-diagnostics). |
+| `daemon.ping` | `{ includeMemory?: boolean, includeTerminalCore?: boolean }` | internal | Daemon control pipe only. Explicit `includeMemory: true` adds process memory and per-session ring/output queue counters. Explicit `includeTerminalCore: true` adds the requested/effective terminal engine, native availability and environment-override status; older daemons may omit this diagnostic. Ordinary health probes retain the existing lightweight response. See [memory diagnostics](../performance.md#memory-diagnostics) and [experimental terminal engine](../../bench/rust-terminal-integration.md). |
 
 ### Workspace surface
 

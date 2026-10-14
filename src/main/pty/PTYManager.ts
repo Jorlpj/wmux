@@ -3,6 +3,7 @@ import { buildWslInjection } from '../../shared/wslIntegration';
 import { BASH_INIT } from '../../daemon/shell-integration';
 import { getWmuxDir } from '../../daemon/config';
 import * as pty from 'node-pty';
+import { spawnTerminalPty, type TerminalPty } from '../../shared/terminalPty';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -327,7 +328,7 @@ export class PTYManager {
     );
     try {
       ptyProcess = spawnWithConptyPolicy(
-        (useBundled) => pty.spawn(shell, spawnArgs, {
+        (useBundled) => spawnTerminalPty(shell, spawnArgs, {
           name: 'xterm-256color',
           cols: options?.cols || 80,
           rows: options?.rows || 24,
@@ -335,7 +336,7 @@ export class PTYManager {
           env: hookInjection.env,
           useConpty: true,
           ...(useBundled ? { useConptyDll: true } : {}),
-        }),
+        }, pty.spawn),
         useConptyDll,
         (level, message) => {
           if (level === 'warn') console.error(`[PTYManager] pane ${id}: ${message}`);
@@ -413,6 +414,7 @@ export class PTYManager {
     if (instance) {
       this.removePidMap(instance.process.pid);
       try { instance.process.kill(); } catch { /* already dead */ }
+      (instance.process as TerminalPty).dispose?.();
       this.onDisposeCallback?.(id);
       this.instances.delete(id);
       forgetPtyShell(id);

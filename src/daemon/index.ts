@@ -1,5 +1,6 @@
 // Must stay the first import: turns off working-directory executable lookup (Windows) before any module runs.
 import '../shared/exeSearchGuard';
+import { terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { collectDaemonMemoryDiagnostics } from './memoryDiagnostics';
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
@@ -74,10 +75,12 @@ import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import type { WebTlsConfig } from '../shared/web';
-import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
+import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
+import type { TerminalPty } from '../shared/terminalPty';
 import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, questionInFlight, renderPaneScreen } from './AwaitingScreenVerifier';
+import { snapshotRingTextUnqueued } from './nativeRingSnapshot';
 import { screenShowsAgentDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
 import { readPendingToolUse } from './transcript/pendingToolUse';
@@ -205,6 +208,7 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
 import { deliverCallerNudge } from './callerNudgeDelivery';
+import { stopAgentTree } from './agentStop';
 import { UsageLimitRegistry } from './usageLimit/UsageLimitRegistry';
 import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
 import { USAGE_LIMIT_CONTINUE_PROMPT, type PaneUsageLimitPatch } from '../shared/usageLimit';
@@ -582,14 +586,13 @@ function queuedTextSnapshot(sessionManager: DaemonSessionManager, sessionId: str
   return enqueueSnapshotJob(async () => {
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return null;
-    return generateTextSnapshotUnqueued({
+    return snapshotRingTextUnqueued(managed.ringBuffer, managed.bridge.outputModes, {
       // Dims backstop parity with the attach flush (?? 80 / ?? 24): a recovered
       // session may not have real dims yet, and a 0-wide headless terminal would
       // fail soft instead of reading.
       cols: managed.meta.cols ?? 80,
       rows: managed.meta.rows ?? 24,
       scrollback,
-      initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
     });
   });
 }
@@ -2429,6 +2432,8 @@ function registerRpcHandlers(
       cwd: p.cwd,
       env: p.env,
       wslAccountLogin: p.wslAccountLogin,
+      // Spawn-only (see DaemonCreateSessionParams.secretEnv): never on meta.
+      ...(p.secretEnv !== undefined ? { secretEnv: p.secretEnv } : {}),
       cols: p.cols,
       rows: p.rows,
       agent: p.agent,
@@ -2762,13 +2767,21 @@ function registerRpcHandlers(
       // bracketed-paste newlines; only the submitted CR/LF re-arms running.
       pipe.onInput((data: Buffer) => {
         const input = data.toString();
-        managed.ptyProcess.write(input);
+        try { managed.ptyProcess.write(data); }
+        catch (error) {
+          if (error instanceof Error && error.message.startsWith('PTY_BACKPRESSURE')) return false;
+          throw error;
+        }
         managed.bridge.noteInput(input);
+        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= 6 * 1024 * 1024) pipe.setInputPaused(true);
       });
+      const inputDrain = (managed.ptyProcess as TerminalPty).onInputDrain?.(() => pipe.setInputPaused(false));
+      if (inputDrain) pipe.setInputDrainSubscription(() => inputDrain.dispose());
 
       try {
         await pipe.start();
       } catch (err) {
+        inputDrain?.dispose();
         managed.bridge.removeListener('data', onData);
         sessionDataListeners.delete(p.id);
         sessionPipes.delete(p.id);
@@ -5312,6 +5325,7 @@ function registerRpcHandlers(
     // PR5 scope; exposing the value is PR5's part).
     return {
       status: 'ok',
+      ...(params?.includeTerminalCore === true ? { terminalCore: terminalCoreRuntime() } : {}),
       pid: process.pid,
       uptime,
       sessions: sessions.length,
@@ -7313,6 +7327,7 @@ function logExitHandoff(via: string): void {
 // === Main entry point ===
 
 async function main(): Promise<void> {
+  terminalCoreSelection();
   const startTime = Date.now();
   markDaemonBoot('main-start');
   log('info', `wmux-daemon starting (PID ${process.pid})`);
@@ -8157,6 +8172,27 @@ async function main(): Promise<void> {
       && !!sessionManager.getSession(id)?.meta.wslTarget
       && agentProcessTracker.hasLiveWslAgent(id);
     return { live };
+  });
+  // main's stop of a factory worker whose task ended: the pane's verified
+  // claude and everything below it stop; the shell, the session and its
+  // resume binding stay (agentStop.ts). The app's own process only.
+  pipeServer.onRpc('session.stopAgent', async (rawParams, ctx) => {
+    if (!pipeServer.isFirstParty(ctx.clientId)) return { ok: false, code: 'not_authorized' };
+    const id = typeof (rawParams as { sessionId?: unknown }).sessionId === 'string'
+      ? (rawParams as { sessionId: string }).sessionId
+      : '';
+    const managed = id ? sessionManager.getSession(id) : undefined;
+    if (!managed) return { ok: false, code: 'no_session' };
+    if (managed.meta.wslTarget || managed.meta.exec) return { ok: false, code: 'unsupported' };
+    try {
+      return await stopAgentTree({
+        tree: () => agentProcessTracker.agentProcessTree(id, 'claude'),
+        stillRunning: (entries) => agentProcessTracker.stillRunning(entries),
+        kill: (pid, signal) => process.kill(pid, signal),
+      });
+    } catch {
+      return { ok: false, code: 'unknown' };
+    }
   });
   // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
   // inputs change (attribution completes; a watched process dies) while no

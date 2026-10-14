@@ -146,3 +146,6 @@ vite.*.dev.tmp.config.ts
 # Local investigation write-ups (never commit) — see the plans/ note above.
 FIX_REPORT.md
 EPIPE_ROOT_CAUSE.md
+
+# Temporary native terminal verifier bundles
+.native-core-verify-*/

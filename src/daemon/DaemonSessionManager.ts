@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
+import { spawnTerminalPty, ptyBackend, type TerminalPty } from '../shared/terminalPty';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,6 +23,7 @@ import { buildExecArgs } from './execWrapper';
 import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 import { buildSafeChildEnv, isNestingMarker } from '../shared/envFilter';
+import { sanitizeSecretEnv } from '../shared/botSecret';
 import { withoutExeSearchGuard } from '../shared/exeSearch';
 import { CLAUDE_SANDBOXED_ENV } from '../shared/agentFirstRun';
 import { isMac, parseWindowsBuildNumber } from '../shared/platform';
@@ -386,6 +388,14 @@ export class DaemonSessionManager extends EventEmitter {
      * meta.env) reproduce the exact create-time environment.
      */
     env?: Record<string, string>;
+    /**
+     * A bot worker's named secrets: added to the spawned process's
+     * environment ONLY — never to `meta.env`, so they are not persisted by
+     * buildState, not returned by a session read and not replayed by a
+     * recovery or a supervised restart (which never pass this). Validated
+     * again here (sanitizeSecretEnv); a WSL shell is refused.
+     */
+    secretEnv?: Record<string, string>;
     cols?: number;
     rows?: number;
     agent?: { role: string; teamId: string; displayName: string };
@@ -496,6 +506,14 @@ export class DaemonSessionManager extends EventEmitter {
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
     const cwd = wsl?.cwd ?? (params.cwd ? expandTilde(params.cwd) : os.homedir());
     const hostCwd = wsl ? os.homedir() : cwd;
+    // A bot worker's secrets: validated again here, and never for WSL (the
+    // spawn env does not cross into the distro without WSLENV).
+    let secretEnv: Record<string, string> | null = null;
+    if (params.secretEnv !== undefined) {
+      secretEnv = sanitizeSecretEnv(params.secretEnv);
+      if (!secretEnv) throw new Error('Invalid session secretEnv');
+      if (wsl || isWslShell(cmd)) throw new Error('secretEnv is not supported for a WSL shell');
+    }
 
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
@@ -658,15 +676,17 @@ export class DaemonSessionManager extends EventEmitter {
       // broken" report diagnosable — they say which backend actually started,
       // on every spawn, and name any demotion.
       ptyProcess = spawnWithConptyPolicy(
-        (useBundled) => pty.spawn(cmd, spawnArgs, {
+        (useBundled) => spawnTerminalPty(cmd, spawnArgs, {
           name: 'xterm-256color',
           cols,
           rows,
           cwd: hostCwd,
-          env,
+          // A worker's secrets reach the process only; meta.env below is
+          // `env` itself, without them.
+          env: secretEnv ? { ...env, ...secretEnv } : env,
           useConpty: true,
           ...(useBundled ? { useConptyDll: true } : {}),
-        }),
+        }, pty.spawn),
         useConptyDll,
         (level, message) => {
           const line = `[DaemonSessionManager] session ${params.id}: ${message}`;
@@ -749,7 +769,7 @@ export class DaemonSessionManager extends EventEmitter {
     const bufferSize = this.config
       ? this.config.session.bufferSizeMb * 1024 * 1024
       : DEFAULT_BUFFER_SIZE;
-    const ringBuffer = new RingBuffer(bufferSize);
+    const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess));
     // Replays parse each stretch of the ring at the size it was written at.
     // Recovered scrollback below is assumed to be at the spawn size.
     ringBuffer.noteGeometry(cols, rows);
@@ -891,7 +911,7 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:title', payload);
     });
 
-    bridge.on('data', () => {
+    bridge.on('outputActivity', () => {
       meta.lastActivity = new Date().toISOString();
     });
 
@@ -1003,6 +1023,8 @@ export class DaemonSessionManager extends EventEmitter {
     } catch {
       /* already dead */
     }
+    (managed.ptyProcess as TerminalPty).dispose?.();
+    managed.ringBuffer.dispose();
     this.sessions.delete(id);
     this.emit('session:destroyed', { id });
   }
@@ -1023,6 +1045,7 @@ export class DaemonSessionManager extends EventEmitter {
     if (managed.meta.state !== 'dead') {
       throw new Error(`removeTombstone('${id}'): session is '${managed.meta.state}', not 'dead'`);
     }
+    managed.ringBuffer.dispose();
     this.sessions.delete(id);
     return true;
   }
