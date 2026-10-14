@@ -421,6 +421,15 @@ fi
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
     ...(mcpEntry ? ['WMUX_WSL_MCP/u', 'WMUX_WSL_MCP_CONFIG/p'] : []),
   ];
+  // Account selection must reach the Linux CLI too. Translate Windows account
+  // directories, but keep an explicit Linux profile path as-is. Do not send
+  // that Linux spelling back to the Windows hook/MCP runtime.
+  for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR']) {
+    const home = env[key];
+    if (!home) continue;
+    const windowsPath = /^[a-z]:[\\/]/i.test(home) || home.startsWith('\\\\') || home.startsWith('//');
+    entries.push(`${key}/${windowsPath ? 'pu' : 'u'}`);
+  }
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);
   // WSL runs bash explicitly so --rcfile reaches Linux, never wsl.exe. The
   // interactive init sources ~/.bashrc first. Exec units avoid startup output.

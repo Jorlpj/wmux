@@ -60,6 +60,59 @@ describe('WSL per-launch Claude integration', () => {
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8')).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"');
   });
 
+  describe('account homes across the Windows/WSL boundary', () => {
+    function inject(env: Record<string, string>) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-account-')); dirs.push(dir);
+      return buildWslInjection({
+        target: { distribution: 'Ubuntu', user: 'developer' }, cwd: '/home/developer',
+        env, integrationDir: dir, bashInit: '', mcpEntryPath: null,
+      });
+    }
+
+    it.each(['CODEX_HOME', 'CLAUDE_CONFIG_DIR'])('transports a selected Windows %s and translates its path', (key) => {
+      const home = "C:\\account profiles\\it's selected";
+      const env = { [key]: home, WSLENV: `MY_VAR/p:${key}/w` };
+      const injected = inject(env);
+      expect(injected.env[key]).toBe(home);
+      expect(injected.env.WSLENV.split(':')).toContain(`${key}/pu`);
+      expect(injected.env.WSLENV.split(':')).not.toContain(`${key}/w`);
+      expect(injected.env.WSLENV.split(':')).toContain('MY_VAR/p');
+      expect(env.WSLENV).toBe(`MY_VAR/p:${key}/w`);
+    });
+
+    it.each(['CODEX_HOME', 'CLAUDE_CONFIG_DIR'])('preserves an explicit Linux %s without path translation', (key) => {
+      const home = "/home/developer/account profiles/it's selected";
+      const injected = inject({ [key]: home, WSLENV: `${key}/p:OTHER/u` });
+      expect(injected.env[key]).toBe(home);
+      expect(injected.env.WSLENV.split(':')).toContain(`${key}/u`);
+      expect(injected.env.WSLENV.split(':')).not.toContain(`${key}/p`);
+      expect(injected.env.WSLENV.split(':')).toContain('OTHER/u');
+    });
+
+    it.each(['D:/account profiles/selected', '\\\\server\\share\\selected', '//server/share/selected'])(
+      'translates the Windows path %s', (home) => {
+        expect(inject({ CODEX_HOME: home }).env.WSLENV.split(':')).toContain('CODEX_HOME/pu');
+      },
+    );
+
+    it('keeps two launches on their selected accounts', () => {
+      const first = inject({ CODEX_HOME: 'C:\\accounts\\one', CLAUDE_CONFIG_DIR: '/home/developer/claude-one' });
+      const second = inject({ CODEX_HOME: 'C:\\accounts\\two', CLAUDE_CONFIG_DIR: '/home/developer/claude-two' });
+      expect(first.env.CODEX_HOME).toBe('C:\\accounts\\one');
+      expect(second.env.CODEX_HOME).toBe('C:\\accounts\\two');
+      expect(first.env.CLAUDE_CONFIG_DIR).toBe('/home/developer/claude-one');
+      expect(second.env.CLAUDE_CONFIG_DIR).toBe('/home/developer/claude-two');
+      for (const launched of [first, second]) {
+        expect(launched.env.WSLENV.split(':')).toEqual(expect.arrayContaining(['CODEX_HOME/pu', 'CLAUDE_CONFIG_DIR/u']));
+      }
+    });
+
+    it.each([{}, { CODEX_HOME: '', CLAUDE_CONFIG_DIR: '' }])('does not introduce absent or empty account homes', (env) => {
+      const injected = inject(env);
+      expect(injected.env.WSLENV.split(':').some((entry) => ['CODEX_HOME', 'CLAUDE_CONFIG_DIR'].includes(entry.split('/')[0]))).toBe(false);
+    });
+  });
+
   it('mounts the Windows wmux MCP server per launch, and skips it without a bundle', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-mcp-')); dirs.push(dir);
     const base = { target: { distribution: 'Ubuntu', user: 'developer' }, cwd: '/home/developer',
