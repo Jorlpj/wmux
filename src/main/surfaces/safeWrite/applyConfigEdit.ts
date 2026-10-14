@@ -50,7 +50,9 @@ export function applyConfigEdit(options: ApplyConfigEditOptions): ApplyConfigEdi
     } catch (err) {
       try {
         fs.unlinkSync(options.path);
-      } catch {}
+      } catch {
+        // Best effort: the error being rethrown below is the one that matters.
+      }
       throw err;
     }
 
@@ -88,7 +90,9 @@ export function applyConfigEdit(options: ApplyConfigEditOptions): ApplyConfigEdi
   } catch (err) {
     try {
       writeFileAtomic(options.path, currentText);
-    } catch {}
+    } catch {
+      // Best effort: the error being rethrown below is the one that matters.
+    }
     throw err;
   }
 

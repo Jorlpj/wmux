@@ -2765,7 +2765,7 @@ function registerRpcHandlers(
       // Stop existing SessionPipe if still listening (prevents EADDRINUSE on reconnect)
       const existingPipe = sessionPipes.get(p.id);
       if (existingPipe) {
-        await existingPipe.stop().catch(() => {});
+        await existingPipe.stop().catch(() => undefined);
         sessionPipes.delete(p.id);
       }
 
@@ -6389,7 +6389,7 @@ function wireEvents(
     try {
       const pipe = sessionPipes.get(payload.id);
       if (pipe) {
-        pipe.stop().catch(() => {});
+        pipe.stop().catch(() => undefined);
         sessionPipes.delete(payload.id);
       }
     } catch (err) {
@@ -6483,7 +6483,7 @@ function wireEvents(
     try {
       const pipe = sessionPipes.get(payload.id);
       if (pipe) {
-        pipe.stop().catch(() => {});
+        pipe.stop().catch(() => undefined);
         sessionPipes.delete(payload.id);
       }
     } catch (err) {
@@ -7267,7 +7267,7 @@ async function shutdown(
   // Clean up all session pipes
   const pipeStopsStart = phaseStartedAt();
   const pipeStops = Array.from(sessionPipes.values()).map((pipe) =>
-    pipe.stop().catch(() => {}),
+    pipe.stop().catch(() => undefined),
   );
   await Promise.all(pipeStops);
   sessionPipes.clear();
@@ -7341,7 +7341,7 @@ async function shutdown(
   // still needs the pipe to flush its ack.
   if (!opts.skipPipeStop) {
     const pipeServerStopStart = phaseStartedAt();
-    await pipeServer.stop().catch(() => {});
+    await pipeServer.stop().catch(() => undefined);
     phaseLog('pipeServerStop', pipeServerStopStart);
   }
 

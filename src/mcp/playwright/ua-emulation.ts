@@ -167,7 +167,7 @@ async function applyToPage(
     const reapply = (): void => {
       const live = state.sessions.get(page);
       if (!live) return;
-      void sendOverrides(live, state).catch(() => {});
+      void sendOverrides(live, state).catch(() => undefined);
     };
     state.onNavigated.set(page, reapply);
     page.on('framenavigated', (frame) => {
@@ -189,9 +189,9 @@ async function applyToPage(
       if (realUserAgent) {
         await loose(session)
           .send('Emulation.setUserAgentOverride', buildUserAgentOverride(realUserAgent))
-          .catch(() => {});
+          .catch(() => undefined);
       }
-      await session.detach().catch(() => {});
+      await session.detach().catch(() => undefined);
     }
     return false;
   }
@@ -219,7 +219,7 @@ export async function applyUserAgentEmulation(
     ...(metrics && { metrics }),
     sessions: new Map(),
     onNavigated: new Map(),
-    onPage: () => {},
+    onPage: () => undefined,
   };
   state.onPage = (opened: Page) => {
     void applyToPage(context, opened, state);
@@ -243,7 +243,7 @@ export async function applyUserAgentEmulation(
   // back to the host's while the UA string, pixel ratio and touch points all
   // held, which is precisely the disagreement the preset removes.
   const primary = state.sessions.get(page);
-  if (primary) await sendOverrides(primary, state).catch(() => {});
+  if (primary) await sendOverrides(primary, state).catch(() => undefined);
   return true;
 }
 
@@ -270,27 +270,27 @@ export async function clearUserAgentEmulation(context: BrowserContext): Promise<
     if (realUserAgent) {
       await loose(session)
         .send('Emulation.setUserAgentOverride', buildUserAgentOverride(realUserAgent))
-        .catch(() => {});
+        .catch(() => undefined);
     }
     if (state.metrics) {
       // Undo the physical half too. A reset that restored the desktop UA but
       // left devicePixelRatio 3 and five touch points behind would be the
       // same contradiction the preset path exists to remove, only pointing
       // the other way.
-      await loose(session).send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+      await loose(session).send('Emulation.clearDeviceMetricsOverride').catch(() => undefined);
       // No maxTouchPoints — see the note in applyMetrics: 0 is refused by CDP
       // and the catch below would hide it, leaving the touchscreen installed.
       await loose(session)
         .send('Emulation.setTouchEmulationEnabled', { enabled: false })
-        .catch(() => {});
+        .catch(() => undefined);
       // Clearing the override drops the viewport emulation Playwright thinks
       // it still has, so its cached size — the one screenshots clip to and
       // coordinate clicks are scaled by — would describe a window that no
       // longer exists. Writing the size back re-syncs both sides.
       const size = page.viewportSize();
-      if (size) await page.setViewportSize(size).catch(() => {});
+      if (size) await page.setViewportSize(size).catch(() => undefined);
     }
-    await session.detach().catch(() => {});
+    await session.detach().catch(() => undefined);
   }
   state.sessions.clear();
   state.onNavigated.clear();
@@ -318,7 +318,7 @@ export async function reassertUserAgentEmulation(page: Page): Promise<void> {
   if (!state) return;
   const session = state.sessions.get(page);
   if (!session) return;
-  await loose(session).send('Emulation.setUserAgentOverride', state.override).catch(() => {});
+  await loose(session).send('Emulation.setUserAgentOverride', state.override).catch(() => undefined);
 }
 
 /**
@@ -369,7 +369,7 @@ async function realUserAgentFor(context: BrowserContext): Promise<string | undef
       };
       return version?.userAgent;
     } finally {
-      await session.detach().catch(() => {});
+      await session.detach().catch(() => undefined);
     }
   } catch {
     return undefined;

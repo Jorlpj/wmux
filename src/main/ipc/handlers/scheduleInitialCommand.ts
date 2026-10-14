@@ -44,7 +44,7 @@ export interface ScheduledInitialCommand {
   onFirstData: () => void;
 }
 
-const noop = () => {};
+const noop = () => undefined;
 
 export function scheduleInitialCommand(
   command: string | undefined,

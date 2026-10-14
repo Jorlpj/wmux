@@ -171,7 +171,7 @@ async function recordNavigationFailure(
   }
   // The race leaves `write` unhandled when the timeout won, and an unhandled
   // rejection would be reported against a navigation that already returned.
-  write.catch(() => {});
+  write.catch(() => undefined);
 }
 
 function tabsToolError(result: BrowserTabsErrorResult) {
