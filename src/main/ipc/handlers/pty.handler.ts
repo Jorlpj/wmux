@@ -112,6 +112,7 @@ interface PtyCreateSupervisionInput {
 }
 
 type PtyCreateOptions = {
+  wslAccountLogin?: 'claude' | 'codex';
   shell?: string;
   cwd?: string;
   /** Dead-session replacement candidates. WSL validates inside its distro;
@@ -581,6 +582,7 @@ export function registerPTYHandlers(
           cols: options?.cols || 80,
           rows: options?.rows || 24,
           env: resolvedEnv,
+          wslAccountLogin: options?.wslAccountLogin,
           ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
           ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
         }, isWslShell(shell) ? { timeoutMs: WSL_RPC_TIMEOUT_MS } : undefined);
@@ -706,11 +708,11 @@ export function registerPTYHandlers(
       // a spawn option. exec/supervision are daemon-only (handled above) and
       // must not reach ptyManager.create, so build a clean spawn-options object
       // from only the local-relevant fields instead of spreading the payload.
-      const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind } = options ?? {};
+      const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLogin } = options ?? {};
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
       const wslArgs = wslDistroArgs(shell, getDefaultWslDistro());
-      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
+      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslAccountLogin });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = instance.cwd || effectiveCwd || homedir();

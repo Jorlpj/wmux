@@ -2428,6 +2428,7 @@ function registerRpcHandlers(
       args: p.args,
       cwd: p.cwd,
       env: p.env,
+      wslAccountLogin: p.wslAccountLogin,
       cols: p.cols,
       rows: p.rows,
       agent: p.agent,

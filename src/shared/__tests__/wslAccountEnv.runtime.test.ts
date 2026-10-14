@@ -12,6 +12,27 @@ import { buildWslInjection } from '../wslIntegration';
 const enabled = process.platform === 'win32' && process.env.WMUX_TEST_WSL === '1';
 
 describe.runIf(enabled)('WSL account-home transport', () => {
+  it.each(['CODEX_HOME', 'CLAUDE_CONFIG_DIR'])('leaves an ordinary pane on its Linux %s', (key) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-ordinary-'));
+    const wsl = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe');
+    const distroArgs = process.env.WMUX_TEST_WSL_DISTRO ? ['-d', process.env.WMUX_TEST_WSL_DISTRO] : [];
+    const env = { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows', PATH: process.env.PATH ?? '', WMUX_SHELL_INTEGRATION: '0' };
+    const execute = (args: string[]) => execFileSync(wsl, [...distroArgs, '--exec', ...args], {
+      env, encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    });
+    try {
+      const [distribution, user] = execute(['/bin/sh', '-c', 'printf "%s\\0%s" "$WSL_DISTRO_NAME" "$(id -un)"']).split('\0');
+      const initialCommand = `printf '%s' "\${${key}-}"`;
+      const baseline = execute(['/bin/sh', '-c', initialCommand]);
+      const cwd = execute(['wslpath', '-u', dir]).trim();
+      const injected = buildWslInjection({
+        target: { distribution, user }, cwd, integrationDir: dir,
+        env: { ...env, [key]: dir }, bashInit: '', execCommand: initialCommand, mcpEntryPath: null,
+      });
+      expect(execFileSync(wsl, injected.args, { env: injected.env, encoding: 'utf8', timeout: 30_000, windowsHide: true })).toBe(baseline);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }, 60_000);
+
   it.each([
     ['CODEX_HOME', 'auth.json', 'windows'],
     ['CLAUDE_CONFIG_DIR', '.credentials.json', 'windows'],
@@ -37,6 +58,7 @@ describe.runIf(enabled)('WSL account-home transport', () => {
       const initialCommand = `set -eu; printf '%s' "$${key}"; printf '{"fixture":true}' > "$${key}/${file}"`;
       const injected = buildWslInjection({
         target: { distribution, user }, cwd: linuxDir, integrationDir: dir,
+        wslAccountLogin: key === 'CODEX_HOME' ? 'codex' : 'claude',
         env: {
           SystemRoot: process.env.SystemRoot ?? 'C:\\Windows',
           PATH: process.env.PATH ?? '',

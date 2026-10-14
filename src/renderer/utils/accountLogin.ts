@@ -87,6 +87,7 @@ export function loginInitialCommand(vendor: LoginVendor): string {
 async function openLoginTab(req: AccountLoginRequest): Promise<LoginTab | null> {
   return openTerminalTab({
     env: { [loginEnvKey(req.vendor)]: req.configDir },
+    wslAccountLogin: req.vendor,
     initialCommand: loginInitialCommand(req.vendor),
     title: t('accounts.loginTabTitle', { name: req.name }),
   });
@@ -97,6 +98,7 @@ async function openLoginTab(req: AccountLoginRequest): Promise<LoginTab | null> 
  *  has no login subcommand: the user signs in from agy's own start screen. */
 export async function openTerminalTab(req: {
   env?: Record<string, string>;
+  wslAccountLogin?: LoginVendor;
   initialCommand: string;
   title: string;
 }): Promise<LoginTab | null> {
@@ -122,6 +124,7 @@ export async function openTerminalTab(req: {
         cwd,
         spawnKind: 'user-shell' as const,
         ...(req.env ? { env: req.env } : {}),
+        ...(req.wslAccountLogin ? { wslAccountLogin: req.wslAccountLogin } : {}),
         initialCommand: req.initialCommand,
       },
       state.defaultShell,
