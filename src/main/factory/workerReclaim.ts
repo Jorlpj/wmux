@@ -644,6 +644,14 @@ export interface WorkerResumePorts {
   rebindTask?: (taskId: string, workspaceId: string) => Promise<{ from: number; to: number } | null>;
   /** Whether a folder exists (default: fs). */
   folderExists?: (dir: string) => boolean;
+  /** Put the task's folder back at this path when its end removed it
+   *  (taskFolderCleanup.ts: the worktree on its kept branch, or an empty
+   *  research folder); true when it is there now. Absent: a removed folder
+   *  refuses the resume. */
+  restoreFolder?: (taskId: string, folder: string) => Promise<boolean>;
+  /** Hold the task's folder for the resume (taskFolderCleanup.ts
+   *  holdTaskFolder): no cleanup removes it meanwhile. Returns the release. */
+  holdFolder?: (taskId: string) => Promise<() => void>;
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   changed?: () => void;
   now?: () => number;
@@ -713,6 +721,14 @@ export async function resumeWorker(
   if (resuming.has(taskId)) return refuse('busy', 'this worker is being resumed already');
   if (clearing.has(taskId)) return refuse('busy', 'this worker\'s pane is being closed; try again in a moment');
   resuming.add(taskId);
+  // The task's folder is held for the resume: a cleanup cannot remove it
+  // between the checks below and the worker's pane opening in it.
+  let release: (() => void) | null = null;
+  try {
+    release = (await ports.holdFolder?.(taskId)) ?? null;
+  } catch {
+    release = null;
+  }
   const booking = { botId: '', done: true };
   const unbook = (): void => {
     if (booking.done) return;
@@ -732,6 +748,7 @@ export async function resumeWorker(
     });
   } finally {
     unbook();
+    release?.();
     resuming.delete(taskId);
   }
 }
@@ -825,6 +842,9 @@ async function respawnOnce(
   } catch {
     exists = false;
   }
+  // A folder the task's end removed comes back at the same path, so the
+  // agent's per-folder conversation resumes there.
+  if (!exists && ports.restoreFolder) exists = await ports.restoreFolder(rec.taskId, pane.cwd).catch(() => false);
   if (!exists) return refuse('worktree_gone', 'the task\'s worktree is gone, so there is no folder to resume the worker in; start a new task instead');
   // Another pane already runs an agent in the worktree: a second process on
   // the same conversation is never started.
