@@ -281,6 +281,28 @@ export function conversationCards(cards: readonly RoomCard[], botId: string, opt
   return cards.filter((c) => mine.has(c) || legacy.has(c));
 }
 
+/** The bots whose running turn shows in this conversation (its busy lines):
+ *  a turn answers in the conversation its thread belongs to. A 1:1 thread,
+ *  or a thread a 1:1 started (a dispatch sent from it: another bot may run
+ *  that turn), belongs to that bot's 1:1; any other thread to the room. A
+ *  turn whose thread is not known shows wherever its bot does, and a lone
+ *  bot's 1:1 (its whole room) shows every turn of its own. Pure. */
+export function conversationTurns(conversation: Conversation, bots: readonly FactoryBotRow[], cards: readonly RoomCard[], threads: ThreadsByWorkspace = {}): FactoryBotRow[] {
+  const started = dmStartedThreads(cards, threads);
+  const running = (r: FactoryBotRow): boolean => r.status?.presence === 'running';
+  /** The bot whose 1:1 the turn's thread belongs to, null for the room,
+   *  undefined when the turn names no thread. */
+  const owner = (r: FactoryBotRow): string | null | undefined => {
+    const threadId = r.status?.currentTurn?.threadId;
+    if (!threadId) return undefined;
+    return dmThreadBot(threadId) ?? started.get(threadKeyOf({ workspaceId: r.bot.workspaceId, threadId: threadId as RoomCard['threadId'] })) ?? null;
+  };
+  if (conversation.kind === 'room') return conversation.bots.filter((r) => running(r) && !owner(r));
+  const me = conversation.row;
+  const mine = running(me) && (conversation.lone || owner(me) === undefined || owner(me) === me.bot.id) ? [me] : [];
+  return [...mine, ...bots.filter((r) => r.bot.id !== me.bot.id && running(r) && owner(r) === me.bot.id)];
+}
+
 /** Whether a bot is its workspace's only one (no room row). Pure. */
 export function isLoneBot(bots: readonly FactoryBotRow[], workspaceId: string): boolean {
   return bots.filter((r) => r.bot.workspaceId === workspaceId).length < 2;

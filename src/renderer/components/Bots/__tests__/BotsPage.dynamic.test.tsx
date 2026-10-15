@@ -1273,6 +1273,44 @@ describe('Bots page', () => {
     expect(q('[data-bots-turn-stop]')).toBeNull();
   });
 
+  it('a turn shows as working in the conversation it answers in: a 1:1 turn in that 1:1, a room turn in the room', async () => {
+    const running = (threadId?: string) => {
+      bots[1] = { ...bots[1], status: { ...bots[1].status!, presence: 'running', currentTurn: { wakeId: 'w-1', startedAt: Date.now(), ...(threadId ? { threadId } : {}) }, queueDepth: 0 } };
+    };
+    running(`dm:${LEAD}`);
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    expect(q(`[data-bots-rail] [data-bots-turn="${LEAD}"]`)).not.toBeNull();
+    act(() => q('[data-bots-row="room:w1"]')!.click());
+    expect(q(`[data-bots-turn="${LEAD}"]`)).toBeNull();
+  });
+
+  it('a room turn shows in the room and not in the bot\'s 1:1', async () => {
+    bots[1] = { ...bots[1], status: { ...bots[1].status!, presence: 'running', currentTurn: { wakeId: 'w-1', startedAt: Date.now(), threadId: 'general' }, queueDepth: 0 } };
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q('[data-bots-row="room:w1"]')!.click());
+    expect(q(`[data-bots-turn="${LEAD}"]`)).not.toBeNull();
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    expect(q(`[data-bots-turn="${LEAD}"]`)).toBeNull();
+  });
+
+  it('a turn another bot runs on a dispatch sent from a 1:1 shows in that 1:1', async () => {
+    bots[2] = { ...bots[2], status: { ...bots[2].status!, presence: 'running', currentTurn: { wakeId: 'w-2', startedAt: Date.now(), threadId: 'handoff:h-1' }, queueDepth: 0 } };
+    seedRooms();
+    act(() => useStore.setState({ roomThreads: { hq: [], w1: [{ threadId: 'handoff:h-1', title: 'Check', lastAt: 1, lastSeq: 1, cardCount: 1, openQuestions: 0, lastKind: 'handoff', status: 'open', unread: null, dmBotId: LEAD }] } } as never));
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    expect(q(`[data-bots-turn="${VERIFIER}"]`)).not.toBeNull();
+    act(() => q('[data-bots-row="room:w1"]')!.click());
+    expect(q(`[data-bots-turn="${VERIFIER}"]`)).toBeNull();
+    act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    expect(q(`[data-bots-turn="${VERIFIER}"]`)).toBeNull();
+    // The page remembers the open conversation across mounts: leave the room open.
+    act(() => q('[data-bots-row="room:w1"]')!.click());
+  });
+
   it('a list row counts unread bot messages in neutral, and the orange needs-you count wins', async () => {
     cards.push(card({ workspaceId: 'w1', actor: by('w1', VERIFIER), title: 'Fresh news', at: Date.now() + 1000 }));
     seedRooms();
@@ -1293,6 +1331,21 @@ describe('Bots page', () => {
     // Reading the 1:1 to its end clears it.
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    expect(q(`[data-bots-row="bot:${VERIFIER}"] [data-bots-unread]`)).toBeNull();
+  });
+
+  it('a message that arrives in the open 1:1 is read even while the chat is scrolled up', async () => {
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    // The owner scrolled up to read history.
+    const log = q('[data-bots-messages]')!;
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(log, 'clientHeight', { configurable: true, value: 400 });
+    log.scrollTop = 0;
+    act(() => { log.dispatchEvent(new Event('scroll')); });
+    const fresh = card({ workspaceId: 'w1', actor: by('w1', VERIFIER), title: 'Fresh news', at: Date.now() + 1000 });
+    act(() => useStore.getState().applyRoomEvent({ workspaceId: 'w1', card: fresh, threadSummary: { threadId: 'general', title: 'General', lastAt: fresh.at, lastSeq: 1, cardCount: 1, openQuestions: 0, lastKind: 'report', status: 'open', unread: null } }));
     expect(q(`[data-bots-row="bot:${VERIFIER}"] [data-bots-unread]`)).toBeNull();
   });
 
