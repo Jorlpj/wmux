@@ -976,4 +976,80 @@ describe('room-wide owner messages, wake context and turn ends', () => {
     await settle();
     expect(r.adapters[0].prompts[1]).toContain('The owner woke you by hand.');
   });
+
+  it('a turn that ends with plain text hands its last words to postTurnText while the wake runs; empty, failed or interrupted turns do not', async () => {
+    const r = rig();
+    const posted: Array<{ wakeId: string; text: string; since: number; running: boolean }> = [];
+    setBotRuntimePorts({
+      postTurnText: (p, item, text, since) => { posted.push({ wakeId: item.id, text, since, running: r.runtime.currentTurn(p.id)?.wakeId === item.id }); },
+    });
+    const id = createBot(r, 'lead');
+    const startedAt = clock;
+    const one = must(r.runtime.wake(id, { text: 'hi', threadId: `dm:${id}` }));
+    await settle();
+    // Narration before a tool call is not the reply; the text after it is.
+    r.adapters[0].end([
+      { type: 'text-delta', text: 'Let me check.' },
+      { type: 'tool-start', name: 'mcp__wmux__room_read', inputSummary: '' },
+      { type: 'tool-end', name: 'mcp__wmux__room_read', ok: true },
+      { type: 'text-delta', text: 'All ' },
+      { type: 'text-delta', text: 'green.' },
+      { type: 'turn-end', sessionId: 'sess-1' },
+    ]);
+    await settle();
+    expect(posted).toEqual([{ wakeId: one.id, text: 'All green.', since: startedAt, running: true }]);
+    // No words: nothing to post.
+    r.runtime.wake(id, { text: 'again' });
+    await settle();
+    r.adapters[0].end([{ type: 'text-delta', text: '  ' }, { type: 'turn-end', sessionId: 'sess-1' }]);
+    await settle();
+    // An error ends the turn without a result.
+    r.runtime.wake(id, { text: 'fail' });
+    await settle();
+    r.adapters[0].end([{ type: 'text-delta', text: 'Half an answer' }, { type: 'error', message: 'boom' }]);
+    await settle();
+    expect(posted).toHaveLength(1);
+  });
+
+  it('only a wake answering an owner message posts its plain text; a routine, fact, handoff, intro or manual wake stays silent', async () => {
+    const r = rig();
+    const posted: string[] = [];
+    setBotRuntimePorts({ postTurnText: (_p, item) => { posted.push(item.reason.kind); } });
+    const id = createBot(r, 'lead');
+    const reasons = [
+      { kind: 'routine', routineId: 'rt-1', dueAt: clock },
+      { kind: 'facts', factIds: ['f-1'], trigger: { kind: 'pr.opened' } },
+      { kind: 'handoff', handoffId: 'h-1' },
+      { kind: 'intro' },
+      { kind: 'manual', by: 'human' },
+      { kind: 'human', text: 'Hi all', source: 'desktop', runId: 'run-c-9', room: true, clientMessageId: 'cp-room' },
+    ] as const;
+    for (const reason of reasons) {
+      must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: reason as never, priority: 0, threadId: 'general' }));
+      r.runtime.kick();
+      await settle();
+      r.adapters[0].end([{ type: 'text-delta', text: 'Nothing to add.' }, { type: 'turn-end', sessionId: 'sess-1' }]);
+      await settle();
+    }
+    // The room-wide owner message is the only one.
+    expect(posted).toEqual(['human']);
+  });
+
+  it('an interrupted turn posts nothing, nor does a post that throws fail the turn', async () => {
+    const r = rig();
+    const posted: string[] = [];
+    setBotRuntimePorts({ postTurnText: (_p, _i, text) => { posted.push(text); throw new Error('rooms down'); } });
+    const id = createBot(r, 'lead');
+    r.runtime.wake(id, { text: 'hi' });
+    await settle();
+    r.runtime.interrupt(id);
+    await settle();
+    expect(posted).toEqual([]);
+    const item = must(r.runtime.wake(id, { text: 'next' }));
+    await settle();
+    r.adapters.at(-1)?.end([{ type: 'text-delta', text: 'Done.' }, { type: 'turn-end', sessionId: 'sess-1' }]);
+    await settle();
+    expect(posted).toEqual(['Done.']);
+    expect(r.queue.list({ botId: id }).find((w) => w.id === item.id)?.state).toBe('done');
+  });
 });
