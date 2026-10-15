@@ -518,6 +518,69 @@ describe('DaemonPTYBridge turn priority', () => {
       expect(idle).toEqual([]);
     });
 
+    // The exemption above is for a cycle a hook's running edge armed. An
+    // episode that is merely still open is not one: nothing settled a
+    // submitted turn (an Esc interrupt, an agent without a Stop hook), or a
+    // passive burst (an agent's boot paint) promoted itself. Revealing such an
+    // idle pane must not light it running.
+    it('does not emit a reveal repaint after a submitted turn nothing settled', () => {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+
+      bridge.noteInput('do it\r');
+      feed(BIG);
+      expect(payloads).toHaveLength(1);
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
+      expect(bridge.isTurnOpen()).toBe(true);
+
+      bridge.noteResize();
+      feed(BIG);
+      expect(payloads).toHaveLength(1);
+    });
+
+    it('does not emit a reveal repaint after a promoted boot burst', () => {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+
+      feed(BIG);
+      expect(payloads).toHaveLength(1);
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
+      expect(bridge.isTurnOpen()).toBe(true);
+
+      bridge.noteResize();
+      feed(BIG);
+      expect(payloads).toHaveLength(1);
+    });
+
+    it('a running edge inside an already active cycle does not exempt a later reveal', () => {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+
+      feed(BIG);
+      bridge.noteAgentStatus('running', true); // the cycle is active: nothing re-armed
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
+
+      bridge.noteResize();
+      feed(BIG);
+      expect(payloads).toHaveLength(1);
+    });
+
+    it('a hook-armed cycle outlived by its turn does not exempt a reveal', () => {
+      const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
+      bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));
+
+      // The running edge armed a cycle that saw no output before the
+      // transcript closed the turn.
+      bridge.noteAgentStatus('running', true);
+      vi.advanceTimersByTime(1_000);
+      bridge.noteTranscriptTurnEnd(Date.now());
+      vi.advanceTimersByTime(PAST_GUARDS_MS);
+
+      bridge.noteResize();
+      feed(BIG);
+      expect(payloads).toEqual([]);
+    });
+
     it('never flags a burst started by submitted input', () => {
       const payloads: Array<{ sessionId: string; likelyRepaint?: boolean }> = [];
       bridge.on('active', (e: { sessionId: string; likelyRepaint?: boolean }) => payloads.push(e));

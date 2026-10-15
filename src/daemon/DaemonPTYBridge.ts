@@ -180,6 +180,8 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
+  /** The current activity cycle was armed by a hook's running edge and has not fired yet. */
+  private hookArmedCycle = false;
   private lastTurnStartedAt = 0;
 
   /**
@@ -700,6 +702,7 @@ export class DaemonPTYBridge extends EventEmitter {
       // never earn `running` back after an idle, and the roster showed idle
       // for a pane genuinely mid-turn.
       if (this.activityMonitor && this.sessionId) {
+        if (authoritative) this.hookArmedCycle = true;
         this.activityMonitor.beginTurnIfInactive(this.sessionId);
       }
       return;
@@ -722,6 +725,7 @@ export class DaemonPTYBridge extends EventEmitter {
     if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.closeTurn(!authoritative || provisional);
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     if (this.resizeGuardTimer) {
       clearTimeout(this.resizeGuardTimer);
       this.resizeGuardTimer = null;
@@ -1080,6 +1084,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.sessionId = sessionId;
     this.explicitTerminalStatus = false;
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.settledStatus = null;
@@ -1097,6 +1102,7 @@ export class DaemonPTYBridge extends EventEmitter {
     // settled this turn, byte silence is weaker evidence and must not clear the
     // explicit waiting/complete state five seconds later.
     this.idleUnsubscribe = activityMonitor.onActiveToIdle((ptyId) => {
+      this.hookArmedCycle = false;
       if (this.explicitTerminalStatus) return;
       this.emit('idle', { sessionId: ptyId, ...(this.isPreTurn() ? { preTurn: true } : {}) });
     });
@@ -1149,6 +1155,8 @@ export class DaemonPTYBridge extends EventEmitter {
       } else {
         const inputStartedTurn = this.submittedTurnPending;
         this.submittedTurnPending = false;
+        const hookArmed = this.hookArmedCycle;
+        this.hookArmedCycle = false;
 
         // Real submitted input already reset detector dedup in noteInput(). For
         // a passive startup/autonomous burst, retain the resize-redraw guard: a
@@ -1171,10 +1179,12 @@ export class DaemonPTYBridge extends EventEmitter {
             // two-minute activity window. Like the settled rejections above,
             // hand the cycle back instead of consuming it, so a real turn that
             // keeps writing past the guard window still reports running.
-            // A turn a hook already opened is exempt: its running edge armed
-            // this cycle, and handing it back would drop that signal to the
-            // byte threshold for the rest of a sparse-output turn.
-            if (!this.turnOpen) {
+            // A cycle a hook's running edge armed is exempt: handing it back
+            // would drop that signal to the byte threshold for the rest of a
+            // sparse-output turn, while that turn is still open. An episode
+            // that is merely still open (a promoted boot burst, an interrupt
+            // no Stop closed) is not.
+            if (!(hookArmed && this.turnOpen)) {
               activityMonitor.endTurn(ptyId);
               return;
             }
@@ -1588,6 +1598,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.lastEmittedOscCwd = null;
     this.explicitTerminalStatus = false;
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.inputRevision = 0;
