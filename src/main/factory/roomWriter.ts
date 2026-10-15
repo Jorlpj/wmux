@@ -36,6 +36,7 @@ import type { WakeReason } from '../../shared/wake';
 import {
   GENERAL_THREAD,
   ROOM_LIMITS,
+  dmThreadBot,
   parseThreadId,
   issueThreadId,
   prThreadId,
@@ -801,6 +802,7 @@ export class RoomWriter {
     let status: ThreadSummary['status'] = 'open';
     if (threadId !== GENERAL_THREAD && openItems === 0 && cards.some((c) => c.closes)) status = 'closed';
     else if (openItems === 0 && last && this.now() - last.at > ROOM_LIMITS.QUIET_DAYS * DAY_MS) status = 'quiet';
+    const dmBotId = state ? threadDmBot(state.cards, threadId) : null;
     return {
       threadId,
       title: threadId === GENERAL_THREAD ? threadTitle(threadId) : redactStoredSecrets(cards[0]?.title ?? threadTitle(threadId)),
@@ -811,6 +813,8 @@ export class RoomWriter {
       lastKind: last?.kind ?? 'fact',
       status,
       unread: through === undefined ? null : cards.filter((c) => c.seq > through).length,
+      ...(cards[0] ? { firstAt: cards[0].at } : {}),
+      ...(dmBotId ? { dmBotId } : {}),
     };
   }
 
@@ -831,6 +835,25 @@ export class RoomWriter {
   unload(): void {
     this.rooms.clear();
   }
+}
+
+/** The bot whose 1:1 a thread is, or started it: its own `dm:<botId>`, or a
+ *  thread one of main's cards ties to a 1:1 — the opening hop linking it
+ *  (`refs.threadId`), or the pointer card in it linking this thread. */
+function threadDmBot(cards: readonly RoomCard[], threadId: ThreadId): string | null {
+  const own = dmThreadBot(threadId);
+  if (own || threadId === GENERAL_THREAD) return own;
+  for (const c of cards) {
+    if (c.actor.kind !== 'system') continue;
+    if (c.threadId === threadId) {
+      const linked = dmThreadBot(c.refs?.threadId);
+      if (linked) return linked;
+    } else if (c.refs?.threadId === threadId) {
+      const from = dmThreadBot(c.threadId);
+      if (from) return from;
+    }
+  }
+  return null;
 }
 
 /** Keep `max` cards: open ones first, then the newest; seq order kept. */
@@ -937,11 +960,14 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
       const title = str(p.title) || 'handoff';
       const to = str(p.toLabel) || botLabel(bots, fact.ref?.botId);
       const kind = str(p.handoffKind);
+      // A thread opened from a coordinator's 1:1: the opening hop links it.
+      const openedIn = parseThreadId(p.openedIn);
+      const dmLink = openedIn && dmThreadBot(openedIn) ? { threadId: openedIn } : {};
       if (fact.kind === 'handoff.refused') {
         return {
           workspaces: [...new Set(workspaces)], threadId, kind: 'refusal',
           title: `Handoff refused (${str(p.code) || 'refused'}): ${title}`,
-          body: capBody(p.detail, 1000), refs: baseRefs,
+          body: capBody(p.detail, 1000), refs: { ...baseRefs, ...dmLink },
         };
       }
       // A room mention is the card that said it: its delivery adds no line.
@@ -953,7 +979,11 @@ export function systemCardForFact(fact: Fact, bots?: BotDirectoryApi): SystemCar
           : p.relay === true ? `${kind || 'handoff'} → ${to}: ${title} (forwarded by wmux)`
           : `${kind || 'handoff'} → ${to}: ${title}`,
         ...(kind === 'answer' ? { body: capBody(p.answer, 1000) } : {}),
-        refs: { ...baseRefs, ...(str(p.requestCardId) ? { requestCardId: str(p.requestCardId) } : {}) },
+        refs: {
+          ...baseRefs,
+          ...(str(p.requestCardId) ? { requestCardId: str(p.requestCardId) } : {}),
+          ...dmLink,
+        },
       };
     }
     case 'task.done':
