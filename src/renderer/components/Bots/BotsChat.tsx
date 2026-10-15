@@ -52,7 +52,7 @@ import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
 import Select from '../ui/Select';
 import Popover from '../ui/Popover';
-import { IconPlus } from '../icons';
+import { IconFanOut, IconPlus } from '../icons';
 import { renderBrainMarkdown, type MarkdownOptions } from '../shared/BrainMarkdown';
 import { getLocale } from '../../i18n';
 import { normalizeRepoKey } from '../../../shared/repoKey';
@@ -72,7 +72,7 @@ import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
 import BotAvatar, { botHueIndex, botIdentityColor, noteRemovedBotHues } from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
 import { awaitsApproval, conversationCards, groupViewCards, livePlanIds, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
-import { treeRowLabel } from './BotsWorkerTree';
+import BotsWorkerTree, { treeRowLabel } from './BotsWorkerTree';
 import { loadWholeThread } from './useBots';
 import { loadRoomActors } from '../../hooks/useRoomSync';
 import { useShallow } from 'zustand/react/shallow';
@@ -1815,6 +1815,56 @@ export function waitsOnOwner(card: RoomCardData, livePlans: ReadonlySet<string>)
   return card.kind === 'question' || awaitsApproval(card, livePlans);
 }
 
+/** The narrow layout's way to a bot's workers without going back to the
+ *  list (#2231): a round button right of the name pill, mirroring the back
+ *  button, that opens the bot's worker tree as a popover. Shown only in the
+ *  one-column layout (bots.css); the wide layout's list shows the tree. */
+function HeadWorkers({ rows, name, shownId, t, onOpen }: {
+  rows: readonly BotTreeRow[];
+  name: string;
+  shownId: string | null;
+  t: T;
+  onOpen: (workspaceId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (!wrapRef.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+  const label = t(open ? 'botsPage.worker.collapse' : 'botsPage.worker.expand', { name, count: rows.length });
+  const treeId = 'bots-head-workers';
+  return (
+    <span ref={wrapRef} className="wmux-bots-head-workers">
+      <button
+        ref={buttonRef}
+        type="button"
+        data-bots-head-workers
+        aria-expanded={open}
+        aria-controls={open ? treeId : undefined}
+        aria-label={label}
+        title={label}
+        onClick={() => setOpen((v) => !v)}
+        className={`wmux-bots-back wmux-bots-head-workers-button ${FOCUS_RING}`}
+      >
+        <IconFanOut size={13} />
+        <span className="tabular-nums">{rows.length}</span>
+      </button>
+      {open && (
+        <Popover
+          className="wmux-bots-head-workers-pop"
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setOpen(false); buttonRef.current?.focus(); } }}
+        >
+          <BotsWorkerTree id={treeId} rows={rows} name={name} shownId={shownId} t={t} onOpen={(workspaceId) => { setOpen(false); onOpen(workspaceId); }} />
+        </Popover>
+      )}
+    </span>
+  );
+}
+
 export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly: pausedView = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup, threadAsk }: {
   conversation: Conversation;
   roomCards: readonly RoomCardData[];
@@ -2127,6 +2177,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
           {presence && <PresenceDot presence={presence} />}
           {group && <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{conversation.bots.length === 1 ? t('botsPage.botCountOne') : t('botsPage.botCount', { count: conversation.bots.length })}</span>}
         </button>
+        {tree.length > 0 && <HeadWorkers rows={tree} name={title} shownId={shownId} t={t} onOpen={openWorker} />}
       </div>
       {profileOpen && conversation.kind === 'bot' && !removedBot && (
         <div className="wmux-bots-profile" ref={profileRef}><BotProfile row={conversation.row} workers={workers} workspaceName={workspaceName} t={t} stopPort={stopPort} jobPort={readOnly ? undefined : jobPort} adminPort={readOnly ? (jobPort?.remove ? { remove: jobPort.remove } : undefined) : jobPort} /></div>
