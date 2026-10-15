@@ -6,6 +6,7 @@ import {
   permissionFlagFor,
   mergeResumeBinding,
   isProvisionalCapture,
+  transcriptRelocated,
   normalizeResumeCwd,
   isUsableResumeBinding,
   resumeGrammarFor,
@@ -550,6 +551,34 @@ describe('isProvisionalCapture (#1624 — Codex first-turn title thread)', () =>
   it('keeps the existing Claude SessionStart rule', () => {
     const prev = binding({ transcriptPath: '/p/abc-123.jsonl' });
     expect(isProvisionalCapture(prev, binding({ sessionId: 'new-456' }))).toBe(true);
+  });
+});
+
+describe('transcriptRelocated (#2228)', () => {
+  const id = 'a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a';
+  const at = (dir: string, cwd: string) => ({ agent: 'claude', sessionId: id, cwd, transcriptPath: `${dir}\\${id}.jsonl`, ts: 1 });
+  const home = 'C:\\Users\\u\\.claude\\projects\\C--X';
+  const wt = 'C:\\Users\\u\\.claude\\projects\\C--X--claude-worktrees-w';
+
+  it('is true when EnterWorktree moved the transcript to another project folder', () => {
+    expect(transcriptRelocated(at(home, 'C:\\X'), at(wt, 'C:\\X\\.claude\\worktrees\\w'))).toBe(true);
+  });
+
+  it('is false after a Bash cd: the cwd changed but the transcript stayed', () => {
+    expect(transcriptRelocated(at(home, 'C:\\X'), at(home, 'C:\\X\\sub'))).toBe(false);
+  });
+
+  it('is false without both paths, or across sessions', () => {
+    expect(transcriptRelocated(undefined, at(wt, 'C:\\W'))).toBe(false);
+    expect(transcriptRelocated({ ...at(home, 'C:\\X'), transcriptPath: undefined }, at(wt, 'C:\\W'))).toBe(false);
+    expect(transcriptRelocated(at(home, 'C:\\X'), { ...at(wt, 'C:\\W'), sessionId: 'other' })).toBe(false);
+  });
+
+  it('handles POSIX paths', () => {
+    expect(transcriptRelocated(
+      { ...at(home, '/x'), transcriptPath: `/h/.claude/projects/-x/${id}.jsonl` },
+      { ...at(wt, '/x/w'), transcriptPath: `/h/.claude/projects/-x-w/${id}.jsonl` },
+    )).toBe(true);
   });
 });
 

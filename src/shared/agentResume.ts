@@ -347,6 +347,21 @@ export function isProvisionalCapture(prev: ResumeBinding | undefined, next: Resu
 }
 
 /**
+ * True when the agent's transcript moved to another project folder between two
+ * captures of the same session. Claude relocates the transcript when it changes
+ * its own working directory (EnterWorktree, ExitWorktree) and `--resume <id>`
+ * then only works from the new folder. A Bash-tool `cd` changes the hook's
+ * `cwd` too, but leaves the transcript where it was, so resuming still needs
+ * the original folder. Only a relocation may move the pane's cwd.
+ */
+export function transcriptRelocated(prev: ResumeBinding | undefined, next: ResumeBinding): boolean {
+  if (!prev?.transcriptPath || !next.transcriptPath) return false;
+  if (prev.agent !== next.agent || prev.sessionId !== next.sessionId) return false;
+  const folder = (p: string) => p.replace(/[\\/][^\\/]*$/, '');
+  return folder(prev.transcriptPath) !== folder(next.transcriptPath);
+}
+
+/**
  * X6 ③: merge a freshly-captured binding over the previously-persisted one,
  * keeping `permissionMode` and `transcriptPath` STICKY. The bridge reads
  * permissionMode from the transcript's last 64KB; a turn that writes >64KB after

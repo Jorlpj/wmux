@@ -169,6 +169,9 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private oscCwdSeen = false;
 
+  /** Last cwd emitted by the prompt-scrape fallback (shells without OSC 7). */
+  private lastDetectedPromptCwd = '';
+
   /**
    * A detector/hook terminal state (waiting, complete, awaiting input, error)
    * outranks passive byte throughput until a real submitted-input boundary
@@ -817,6 +820,17 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
+   * Something other than the shell moved the pane's cwd (an agent's hook
+   * reported its own directory). Forget the last shell-reported value so the
+   * shell's next report re-emits even when it names the same directory again,
+   * which is how the cwd moves back once the agent exits to the prompt.
+   */
+  forgetEmittedCwd(): void {
+    this.lastEmittedOscCwd = null;
+    this.lastDetectedPromptCwd = '';
+  }
+
+  /**
    * The agent's transcript recorded a turn end (completed or interrupted) at
    * `at`. An interrupt fires no Stop hook, so without this the episode would
    * stay open and the next prompt would join it. Ignored behind a dialog, or
@@ -1196,7 +1210,7 @@ export class DaemonPTYBridge extends EventEmitter {
         // app-weight P1-4: dedup identical OSC 7 emissions. Shells re-emit
         // OSC 7 on every prompt redraw, so an idle pane would otherwise spam
         // the same cwd across daemon→main→renderer on each redraw. Mirrors
-        // the prompt-detect guard (lastDetectedCwd) below; the first OSC 7
+        // the prompt-detect guard (lastDetectedPromptCwd) below; the first OSC 7
         // after spawn always emits because the cache starts null.
         const cwd = parseOsc7Cwd(event.data);
         // OSC 7-sticky (2026-07-21): this shell has the integration hook — the
@@ -1262,7 +1276,6 @@ export class DaemonPTYBridge extends EventEmitter {
     });
 
     // Prompt-based CWD detection state
-    let lastDetectedCwd = '';
     let promptBuffer = '';
 
     const capture = (data: string, buf?: Buffer, nativeChunk?: NativeOutputChunk): void => {
@@ -1296,8 +1309,8 @@ export class DaemonPTYBridge extends EventEmitter {
           const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
           const detectedCwd = detectPromptCwd(clean);
           if (detectedCwd !== null) {
-            if (detectedCwd !== lastDetectedCwd) {
-              lastDetectedCwd = detectedCwd;
+            if (detectedCwd !== this.lastDetectedPromptCwd) {
+              this.lastDetectedPromptCwd = detectedCwd;
               this.emit('cwd', { sessionId, cwd: detectedCwd });
             }
             promptBuffer = '';

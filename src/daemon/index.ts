@@ -156,7 +156,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
-import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
+import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, transcriptRelocated, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
@@ -3719,6 +3719,13 @@ function registerRpcHandlers(
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
     // A synchronous exact-ID discovery may have just supplied the path.
     const next = mergeResumeBinding(managed.meta.resumeBinding, p.resumeBinding);
+    // The agent may have changed directory without the shell (EnterWorktree).
+    // Recovery spawns the pane in meta.cwd and resumes the exact session only
+    // when that matches the binding's cwd, so the pane follows the agent, but
+    // only when the transcript moved with it: after a Bash `cd` the hook's cwd
+    // changes while `--resume <id>` still works only from the old folder.
+    // `session:cwd` persists the move and tells the renderer.
+    if (transcriptRelocated(prev, next)) sessionManager.adoptAgentCwd(p.id, next.cwd);
     let durableChange = !prev
       || prev.sessionId !== next.sessionId
       || prev.agent !== next.agent
