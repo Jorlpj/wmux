@@ -248,12 +248,16 @@ export function planRecoveryPillType(args: {
    *  once (no progressive stage). Ignored without `sessionId` (#1916): the
    *  session picker never carries a skip flag. */
   forceSkip: boolean;
+  /** Withhold the role's skip/bypass flag (and its skip spellings in the
+   *  role's args) for every agent, not only the ones the pill's toggle covers.
+   *  The automatic resume sets it: it never grants bypass on its own. */
+  withholdRoleSkip?: boolean;
   /** Progressive-assembly stage: 0 = nothing typed yet, 1 = base typed. */
   resumeStage: number;
   /** The pane's role→model binding (re-asserted on the launch), if bound. */
   roleBinding: RoleBinding | undefined;
 }): RecoveryPillPlan | null {
-  const { launcher, sessionId, permFlag, forceSkip, resumeStage, roleBinding } = args;
+  const { launcher, sessionId, permFlag, forceSkip, withholdRoleSkip, resumeStage, roleBinding } = args;
   const grammar = resumeGrammarFor(launcher);
   if (!grammar) return null; // not resumable — pill shouldn't have shown (defensive)
   // Re-assert the bound model on a launcher-prefixed line. The stage-2
@@ -266,7 +270,7 @@ export function planRecoveryPillType(args: {
   // wmux can vouch for (#1946: it opens the session picker). It never carries a
   // permission flag: not the toggle's, and none of the role's (skip flag or a
   // permission choice in its args), for any agent.
-  const toggledOff = !sessionId || (!forceSkip && agentSupportsPermissionFlag(launcher));
+  const toggledOff = !sessionId || !!withholdRoleSkip || (!forceSkip && agentSupportsPermissionFlag(launcher));
   const rewrite = (cmd: string): { text: string; rewritten: boolean } => {
     const r = applyRoleBinding(cmd, roleBinding, {
       suppressSkipPermissions: toggledOff,
@@ -356,8 +360,12 @@ export function claimAutoResume(ptyId: string): boolean {
   return true;
 }
 
+/** Agents whose recovered panes are resumed automatically on start. */
+const AUTO_RESUME_AGENTS: ReadonlySet<string> = new Set(['claude', 'codex']);
+
 /**
- * The line to run when a recovered Claude pane is resumed on app start, or null
+ * The line to run when a recovered Claude Code or Codex pane is resumed on app
+ * start, or null
  * when it should be left alone. Same assembly as the Resume pill, with the
  * permission mode that session had restored. Only the EXACT conversation is
  * resumed automatically, when the saved binding still matches the pane's cwd.
@@ -380,29 +388,35 @@ export function planAutoResume(args: {
   /** Process truth: the pane's agent process is alive. */
   agentAlive?: boolean;
 }): string | null {
-  if (!args.enabled || args.agent !== 'claude') return null;
+  const agent = args.agent;
+  if (!args.enabled || !agent || !AUTO_RESUME_AGENTS.has(agent)) return null;
   // The daemon outlives an app quit, so a pane it recovered once keeps its
   // resume hint across app restarts while the resumed agent runs in it. Typing
   // then would land in the agent's own input box. Unknown signals do not block.
   if (args.commandRunning === true || args.agentAlive === true) return null;
   const { binding } = args;
-  // Validate the session id before typing it: only a well-formed Claude session
-  // id is ever put on the line; anything else leaves the pane to the pill.
+  // Validate the session id before typing it: only a well-formed session id (a
+  // UUID, for Claude and Codex alike) is ever put on the line; anything else
+  // leaves the pane to the pill.
   const sessionId = binding?.sessionId && CHATV2_PROVIDER_SESSION_ID.test(binding.sessionId)
     ? binding.sessionId
     : undefined;
-  const exact = !!binding && !!sessionId && binding.agent === 'claude' &&
+  const exact = !!binding && !!sessionId && binding.agent === agent &&
     args.paneCwds.some((c) => !!c && normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(c));
   if (!binding || !sessionId || !exact) return null; // #1946: the pill offers the picker
   const plan = planRecoveryPillType({
-    launcher: 'claude',
+    launcher: agent,
     sessionId,
     // A saved bypassPermissions mode restores as the default mode here: only
     // the pill's explicit toggle may type --dangerously-skip-permissions.
-    permFlag: binding.permissionMode !== 'bypassPermissions'
+    // Codex takes no Claude permission flag.
+    permFlag: agentSupportsPermissionFlag(agent) && binding.permissionMode !== 'bypassPermissions'
       ? permissionFlagFor(binding.permissionMode)
       : '',
     forceSkip: false,
+    // No bypass on the automatic path for any agent: Codex has no pill toggle,
+    // so without this a role's skipPermissions or bypass args would be typed.
+    withholdRoleSkip: true,
     // Both flags land on one line: the staged click flow does not apply here.
     resumeStage: 0,
     roleBinding: args.roleBinding,
@@ -411,7 +425,7 @@ export function planAutoResume(args: {
   // With a permission flag and an exact id the plan types only the base line
   // first; build the whole line instead.
   if (plan.advanceStage) {
-    const grammar = resumeGrammarFor('claude');
+    const grammar = resumeGrammarFor(agent);
     if (!grammar || !sessionId) return null;
     return `${plan.text} ${grammar.withId(sessionId)}`;
   }
@@ -847,7 +861,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // on the same conversation. Asked only for panes that offer a resume.
   const chatV2Binding = usePaneChatV2Binding(activeSurfacePtyId || undefined, !!resumeBinding || !!resumeHint);
   const chatV2OwnsPane = !!chatV2Binding && chatV2Binding.status !== 'handed-off';
-  // Resume Claude Code panes automatically on app start, when the user opted
+  // Resume Claude Code and Codex panes automatically on app start, when the user opted
   // in (`claudeResumeOnStart`, off by default; off keeps the pill). The setting
   // is read when the pane becomes ready, not subscribed to: turning it on must
   // not type into panes already showing the pill. A pane recovered this
@@ -874,7 +888,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     // A beat after the first output, so the prompt is up and reading input.
     const timer = setTimeout(() => {
       if (!useStore.getState().claudeResumeOnStart) return; // turned off meanwhile
-      if (useStore.getState().resumeHintByPtyId[ptyId] !== 'claude') return; // typed into / dismissed meanwhile
+      if (useStore.getState().resumeHintByPtyId[ptyId] !== resumeHint) return; // typed into / dismissed meanwhile
       // Re-checked here, not only when planning: the liveness snapshot lands
       // with the session list, which can arrive after the pane is ready.
       const { commandRunningByPtyId, agentAliveByPtyId } = useStore.getState();
