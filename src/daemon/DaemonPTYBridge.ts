@@ -1163,6 +1163,21 @@ export class DaemonPTYBridge extends EventEmitter {
               this.resizeGuardTimer = null;
               this.agentDetector?.resetEmissionState();
             }, RESIZE_REDRAW_GUARD_MS - elapsed);
+            // A resize repaint is not work, so it does not reach the status
+            // dot either. Revealing a workspace refits its panes, and an idle
+            // TUI (Codex) repaints the whole screen, well over the threshold:
+            // emitting `active` here lit an idle pane "running", and the
+            // unmarked idle that followed left it lit for the renderer's
+            // two-minute activity window. Like the settled rejections above,
+            // hand the cycle back instead of consuming it, so a real turn that
+            // keeps writing past the guard window still reports running.
+            // A turn a hook already opened is exempt: its running edge armed
+            // this cycle, and handing it back would drop that signal to the
+            // byte threshold for the rest of a sparse-output turn.
+            if (!this.turnOpen) {
+              activityMonitor.endTurn(ptyId);
+              return;
+            }
           } else {
             this.agentDetector?.resetEmissionState();
             this.openTurn(true);
