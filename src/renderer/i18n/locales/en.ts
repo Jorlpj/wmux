@@ -1301,6 +1301,7 @@ export const en = {
   'settings.updateAvailable': 'Update available',
   'settings.close': 'Close',
   'settings.theme': 'Theme',
+  'settings.theme.more': 'More themes',
   'settings.escToCancel': 'ESC to cancel',
   // Settings — MCP server status (wmux mcp check mirror)
   'settings.mcpServers': 'MCP servers',
