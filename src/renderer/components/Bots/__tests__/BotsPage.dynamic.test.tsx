@@ -17,6 +17,7 @@ import type { Pane, Workspace } from '../../../../shared/types';
 import BotsPage, { isStillStarting } from '../BotsPage';
 import type { EnginePort } from '../botsEngine';
 import MiniSidebar from '../../Sidebar/MiniSidebar';
+import { focusNotificationTarget } from '../../../hooks/useNotificationListener';
 import { chatCards, composerHint, fitSideSplit, oneToOneRefusal } from '../BotsChat';
 import type { Conversation } from '../botsModel';
 import { refreshApprovals, setApprovalsApiForTests, type ApprovalsApi } from '../../Room/approvalsStore';
@@ -309,6 +310,15 @@ describe('Bots page', () => {
     // No group was made; the list offers one.
     expect(groupCalls).toEqual([]);
     expect(q('[data-bots-team-notice]')!.textContent).toContain('Make a group chat with this team');
+    // The narrow column: the line and × share a row, the action has its own
+    // and never shrinks the line to a word per row.
+    const notice = q('[data-bots-team-notice]')!;
+    const line = q('[data-bots-team-text]')!;
+    expect(line.parentElement!.contains(q('[data-bots-team-dismiss]'))).toBe(true);
+    expect(line.parentElement!.contains(q('[data-bots-team-group]'))).toBe(false);
+    expect(q('[data-bots-team-group]')!.parentElement).toBe(notice);
+    expect(q('[data-bots-team-group]')!.className).toContain('shrink-0');
+    expect(notice.className).toContain('flex-col');
     act(() => q('[data-bots-team-group]')!.click());
     const dialog = document.querySelector('[data-testid="bots-group-dialog"]')!;
     expect(dialog.querySelector<HTMLInputElement>('[data-bots-group-name]')!.value).toBe('api');
@@ -1096,6 +1106,33 @@ describe('Bots page', () => {
     expect(moa.querySelector('[data-bots-profile-workers]')?.textContent).toBe('0 running');
   });
 
+  it('the profile changes the repository through the folder picker, as Add bot does, and says why main refused', async () => {
+    const update = vi.fn(async (_id: string, patch: { repoFolder?: string }) => (patch.repoFolder === '/src/other'
+      ? { ok: false, message: "This workspace's other bots work on github.com/acme/api." }
+      : { ok: true }));
+    setFactoryBotPort({ ...port, update } as unknown as FactoryBotPort);
+    const pickFolder = vi.fn(async () => ['/src/api-2']);
+    vi.stubGlobal('electronAPI', { web: { status: vi.fn(async () => ({ running: false })) }, dialog: { pickFolder } });
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-pill]')!.click());
+    const profile = q(`[data-bots-profile="${LEAD}"]`)!;
+    expect(profile.querySelector('[data-bots-profile-repo-key]')?.textContent).toBe('github.com/acme/api');
+    const change = profile.querySelector<HTMLButtonElement>('[data-testid="bots-profile-repo-change"]')!;
+    expect(change.textContent).toBe('Change…');
+    await act(async () => change.click());
+    expect(update).toHaveBeenCalledWith(LEAD, { repoFolder: '/src/api-2' });
+    expect(profile.querySelector('[data-bots-profile-repo-error]')).toBeNull();
+    pickFolder.mockResolvedValueOnce(['/src/other']);
+    await act(async () => change.click());
+    expect(profile.querySelector('[data-bots-profile-repo-error]')?.textContent).toContain('github.com/acme/api');
+    // Cancelling the picker sends nothing.
+    pickFolder.mockResolvedValueOnce([]);
+    await act(async () => change.click());
+    expect(update).toHaveBeenCalledTimes(2);
+  });
+
   it('the profile shows the template and the job, and edits the job through the bot port', async () => {
     const update = vi.fn(async () => ({ ok: true }));
     setFactoryBotPort({ ...port, update } as FactoryBotPort);
@@ -1545,6 +1582,61 @@ describe('Bots page', () => {
     expect(q(`[data-bots-intro="${NEW}"]`)?.textContent).toContain('Quiet');
     act(() => q('[data-bots-suggestion="botsPage.chat.suggestStatus"]')!.click());
     expect(q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')?.value).toBe('Give me a status update.');
+  });
+
+  it('a bot row whose question is only in a group\'s handoff thread opens that group with the thread beside it', async () => {
+    const G = 'group:grp-000000c1' as const;
+    groups = [{ id: 'grp-000000c1', workspaceId: 'w1', name: 'Ship it', memberIds: [LEAD, VERIFIER], threadId: G, createdAt: 3_000, updatedAt: 3_000 }];
+    const ask = card({ workspaceId: 'w1', actor: { kind: 'human' }, kind: 'human', threadId: G, refs: { botIds: [LEAD] }, title: 'Plan the release', at: 3_100 });
+    const open = card({ workspaceId: 'w1', actor: { kind: 'system' }, kind: 'fact', threadId: 'handoff:h-1', refs: { handoffId: 'h-1', requestCardId: ask.id }, at: 3_120 });
+    const question = card({ workspaceId: 'w1', actor: by('w1', LEAD), kind: 'question', state: 'open', threadId: 'handoff:h-1', title: 'Which branch?', at: 3_200 });
+    cards = [cards[0], ask, open, question];
+    seedRooms();
+    await render(<BotsPage groupPort={groupPort} />);
+    const row = q(`[data-bots-row="bot:${LEAD}"]`)!;
+    expect(row.querySelector('[data-bots-needs]')?.textContent).toBe('1');
+    // Its preview says where it spoke, not "No messages yet".
+    expect(row.textContent).toContain('In Ship it: Which branch?');
+    await act(async () => row.click());
+    expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe('group:grp-000000c1');
+    expect(q('[data-bots-thread-panel="handoff:h-1"]')!.textContent).toContain('Which branch?');
+    // Closed, then the group opened again from its own row: the thread stays closed.
+    await act(async () => q('[data-bots-thread-close]')!.click());
+    await act(async () => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    await act(async () => q('[data-bots-row="group:grp-000000c1"]')!.click());
+    expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe('group:grp-000000c1');
+    expect(q('[data-bots-thread-panel]')).toBeNull();
+  });
+
+  it('a notification jump to a bot worker keeps the Bots page and shows the worker beside its bot\'s chat', async () => {
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    await act(async () => { focusNotificationTarget(() => useStore.getState(), { workspaceId: 't1' }); });
+    expect(useStore.getState().appRoute).toBe('bots');
+    expect(useStore.getState().activeWorkspaceId).toBe('hq');
+    expect(useStore.getState().botsWorkerPanel).toEqual({ workspaceId: 't1', conversationId: `bot:${LEAD}` });
+    expect(q('[data-bots-chat]')!.getAttribute('data-bots-chat')).toBe(`bot:${LEAD}`);
+    // Back to the list (the narrow layout), then another jump to the same worker: the chat comes back.
+    act(() => q('[data-bots-back]')!.click());
+    expect(q('[data-bots-page]')!.getAttribute('data-view')).toBe('list');
+    await act(async () => { focusNotificationTarget(() => useStore.getState(), { workspaceId: 't1' }); });
+    expect(q('[data-bots-page]')!.getAttribute('data-view')).toBe('chat');
+  });
+
+  it('a reply landing in the 1:1 the owner is reading draws no "New" divider above it', async () => {
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    expect(q('[data-bots-new-divider]')).toBeNull();
+    const reply = card({ workspaceId: 'w1', actor: by('w1', LEAD), threadId: `dm:${LEAD}`, title: 'Here is the answer', at: Date.now() + 1_000 });
+    const key = timelineKey('w1', ALL_THREADS);
+    await act(async () => {
+      const tl = useStore.getState().roomTimelines[key];
+      useStore.setState({ roomTimelines: { ...useStore.getState().roomTimelines, [key]: { ...tl, cards: [...tl.cards, reply] } } } as never);
+    });
+    expect(q('[data-bots-messages]')!.textContent).toContain('Here is the answer');
+    expect(q('[data-bots-new-divider]')).toBeNull();
   });
 
   it('Toggle Bots opens the Bots page and, pressed there, returns to Workspaces', () => {

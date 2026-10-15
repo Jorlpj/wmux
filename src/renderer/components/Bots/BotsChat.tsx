@@ -68,7 +68,7 @@ import { deliveryLine, deliveryTaken, roomPostParams, sentFrom, useMentionPicks,
 import { actorLabel, botKindLabel, cardTone, isRefThread, kindLabel, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, normalizeBotJob } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
-import { templateJob } from '../Settings/FactoryTab';
+import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
 import BotAvatar, { botIdentityColor } from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
 import { awaitsApproval, conversationCards, groupViewCards, livePlanIds, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
@@ -84,7 +84,7 @@ import BotsWorkerPanel from './BotsWorkerPanel';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
 import { BOTS_SESSION_START, selectWorkerPanelHost } from '../../stores/slices/roomSlice';
 import { routineScheduleText, routineStateText, useBotRoutines } from '../Schedules/BotRoutines';
-import { buildTimeline, clockTime, elapsed, fullTime, hasKindWord, separatorLabel, splitThreads, threadCards, type ThreadView, type TimelineItem } from './botsTimeline';
+import { buildTimeline, clockTime, elapsed, fullTime, hasKindWord, liveNewAfter, separatorLabel, splitThreads, threadCards, type ThreadView, type TimelineItem } from './botsTimeline';
 import '../Chat/chatMono.css';
 
 const EMPTY_TREE: readonly BotTreeRow[] = [];
@@ -1510,6 +1510,52 @@ function JobLine({ row, t, jobPort }: { row: FactoryBotRow; t: T; jobPort?: Pick
   );
 }
 
+/** The bot's repository, with Change: the folder picker Add bot uses; main
+ *  resolves the folder and checks it as it does at creation (its origin's
+ *  owner/repo, never a local path; one repository per workspace). */
+function RepoLine({ row, t, port, pickFolder = pickFolderDialog }: { row: FactoryBotRow; t: T; port?: Pick<FactoryBotPort, 'update'>; pickFolder?: () => Promise<string | null> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const update = port?.update;
+  const change = async () => {
+    if (!update) return;
+    setError(null);
+    try {
+      const folder = await pickFolder();
+      if (!folder) return;
+      setBusy(true);
+      const r = await update(row.bot.id, { repoFolder: folder });
+      if (!r.ok) setError(r.message || t('botsPage.profile.repoFailed'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-repo>
+      <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.repo')}</span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <span data-bots-profile-repo-key className="min-w-0 truncate text-[var(--text-main)]" title={row.bot.repo?.repoPath}>{row.bot.repo?.repoKey ?? t('botsPage.profile.noRepo')}</span>
+          {update && (
+            <button
+              type="button"
+              data-testid="bots-profile-repo-change"
+              disabled={busy}
+              onClick={() => void change()}
+              className={`shrink-0 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}
+            >
+              {t(row.bot.repo ? 'settings.factory.addBotChangeFolder' : 'settings.factory.addBotChooseFolder')}
+            </button>
+          )}
+        </div>
+        {error && <p role="alert" data-bots-profile-repo-error className="mt-1 text-[11px] text-[var(--accent-red)]">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
 /** What the bot's workers run on: the default (the presets' engine) or an
  *  installed engine that has a worker guard, saved as the owner. Read-only
  *  text when the port cannot update or list the engines. */
@@ -1594,7 +1640,7 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort }: { row
       <ProfileLine label={t('botsPage.profile.template')} value={<span data-bots-profile-template>{botKindLabel(row.bot, t)}</span>} />
       <JobLine key={`${row.bot.id}:${row.bot.job ?? ''}`} row={row} t={t} jobPort={jobPort} />
       <ProfileLine label={t('botsPage.profile.workspace')} value={workspaceName} />
-      <ProfileLine label={t('botsPage.profile.repo')} value={row.bot.repo?.repoKey ?? t('botsPage.profile.noRepo')} />
+      <RepoLine row={row} t={t} port={jobPort} />
       <WorkerEngineLine row={row} t={t} port={jobPort} />
       <ProfileLine label={t('botsPage.profile.state')} value={`${t(row.bot.enabled ? 'botsPage.profile.on' : 'botsPage.profile.off')} · ${t(`room.presence.${botPresence(row)}`)}`} />
       {typeof left === 'number' && (
@@ -1646,7 +1692,7 @@ export function waitsOnOwner(card: RoomCardData, livePlans: ReadonlySet<string>)
   return card.kind === 'question' || awaitsApproval(card, livePlans);
 }
 
-export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup }: {
+export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup, threadAsk }: {
   conversation: Conversation;
   roomCards: readonly RoomCardData[];
   /** Every bot (names for senders and the addressee check). */
@@ -1671,6 +1717,9 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   /** A group chat's pill: rename it, change its bots or delete it (absent:
    *  the pill does nothing). */
   onEditGroup?: () => void;
+  /** A thread to open beside the chat (a bot row led here to what it asks);
+   *  a new nonce opens it again. */
+  threadAsk?: { workspaceId: string; threadId: ThreadId; nonce: number };
 }): React.ReactElement {
   const [profileOpen, setProfileOpen] = useState(false);
   const [sent, setSent] = useState<Record<string, SentTo[] | null>>({});
@@ -1709,12 +1758,13 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   // The session's "New" divider: what arrived since this conversation was
   // last read to its end, as it stood when the chat opened.
   const conversationId = conversation.id;
-  const [seenBefore] = useState(() => useStore.getState().botsSeenAt[conversationId] ?? BOTS_SESSION_START);
+  // Cards that land while the chat is in view are not "new" (liveNewAfter).
+  const [newAfter, setNewAfter] = useState(() => useStore.getState().botsSeenAt[conversationId] ?? BOTS_SESSION_START);
   const { main, threads, surfaced } = useMemo(() => splitThreads(cards, waits), [cards, waits]);
   const items = useMemo(() => {
     const entries: RoomEntry[] = main.map((card) => ({ kind: 'card' as const, card }));
-    return buildTimeline(entries, { waits, threads, surfaced, newAfter: seenBefore });
-  }, [main, threads, surfaced, waits, seenBefore]);
+    return buildTimeline(entries, { waits, threads, surfaced, newAfter });
+  }, [main, threads, surfaced, waits, newAfter]);
   const botNames = useMemo(() => bots.map((b) => b.bot.name), [bots]);
   const taskTitle = useMemo(() => {
     const byId = new Map<string, string>();
@@ -1731,26 +1781,34 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   // the window and the chat are in view, wherever it is scrolled (the
   // "N new" pill keeps the scroll position's own count).
   const newestAt = useMemo(() => cards.reduce((m, c) => (c.actor.kind === 'bot' && c.at > m ? c.at : m), 0), [cards]);
-  const markSeen = useCallback(() => {
-    if (newestAt <= 0) return;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  const inView = useCallback((): boolean => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     // The narrow layout keeps the chat mounted but hidden behind the list.
     const el = scrollRef.current;
-    if (el && typeof el.checkVisibility === 'function' && !el.checkVisibility()) return;
+    return !(el && typeof el.checkVisibility === 'function' && !el.checkVisibility());
+  }, []);
+  const markSeen = useCallback(() => {
+    if (newestAt <= 0 || !inView()) return;
     useStore.getState().markBotsSeen(conversationId, newestAt);
-  }, [conversationId, newestAt]);
+  }, [conversationId, newestAt, inView]);
   // "N new" while scrolled up: the cards from others newer than any seen
   // before (older history read in later is not new).
   const [newCount, setNewCount] = useState(0);
   const newestSeen = useRef(cards.reduce((m, c) => Math.max(m, c.at), 0));
   useEffect(() => {
-    const added = cards.filter((c) => c.actor.kind !== 'human' && c.at > newestSeen.current).length;
-    newestSeen.current = cards.reduce((m, c) => Math.max(m, c.at), newestSeen.current);
+    const before = newestSeen.current;
+    const added = cards.filter((c) => c.actor.kind !== 'human' && c.at > before).length;
+    newestSeen.current = cards.reduce((m, c) => Math.max(m, c.at), before);
+    if (added > 0) {
+      const visible = inView();
+      const at = Date.now();
+      setNewAfter((cur) => liveNewAfter(cards, cur, before, visible, at));
+    }
     const el = scrollRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
     else if (added > 0) setNewCount((n) => n + added);
     markSeen();
-  }, [lastId, workers.length, markSeen, cards]);
+  }, [lastId, workers.length, markSeen, cards, inView]);
   useEffect(() => {
     const onVisible = () => markSeen();
     document.addEventListener('visibilitychange', onVisible);
@@ -1842,6 +1900,11 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
       else if (r.workspaceId && useStore.getState().botsWorkerPanel === asked) useStore.getState().setBotsWorkerPanel({ workspaceId: r.workspaceId, conversationId });
     }).catch((err: unknown) => useStore.getState().pushToast({ message: String(err), level: 'error' }));
   }, [resumePort, conversationId, t]);
+  const askedNonce = threadAsk?.nonce;
+  useEffect(() => {
+    if (threadAsk) onThread(threadAsk.workspaceId, threadAsk.threadId);
+    // Only a new ask opens it: closing the panel is not undone on re-render.
+  }, [askedNonce]);
   // A worker picked in the list while a thread is open takes the side.
   useEffect(() => { if (shownId) setOpenThread(null); }, [shownId]);
   const tree = conversation.kind === 'bot' ? conversation.tree : EMPTY_TREE;

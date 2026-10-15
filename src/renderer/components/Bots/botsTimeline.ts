@@ -218,3 +218,22 @@ export function unreadCount(cards: readonly RoomCard[], since: number): number {
   for (const c of cards) if (c.actor.kind === 'bot' && c.at > since) n += 1;
   return n;
 }
+
+/** A card counts as arriving live only this soon after it was written: a
+ *  page of history or a catch-up read brings older cards. */
+export const LIVE_ARRIVAL_MS = 60_000;
+
+/** The "New" divider's boundary after cards arrive in an open chat (`before`:
+ *  the newest card's time before they came). A card that lands live (newer
+ *  than `before`, written within LIVE_ARRIVAL_MS of `now`) while the owner
+ *  has the chat in view is read as it arrives: when nothing else is new, the
+ *  boundary moves past it, so no divider is drawn above a live reply. Out of
+ *  view it stays new; history and catch-up reads (older cards) stay new; and
+ *  a divider already drawn for what was unread when the chat opened stays
+ *  where it is. Pure. */
+export function liveNewAfter(cards: readonly RoomCard[], newAfter: number, before: number, inView: boolean, now: number): number {
+  if (!inView) return newAfter;
+  const live = (c: RoomCard): boolean => c.at > before && now - c.at <= LIVE_ARRIVAL_MS;
+  if (cards.some((c) => c.actor.kind !== 'human' && c.at > newAfter && !live(c))) return newAfter;
+  return cards.reduce((m, c) => Math.max(m, c.at), newAfter);
+}

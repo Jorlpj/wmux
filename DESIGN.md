@@ -326,7 +326,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   of the page; Search opens a filter field under the header (Escape closes
   and clears it). One row per conversation (8px 10px padding, inset 8px): a 32px avatar, the 13px/500 name
   with the newest message's time, and one 12px muted preview line (the
-  owner's own as "You: …", a group's prefixed with who spoke). Every bot is
+  owner's own as "You: …", a group's prefixed with who spoke; a bot whose
+  newest post is in a group, "In <group>: …"). Every bot is
   a 1:1, and the rest are the **group chats the owner made** (owner
   decision 2026-10-15, the reference messenger's model): no workspace has a
   room by itself, however many bots it has, and no bot ever makes one. A
@@ -365,8 +366,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
 - **Group chats (owner decision 2026-10-15):** the owner makes them — `+` ›
   New group chat opens a dialog: the workspace (those with bots), a name
   and a checkbox per bot of that workspace, with one muted line saying a
-  group's bots are that workspace's only (they share its repository and
-  room); a workspace with fewer than two bots says so and Create stays off,
+  group's bots are that workspace's only (they share it and its
+  repository); a workspace with fewer than two bots says so and Create stays off,
   as it does with no name or fewer than two bots ticked. The group made
   opens. A group's name pill opens the same dialog to rename it, change its
   bots, or Delete group (asked in place: its messages stay saved, the row
@@ -396,7 +397,9 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   open is superseded) and open proposals, plus its workers waiting on the
   owner — a waiting worker its bot's open question already asks about (the
   question's task) counts once. What a bot asks in a group counts on that
-  bot's row too. Group rows carry none (every question has a bot that asked it), and the
+  bot's row too, and while nothing it waits on is in its 1:1 the row leads
+  to it: a click opens that group with the newest waiting card's thread
+  beside the chat. Group rows carry none (every question has a bot that asked it), and the
   rail badge is the sum of the bot rows — one count, read from one model.
   While the bots are paused nothing on the page can be answered, so
   nothing is counted (rows and rail alike).
@@ -405,7 +408,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   between. A group's pill opens its settings (Group chats, above); a bot's
   pill opens
   the bot's profile (template, job — the owner's words, with Edit —
-  workspace, repository, what its workers run on — a native Select:
+  workspace, repository — with Change, Add bot's folder picker, checked
+  as at creation (a refusal says why in one line) — what its workers run on — a native Select:
   Default (the presets' engine) or an installed engine that has a worker
   guard, one not installed listed but disabled — on/off and presence, turns used and left today,
   its routines, its connections — each library connection that applies to
@@ -462,7 +466,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   11일 (일) 오후 8:37"; the year only when it is not this one) at each new
   day and after an hour's quiet; the label alone divides, no rule. A chat
   opened again marks what arrived since it was last read to its end with a
-  muted "New" label and one `--stroke` hairline. Scrolled up when
+  muted "New" label and one `--stroke` hairline; what arrives while the
+  chat is in view is read as it lands and gets none. Scrolled up when
   something arrives, a floating "N new" pill (the name pill's look) above
   the composer goes back to the end. The read position is kept for the
   session only.
@@ -514,7 +519,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   resumable with their pane cleared — one 28px row each with Resume; three
   rows, then "+N more". No spinner or shimmer. With nothing working it is
   not drawn.
-- **Worker panel:** a worker row in the list (and a Resume that started)
+- **Worker panel:** a worker row in the list (and a Resume that started,
+  or a notification about a bot's worker opened while the page is up)
   shows the worker's terminal in a panel beside the chat, on the Bots page,
   and never switches the active workspace (owner decision 2026-10-14): a
   44px header on one line — the worker's name in 13px/500, "· its state" in
@@ -597,8 +603,9 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   name field needed; only the lead greets, in its 1:1, and its chat opens.
   Its tooltip names the five and says the owner talks to the lead. Add
   team makes the bots only, never a group (owner decision 2026-10-15):
-  then one row under the list header, on the `--selection-subtle` fill,
-  says the team was added and offers **Make a group chat with this team**
+  then one notice under the list header, on the `--selection-subtle` fill,
+  says the team was added (that line and its × on the first row) and offers
+  **Make a group chat with this team** on its own row below
   ("이 팀으로 그룹 채팅 만들기", secondary; × dismisses it), which opens New
   group chat filled in — the workspace's name and the five ticked.
 - **First run (owner decision 2026-10-14):** with no bot yet the page is

@@ -30,7 +30,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { refreshRoomStatus, type RoomsApi } from '../../hooks/useRoomSync';
-import type { RoomCard } from '../../../shared/room';
+import type { RoomCard, ThreadId } from '../../../shared/room';
 import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
 import { IconMoreHorizontal, IconPlus, IconSearch } from '../icons';
@@ -60,7 +60,7 @@ import type { BotGroup } from '../../../shared/botGroup';
 import { unreadCount } from './botsTimeline';
 import { BOTS_SESSION_START } from '../../stores/slices/roomSlice';
 import { useBots, useBotsSync } from './useBots';
-import { botsStopPort, stopAllSummary, type BotsStopPort } from './botsStop';
+import { botsStopPort, stopAllSummary, toastStoppedWork, type BotsStopPort } from './botsStop';
 import { InlineConfirm } from './InlineConfirm';
 import './bots.css';
 
@@ -77,13 +77,27 @@ export function conversationTitle(c: Conversation, workspaceName: (id: string) =
   return c.group.name || (workspaceName(c.workspaceId) ?? c.workspaceId);
 }
 
-/** The row's one-line preview of the newest message. Pure. */
+/** The card a row's preview and time show: the newest message, or a bot's
+ *  newer post in a group chat. Pure. */
+export function previewCard(c: Conversation): RoomCard | null {
+  if (c.kind === 'bot' && c.elsewhere) return c.elsewhere.card;
+  return c.last;
+}
+
+/** The row's one-line preview of the newest message: for a bot whose
+ *  newest post is in a group chat, that post, prefixed with the group's
+ *  name. Pure. */
 export function conversationPreview(
   c: Conversation,
   t: (key: string, vars?: Record<string, string | number>) => string,
   bots: readonly FactoryBotRow[],
   actors: Readonly<Record<string, { role: FactoryBotRow['bot']['role'] }>> = {},
+  titleOf: (conversationId: string) => string | null = () => null,
 ): string {
+  if (c.kind === 'bot' && c.elsewhere) {
+    const group = titleOf(c.elsewhere.conversationId);
+    return group ? t('botsPage.inGroup', { group, text: c.elsewhere.card.title }) : c.elsewhere.card.title;
+  }
   const last: RoomCard | null = c.last;
   if (!last) return t('botsPage.noMessages');
   if (last.actor.kind === 'human') return t('botsPage.you', { text: last.title });
@@ -123,6 +137,7 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
   const needsText = c.needsYou > 0 ? t('sidebar.fleetNeedsYou', { count: c.needsYou }) : '';
   const unreadText = c.needsYou <= 0 && unread > 0 ? t('botsPage.chat.unread', { count: unread }) : '';
   const name = [title, needsText, unreadText, preview].filter(Boolean).join(', ');
+  const shownAt = previewCard(c)?.at ?? null;
   return (
     <button
       type="button"
@@ -142,7 +157,7 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-1.5">
           <span className="min-w-0 truncate text-[13px] font-[var(--title-weight,500)] text-[var(--text-main)]">{title}</span>
-          {c.last && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{formatCardTime(c.last.at, now)}</span>}
+          {shownAt !== null && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{formatCardTime(shownAt, now)}</span>}
         </span>
         <span className={`flex items-center gap-1.5 ${toggleRoom ? 'pr-[34px]' : ''}`}>
           <span className={`min-w-0 flex-1 truncate text-[12px] ${unread > 0 ? 'text-[var(--text-sub)]' : 'text-[var(--text-muted)]'}`}>{preview}</span>
@@ -463,12 +478,16 @@ function AddMenu({ t, onAddBot, onNewGroup }: { t: T; onAddBot: () => void; onNe
  *  with the team (the bots alone make no room), until used or dismissed. */
 function TeamNotice({ t, workspace, onMake, onDismiss }: { t: T; workspace: string; onMake: () => void; onDismiss: () => void }) {
   return (
-    <div data-bots-team-notice role="status" className="mx-3 mb-2 flex items-center gap-2 rounded-[10px] bg-[var(--selection-subtle)] px-3 py-2">
-      <p className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--text-sub)]">{t('botsPage.group.teamAdded', { workspace })}</p>
-      <Button size="sm" variant="secondary" data-bots-team-group onClick={onMake}>{t('botsPage.group.fromTeam')}</Button>
-      <button type="button" data-bots-team-dismiss aria-label={t('settings.close')} title={t('settings.close')} onClick={onDismiss} className={`wmux-bots-icon-button ${FOCUS_RING}`}>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><line x1="3" y1="3" x2="9" y2="9" /><line x1="9" y1="3" x2="3" y2="9" /></svg>
-      </button>
+    <div data-bots-team-notice role="status" className="mx-3 mb-2 flex flex-col items-start gap-2 rounded-[10px] bg-[var(--selection-subtle)] px-3 py-2">
+      {/* The list column is narrow: the line and × share the first row and
+          the action takes its own, so neither squeezes the text. */}
+      <div className="flex w-full items-center gap-2">
+        <p data-bots-team-text className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--text-sub)]">{t('botsPage.group.teamAdded', { workspace })}</p>
+        <button type="button" data-bots-team-dismiss aria-label={t('settings.close')} title={t('settings.close')} onClick={onDismiss} className={`wmux-bots-icon-button shrink-0 ${FOCUS_RING}`}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true"><line x1="3" y1="3" x2="9" y2="9" /><line x1="9" y1="3" x2="3" y2="9" /></svg>
+        </button>
+      </div>
+      <Button size="sm" variant="secondary" className="max-w-full shrink-0 whitespace-normal text-left" data-bots-team-group onClick={onMake}>{t('botsPage.group.fromTeam')}</Button>
     </div>
   );
 }
@@ -523,20 +542,40 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const roomThreads = useStore((s) => s.roomThreads);
   const rows = useMemo(() => model.conversations.map((c) => {
     const since = seenAt[c.id] ?? BOTS_SESSION_START;
+    const titleOf = (id: string) => {
+      const other = model.conversations.find((x) => x.id === id);
+      return other ? conversationTitle(other, nameOf) : null;
+    };
     const own = c.kind === 'bot' ? conversationCards(everyCard, c.row.bot.id, { lone: c.lone, threads: roomThreads }) : groupViewCards(cardsByWs.get(c.workspaceId) ?? [], c.group, roomThreads);
     return {
       c,
       title: conversationTitle(c, nameOf),
-      preview: conversationPreview(c, t, bots, actors),
+      preview: conversationPreview(c, t, bots, actors, titleOf),
       unread: unreadCount(own, since),
     };
   }), [model.conversations, nameOf, t, bots, actors, seenAt, everyCard, cardsByWs, roomThreads]);
   const q = query.trim().toLowerCase();
   const shown = q ? rows.filter((r) => r.title.toLowerCase().includes(q) || r.preview.toLowerCase().includes(q)) : rows;
 
+  const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
   const select = (id: string) => {
     setSelectedId(id);
     setView('chat');
+    // A thread a bot row asked to open is opened once, never on a later visit.
+    setThreadAsk(null);
+  };
+  // A bot row whose waiting cards are all in a group chat leads there, with
+  // the newest one's thread beside the group's chat (its own thread is the
+  // chat itself): the needs-you count on the row is answered where it is.
+  const openRow = (c: Conversation) => {
+    const at = c.kind === 'bot' && c.needsYou > 0 ? c.needsAt : undefined;
+    const group = at ? model.conversations.find((x) => x.id === at.conversationId) : undefined;
+    if (!at || group?.kind !== 'room') {
+      select(c.id);
+      return;
+    }
+    select(group.id);
+    setThreadAsk(at.threadId !== group.threadId ? { ...at, nonce: Date.now() } : null);
   };
 
   // Each bot's workers nest under its row (BotsWorkerTree): open under the
@@ -545,6 +584,15 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   // panel never opens on its own.
   const [unfolded, setUnfolded] = useState<Readonly<Record<string, boolean>>>({});
   const panel = useStore((s) => s.botsWorkerPanel);
+  // A worker shown from elsewhere (a notification's jump while this page is
+  // up) brings its bot's chat forward, where the panel lives — each time it
+  // is asked, the narrow layout's list included.
+  const shownPanel = useRef(panel);
+  useEffect(() => {
+    if (panel && panel !== shownPanel.current) select(panel.conversationId);
+    shownPanel.current = panel;
+    // `select` is a fresh closure each render; only a new panel request matters.
+  }, [panel]);
   const openWorker = (botId: string, workspaceId: string) => {
     const conversationId = botConversationId(botId);
     select(conversationId);
@@ -605,7 +653,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const consent = useBotsPlanConsent(t);
   const { ask: askConsent, confirmOn } = consent;
   useEffect(() => {
-    void confirmBotsAlreadyOn(settingsPort, askConsent).catch(() => undefined);
+    void confirmBotsAlreadyOn(settingsPort, askConsent, (r) => toastStoppedWork(r, t, useStore.getState(), stopPort)).catch(() => undefined);
+    // Asked once per opening: a new language or stop port must not ask again.
   }, [settingsPort, askConsent]);
   const enginePort = useMemo(() => engine ?? bridgeEnginePort(), [engine]);
   const [confirmStopAll, setConfirmStopAll] = useState(false);
@@ -757,7 +806,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                       t={t}
                       now={now}
                       unread={r.unread}
-                      onSelect={() => select(r.c.id)}
+                      onSelect={() => openRow(r.c)}
                       toggleRoom={tree.length > 0}
                     />
                     {tree.length > 0 && (
@@ -805,6 +854,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
             jobPort={botPort}
             resumePort={botPort}
             onOpenBot={(botId) => select(botConversationId(botId))}
+            {...(threadAsk && threadAsk.conversationId === selected.c.id ? { threadAsk } : {})}
             {...(shownGroup && groupsPort.available ? { onEditGroup: () => setGroupDialog({ kind: 'edit', group: shownGroup }) } : {})}
           />
         ) : (
