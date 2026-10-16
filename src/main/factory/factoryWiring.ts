@@ -89,7 +89,7 @@ import { installLateStopSweep, setFactoryStopPorts, type FactoryStopPorts } from
 import { getRoutineStore } from './routines';
 import { getGroupStore } from './groupStore';
 import { getAgentSlots } from './agentSlots';
-import { getWorkerResumePorts, reclaimedWorkerState, stopResumedWorkers, workerWorkspaceOf } from './workerReclaim';
+import { getWorkerResumePorts, isWslWorkerPane, reclaimedWorkerState, stopResumedWorkers, workerWorkspaceOf, type WorkerSessionInfo } from './workerReclaim';
 import { getTaskFolderPorts } from './taskFolderCleanup';
 
 // ── Trigger cursor ─────────────────────────────────────────────────────────
@@ -439,7 +439,7 @@ export function daemonRpc(client: () => Daemon | null): ((method: string, params
  *  session.stopAgent: asked to exit, killed after a grace, checked gone),
  *  then the pane itself, checked gone (stopSessionsInDir). `workspacePtys`:
  *  the panes a workspace owns, null when the workspace tree is not known (a
- *  session started in the folder then counts). A pane in another workspace,
+ *  session started in the folder then counts, a WSL pane excepted). A pane in another workspace,
  *  such as a terminal the owner opened in the folder, is never touched.
  *  `agentsOnly` (the re-stop of a task stopped before): only a leftover
  *  agent is stopped; a pane is closed only when it still runs an agent the
@@ -448,28 +448,33 @@ export function daemonRpc(client: () => Daemon | null): ((method: string, params
  *  How many workers were confirmed stopped: panes that ran an agent (the
  *  daemon's `agentProcessAlive`, or a claude this call stopped) whose agent
  *  or pane this call confirmed gone; a pane with no agent, such as a plain
- *  shell, does not count. Throws when one was not stopped. */
+ *  shell, does not count. A WSL pane running its launched worker
+ *  (isWslWorkerPane: its Linux agent is not always attributed) counts as
+ *  running one; a plain WSL shell at its prompt does not. Throws when one
+ *  was not stopped. */
 export async function stopTaskWorker(
   entry: LedgerEntry,
   client: () => Daemon | null,
   workspacePtys?: (workspaceId: string) => readonly string[] | null,
-  opts: { agentsOnly?: boolean } = {},
+  opts: { agentsOnly?: boolean; platform?: NodeJS.Platform } = {},
 ): Promise<number> {
   const rpc = daemonRpc(client);
   if (!rpc) throw new Error('the daemon is not connected');
   const worktree = await taskFolderFromMissions(rpc, entry);
   if (!worktree) throw new Error('the task worktree is not known');
   const own = workspacePtys?.(entry.taskWorkspaceId) ?? null;
-  type Session = { id: string; pid?: number; spawnCwd?: string; agentProcessAlive?: boolean };
+  type Session = WorkerSessionInfo & { pid?: number };
   const listSessions = async (): Promise<Session[]> => {
     const sessions = await rpc('daemon.listSessions', {});
     const all = Array.isArray(sessions) ? (sessions as Session[]) : [];
-    return own ? all.filter((x) => own.includes(x.id)) : all;
+    // An unknown tree: a WSL pane is never taken for the task's (its folder
+    // match alone cannot tell the worker from a pane the owner opened there).
+    return own ? all.filter((x) => own.includes(x.id)) : all.filter((x) => !x.wslTarget);
   };
   const before = await listSessions();
-  const agentLive = new Set(before.filter((x) => x.agentProcessAlive === true).map((x) => x.id));
+  const agentLive = new Set(before.filter((x) => x.agentProcessAlive === true || isWslWorkerPane(x)).map((x) => x.id));
   const stoppedAgents = new Set<string>();
-  for (const id of await sessionsStartedIn([worktree], { listSessions: async () => before })) {
+  for (const id of await sessionsStartedIn([worktree], { listSessions: async () => before, platform: opts.platform })) {
     const r = (await rpc('session.stopAgent', { sessionId: id })) as { ok?: boolean; stopped?: boolean; code?: string } | null;
     if (r?.ok === true && r.stopped === true) stoppedAgents.add(id);
     // Gone already, or a pane whose agent the daemon cannot stop this way
@@ -491,6 +496,7 @@ export async function stopTaskWorker(
     isAlive: isPidAlive,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: (message) => console.warn(message),
+    platform: opts.platform,
   });
   if (stopped.length > 0) console.log(`[factory] stopped ${stopped.length} session(s) of task ${entry.id}`);
   const workers = new Set([...stoppedAgents, ...stopped.filter((id) => agentLive.has(id))]);

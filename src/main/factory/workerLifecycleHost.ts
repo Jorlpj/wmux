@@ -199,6 +199,9 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       worktreeOf: (entry) => taskFolderFromMissions((m, p) => rpc(m, (p ?? {}) as Record<string, unknown>), entry),
       listSessions,
       stopAgent: async (sessionId) => (await rpc('session.stopAgent', { sessionId })) as { ok?: boolean; stopped?: boolean; code?: string },
+      closePane: async (sessionId) => {
+        await rpc('daemon.destroySession', { id: sessionId });
+      },
       note,
       changed: () => {
         changed();
@@ -280,6 +283,12 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     setWorkerResumePorts({
       store: reclaimed,
       listSessions,
+      workspacePanes: (workspaceId) => {
+        const entries = mirror.getEntries();
+        if (!entries) return null;
+        const ws = entries.find((e) => e.id === workspaceId);
+        return ws && Array.isArray(ws.ptyIds) ? ws.ptyIds : [];
+      },
       ...(folderPorts ? { restoreFolder: (taskId: string, folder: string) => restoreTaskFolder(folderPorts, taskId, folder), holdFolder: holdTaskFolder } : {}),
       // The same stage a resume typed from the pane takes (pty:write-launch):
       // a bot worker's line carries its settings file, or this throws.
@@ -291,6 +300,9 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
       agentAlive: async (sessionId) => (await listSessions()).find((s) => s.id === sessionId)?.agentProcessAlive === true,
       submit: submitToWorkerPane,
       stopAgent: async (sessionId) => (await rpc('session.stopAgent', { sessionId })) as { ok?: boolean; stopped?: boolean; code?: string },
+      closePane: async (sessionId) => {
+        await rpc('daemon.destroySession', { id: sessionId });
+      },
       // A cleared pane opens again on the bot worker spawn, with the
       // recorded permission mode (any other mode keeps the line's own flag).
       ...(deps.fanOutService ? {

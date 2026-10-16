@@ -54,7 +54,7 @@ import path from 'node:path';
 import { isResearchDispatch, type LedgerEntry } from '../../shared/ledger';
 import { taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import { isPlausibleResumeSessionId, normalizeResumeCwd, permissionFlagFor, type PermissionMode } from '../../shared/agentResume';
-import { sessionsStartedIn } from '../worktask/stopSessionsInDir';
+import { sessionHostDir, sessionsStartedIn } from '../worktask/stopSessionsInDir';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 import { STOPPED_BY_OWNER } from './factoryStop';
 
@@ -129,7 +129,20 @@ export interface WorkerSessionInfo {
   agentProcessAlive?: boolean;
   /** OSC 133: a foreground command owns the pane (absent: unknown). */
   commandRunning?: boolean;
+  /** The pane runs in WSL (its Linux agent is not always attributed). */
+  wslTarget?: { distribution?: unknown };
+  /** An exec unit: the pane's process is the command itself. */
+  exec?: unknown;
   resumeBinding?: { agent?: unknown; sessionId?: unknown; cwd?: unknown; permissionMode?: unknown };
+}
+
+/** Whether a pane is a WSL worker whose agent the daemon cannot stop
+ *  (#2254): a WSL shell pane, not an exec unit, running a foreground
+ *  command (the typed launch line) with no agent exit seen. Its Linux agent
+ *  is not always attributed, so a stop closes its pane instead; a plain WSL
+ *  shell at its prompt is no such worker. Pure. */
+export function isWslWorkerPane(s: Pick<WorkerSessionInfo, 'wslTarget' | 'exec' | 'agentProcessAlive' | 'commandRunning'> | undefined): boolean {
+  return !!s && !!s.wslTarget && !s.exec && s.agentProcessAlive !== false && s.commandRunning === true;
 }
 
 /** Whether a ledger move ends a bot task this module reclaims. Pure. */
@@ -303,6 +316,10 @@ export interface WorkerReclaimPorts {
   listSessions: () => Promise<WorkerSessionInfo[]>;
   /** daemon `session.stopAgent`. */
   stopAgent: (sessionId: string) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
+  /** Close a pane (daemon `daemon.destroySession`): the stop of an agent the
+   *  daemon cannot stop by itself (`unsupported`: a WSL pane's Linux agent).
+   *  Absent: such a worker is not stopped. */
+  closePane?: (sessionId: string) => Promise<void>;
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   /** The Bots page re-reads (BOT_EVENT). */
   changed?: () => void;
@@ -384,15 +401,26 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     }
     const sessions = await ports.listSessions();
     const ids = new Set(await sessionsStartedIn([worktree], { listSessions: async () => sessions }));
-    if (ended === 'reported' && ports.workspacePanes) {
-      let own: readonly string[] | null = null;
+    const panesOf = (workspaceId: string): readonly string[] | null => {
       try {
-        own = ports.workspacePanes(entry.taskWorkspaceId);
+        return ports.workspacePanes?.(workspaceId) ?? null;
       } catch {
-        own = null;
+        return null;
       }
+    };
+    if (ended === 'reported' && ports.workspacePanes) {
+      const own = panesOf(entry.taskWorkspaceId);
       if (!own) return null;
       for (const id of [...ids]) if (!own.includes(id)) ids.delete(id);
+    }
+    // A WSL pane counts only in the worker's own workspace: its folder match
+    // alone cannot tell the worker from a pane the owner opened there (a
+    // stop of it closes the pane). An unknown tree: tried again later.
+    const wsl = [...ids].filter((id) => sessions.some((x) => x.id === id && !!x.wslTarget));
+    if (wsl.length > 0) {
+      const own = panesOf(workerWorkspaceOf({ taskWorkspaceId: entry.taskWorkspaceId, paneWorkspaceId: ports.store.get(entry.id)?.paneWorkspaceId }));
+      if (!own) return null;
+      for (const id of wsl) if (!own.includes(id)) ids.delete(id);
     }
     const panes = sessions.filter((s) => ids.has(s.id)).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
     if (movedOn(ports, entry, ended)) return null;
@@ -444,13 +472,26 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     if (panes.length === 0) return rec;
     let failed = 0;
     let attempted = 0;
+    // A pane is closed only in the task's own workspace: a WSL terminal the
+    // owner opened in the same folder elsewhere is never the worker's.
+    let ownPanes: readonly string[] | null = null;
+    try {
+      ownPanes = ports.workspacePanes?.(workerWorkspaceOf({ taskWorkspaceId: entry.taskWorkspaceId, paneWorkspaceId: prior?.paneWorkspaceId })) ?? null;
+    } catch {
+      ownPanes = null;
+    }
     for (const p of panes) {
       // The task reopened (or moved on from its report) meanwhile: what
       // still runs is its worker again.
       if (movedOn(ports, entry, ended)) break;
       attempted++;
       try {
-        const r = await ports.stopAgent(p.sessionId);
+        // Only an end whose card says its pane closes closes a WSL worker's
+        // pane; a reported (still open) or failed task keeps it.
+        const closable = (ended === 'completed' || ended === 'cancelled')
+          && !!ownPanes?.includes(p.sessionId)
+          && isWslWorkerPane(sessions.find((x) => x.id === p.sessionId));
+        const r = await stopOrClose(ports.stopAgent, closable ? ports.closePane : undefined, p.sessionId);
         if (r.ok !== true) {
           failed++;
           log(`[factory] reclaim: the agent of ${p.sessionId} (task ${entry.id}) was not stopped: ${r.code ?? 'refused'}`);
@@ -517,6 +558,30 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
     log(`[factory] reclaim of ${entry.id} failed: ${String(err)}`);
     return null;
   }
+}
+
+/** Whether `sessionId` is a pane of `workspaceId` by main's workspace tree;
+ *  false when the tree is not known. */
+function ownPane(workspacePanes: ((workspaceId: string) => readonly string[] | null) | undefined, workspaceId: string, sessionId: string): boolean {
+  try {
+    return workspacePanes?.(workspaceId)?.includes(sessionId) === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Stop a pane's agent; one the daemon cannot stop by itself (a WSL pane's
+ *  Linux agent, #2254) goes with its pane, closed here when `closePane` is
+ *  given (the caller checked isWslWorkerPane). */
+async function stopOrClose(
+  stopAgent: WorkerReclaimPorts['stopAgent'],
+  closePane: WorkerReclaimPorts['closePane'],
+  sessionId: string,
+): Promise<{ ok?: boolean; stopped?: boolean; code?: string }> {
+  const r = await stopAgent(sessionId);
+  if (r.code !== 'unsupported' || !closePane) return r;
+  await closePane(sessionId);
+  return { ok: true, stopped: true };
 }
 
 /** Whether a record already covers this end of the task: stopped, or
@@ -636,6 +701,14 @@ export interface WorkerResumePorts {
   submit?: (sessionId: string, text: string) => Promise<boolean>;
   /** daemon `session.stopAgent`, for the stop of a resumed worker. */
   stopAgent?: (sessionId: string) => Promise<{ ok?: boolean; stopped?: boolean; code?: string }>;
+  /** Close a pane whose agent the daemon cannot stop (WorkerReclaimPorts.closePane). */
+  closePane?: (sessionId: string) => Promise<void>;
+  /** The panes a workspace owns, null when not known: only a pane of the
+   *  worker's own workspace is closed. Absent: none is. */
+  workspacePanes?: (workspaceId: string) => readonly string[] | null;
+  /** Default: process.platform (a WSL pane's recorded Linux folder is read
+   *  as its Windows folder on win32). */
+  platform?: NodeJS.Platform;
   /** Open a new task workspace in the recorded worktree with the resume line
    *  as its launch, through the bot worker spawn. Absent: a resume whose pane
    *  is gone is refused. */
@@ -839,21 +912,27 @@ async function respawnOnce(
   stopped: () => boolean,
 ): Promise<WorkerResumeResult> {
   if (!ports.respawn || !pane.resumeSessionId) return refuse('pane_gone', 'the worker\'s pane is closed');
+  // A WSL pane recorded the Linux path of its folder (/mnt/c/…): the folder
+  // is looked at, restored and reopened as this process names it.
+  const platform = ports.platform ?? process.platform;
+  const folder = sessionHostDir(pane.cwd, {}, platform);
   let exists = false;
   try {
-    exists = (ports.folderExists ?? ((d: string) => fs.statSync(d).isDirectory()))(pane.cwd);
+    exists = (ports.folderExists ?? ((d: string) => fs.statSync(d).isDirectory()))(folder);
   } catch {
     exists = false;
   }
   // A folder the task's end removed comes back at the same path, so the
   // agent's per-folder conversation resumes there.
-  if (!exists && ports.restoreFolder) exists = await ports.restoreFolder(rec.taskId, pane.cwd).catch(() => false);
+  if (!exists && ports.restoreFolder) exists = await ports.restoreFolder(rec.taskId, folder).catch(() => false);
   if (!exists) return refuse('worktree_gone', 'the task\'s worktree is gone, so there is no folder to resume the worker in; start a new task instead');
   // Another pane already runs an agent in the worktree: a second process on
   // the same conversation is never started.
-  const home = normalizeResumeCwd(pane.cwd);
-  const busy = sessions.some((s) => s.agentProcessAlive === true
-    && [s.spawnCwd, s.cwd].some((d) => typeof d === 'string' && d.length > 0 && normalizeResumeCwd(d) === home));
+  const home = normalizeResumeCwd(folder);
+  // A WSL worker's agent is never attributed (agentProcessAlive unknown):
+  // its running foreground command counts (isWslWorkerPane).
+  const busy = sessions.some((s) => (s.agentProcessAlive === true || isWslWorkerPane(s))
+    && [s.spawnCwd, s.cwd].some((d) => typeof d === 'string' && d.length > 0 && normalizeResumeCwd(sessionHostDir(d, s, platform)) === home));
   if (busy) return refuse('already_running', 'an agent is already running in the task\'s worktree');
   if (stopped()) return refuse('not_now', 'the bot\'s work was stopped while this resume was under way');
   let r: Awaited<ReturnType<NonNullable<WorkerResumePorts['respawn']>>>;
@@ -863,7 +942,7 @@ async function respawnOnce(
       botId: rec.botId,
       ownerWorkspaceId: rec.ownerWorkspaceId,
       title: rec.title,
-      cwd: pane.cwd,
+      cwd: folder,
       line,
       ...(pane.permissionMode ? { permissionMode: pane.permissionMode } : {}),
     });
@@ -988,12 +1067,17 @@ export async function stopResumedWorkers(ports: WorkerResumePorts, botId?: strin
   const taskIds: string[] = [];
   let marked = false;
   let failed = 0;
+  // Read only when a pane may be closed (a WSL worker, isWslWorkerPane).
+  let live: WorkerSessionInfo[] | null = null;
   for (const rec of ports.store.all()) {
     if (rec.state !== 'resumed' || (botId !== undefined && rec.botId !== botId)) continue;
     let ok = true;
     let stoppedHere = false;
+    if (ports.closePane && !live) live = await ports.listSessions().catch(() => []);
     for (const s of rec.sessions) {
-      const r: { ok?: boolean; stopped?: boolean; code?: string } = await ports.stopAgent(s.sessionId).catch(() => ({ ok: false }));
+      const closable = isWslWorkerPane(live?.find((x) => x.id === s.sessionId))
+        && ownPane(ports.workspacePanes, workerWorkspaceOf(rec), s.sessionId);
+      const r: { ok?: boolean; stopped?: boolean; code?: string } = await stopOrClose(ports.stopAgent, closable ? ports.closePane : undefined, s.sessionId).catch(() => ({ ok: false }));
       // A pane that is gone took its agent with it (a stop of its open task
       // may have closed it first).
       if (r.ok !== true && r.code !== 'no_session') ok = false;
