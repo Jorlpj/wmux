@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fetchTaskRefs, parseLsRemoteHeads, taskFetchArgs } from '../taskFetch';
+import { fetchTaskRefs, parseLsRemoteHeads, taskFetchArgs, taskFetchConfigRefusal } from '../taskFetch';
 import { registerTaskPushRpc } from '../../pipe/handlers/taskPush.rpc';
 
 vi.mock('electron', () => ({ app: { getPath: () => os.tmpdir() } }));
@@ -61,6 +61,8 @@ describe('fetchTaskRefs', () => {
     // No tag came along, and nothing was pushed.
     expect(git(work, 'tag', '--list')).toBe('');
     expect(git(origin, 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(originRefs);
+    // Main's own namespace is gone again.
+    expect(git(work, 'for-each-ref', 'refs/wmux')).toBe('');
     // The worker can now merge it itself.
     git(work, 'merge', '-q', '--no-edit', 'origin/main');
     expect(fs.existsSync(path.join(work, 'c.txt'))).toBe(true);
@@ -86,10 +88,35 @@ describe('fetchTaskRefs', () => {
     expect(fs.existsSync(marker)).toBe(false);
   });
 
-  it('fetches each branch into its own remote-tracking ref, at origin\'s URL, with no tags or submodules', () => {
-    expect(taskFetchArgs('https://github.com/o/r.git', ['main', 'wtask/one'])).toEqual([
-      'fetch', '--no-tags', '--recurse-submodules=no', '--', 'https://github.com/o/r.git',
-      '+refs/heads/main:refs/remotes/origin/main', '+refs/heads/wtask/one:refs/remotes/origin/wtask/one',
+  it('replaces a symbolic remote-tracking ref instead of following it into a local branch', async () => {
+    const tip = git(work, 'rev-parse', 'HEAD');
+    git(work, 'symbolic-ref', 'refs/remotes/origin/main', 'refs/heads/wtask/one');
+    const r = await fetchTaskRefs(input());
+    expect(r).toMatchObject({ ok: true });
+    expect(git(work, 'rev-parse', 'refs/heads/wtask/one')).toBe(tip);
+    expect(git(work, 'rev-parse', 'refs/remotes/origin/main')).toBe(git(other, 'rev-parse', 'HEAD'));
+    expect(() => git(work, 'symbolic-ref', '-q', 'refs/remotes/origin/main')).toThrow();
+  });
+
+  it('refuses a remote named by origin\'s URL and a bundle URI, and writes nothing', async () => {
+    const victim = git(work, 'rev-parse', 'refs/heads/main');
+    git(work, 'config', `remote.${origin}.fetch`, '+refs/heads/main:refs/heads/main');
+    expect(await fetchTaskRefs(input())).toMatchObject({ ok: false, reason: 'config-refused', error: expect.stringContaining(`remote.${origin.toLowerCase()}.fetch`) });
+    expect(git(work, 'rev-parse', 'refs/heads/main')).toBe(victim);
+    git(work, 'config', '--unset', `remote.${origin}.fetch`);
+    git(work, 'config', 'fetch.bundleURI', 'https://bundles.example.invalid/b');
+    expect(await fetchTaskRefs(input())).toMatchObject({ ok: false, reason: 'config-refused', error: expect.stringContaining('fetch.bundleuri') });
+    git(work, 'config', '--unset', 'fetch.bundleURI');
+    // Another remote of the owner's own is fine.
+    git(work, 'remote', 'add', 'upstream', 'https://github.com/acme/app.git');
+    expect(await fetchTaskRefs(input())).toMatchObject({ ok: true });
+    expect(taskFetchConfigRefusal([{ scope: 'global', key: 'fetch.bundleuri', value: 'x' }], origin)).toBeNull();
+  });
+
+  it('fetches each branch into main\'s own namespace, at origin\'s URL, with no tags, submodules or FETCH_HEAD', () => {
+    expect(taskFetchArgs('https://github.com/o/r.git', ['main', 'wtask/one'], 'refs/wmux/fetch/n')).toEqual([
+      'fetch', '--no-tags', '--recurse-submodules=no', '--no-write-fetch-head', '--no-auto-maintenance', '--no-write-commit-graph',
+      '--', 'https://github.com/o/r.git', '+refs/heads/main:refs/wmux/fetch/n/0', '+refs/heads/wtask/one:refs/wmux/fetch/n/1',
     ]);
     expect(parseLsRemoteHeads(`${'a'.repeat(40)}\trefs/heads/main\n${'b'.repeat(40)}\trefs/tags/v1\n`)).toEqual(new Map([['main', 'a'.repeat(40)]]));
   });
