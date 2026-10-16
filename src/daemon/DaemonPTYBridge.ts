@@ -76,8 +76,10 @@ export function scanStartupDa1(text: string): 'answer' | 'more' | 'closed' {
  *                 resize redraw or a muted replay)
  *  - 'inputSubmitted' → { sessionId: string } (input with a submit boundary)
  *  - 'active'   → { sessionId, agentName?, likelyRepaint? } — onActive cycle
- *                 start; likelyRepaint marks a passive burst inside the
- *                 resize-redraw guard window (alarm feeds must ignore it)
+ *                 start. A passive burst inside the resize-redraw guard
+ *                 window is not emitted, except a cycle a hook's running
+ *                 edge armed in a still-open turn: that one carries
+ *                 likelyRepaint (alarm feeds must ignore it)
  *  - 'idle'     → { sessionId, preTurn? }              — onActiveToIdle;
  *                 preTurn marks silence after a SessionStart with no turn
  *                 started since (see isPreTurn)
@@ -184,6 +186,8 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
+  /** The current activity cycle was armed by a hook's running edge and has not fired yet. */
+  private hookArmedCycle = false;
   private lastTurnStartedAt = 0;
 
   /**
@@ -704,6 +708,7 @@ export class DaemonPTYBridge extends EventEmitter {
       // never earn `running` back after an idle, and the roster showed idle
       // for a pane genuinely mid-turn.
       if (this.activityMonitor && this.sessionId) {
+        if (authoritative) this.hookArmedCycle = true;
         this.activityMonitor.beginTurnIfInactive(this.sessionId);
       }
       return;
@@ -726,6 +731,7 @@ export class DaemonPTYBridge extends EventEmitter {
     if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.closeTurn(!authoritative || provisional);
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     if (this.resizeGuardTimer) {
       clearTimeout(this.resizeGuardTimer);
       this.resizeGuardTimer = null;
@@ -1084,6 +1090,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.sessionId = sessionId;
     this.explicitTerminalStatus = false;
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.settledStatus = null;
@@ -1101,6 +1108,7 @@ export class DaemonPTYBridge extends EventEmitter {
     // settled this turn, byte silence is weaker evidence and must not clear the
     // explicit waiting/complete state five seconds later.
     this.idleUnsubscribe = activityMonitor.onActiveToIdle((ptyId) => {
+      this.hookArmedCycle = false;
       if (this.explicitTerminalStatus) return;
       this.emit('idle', { sessionId: ptyId, ...(this.isPreTurn() ? { preTurn: true } : {}) });
     });
@@ -1153,6 +1161,8 @@ export class DaemonPTYBridge extends EventEmitter {
       } else {
         const inputStartedTurn = this.submittedTurnPending;
         this.submittedTurnPending = false;
+        const hookArmed = this.hookArmedCycle;
+        this.hookArmedCycle = false;
 
         // Real submitted input already reset detector dedup in noteInput(). For
         // a passive startup/autonomous burst, retain the resize-redraw guard: a
@@ -1175,10 +1185,13 @@ export class DaemonPTYBridge extends EventEmitter {
             // two-minute activity window. Like the settled rejections above,
             // hand the cycle back instead of consuming it, so a real turn that
             // keeps writing past the guard window still reports running.
-            // A turn a hook already opened is exempt: its running edge armed
-            // this cycle, and handing it back would drop that signal to the
-            // byte threshold for the rest of a sparse-output turn.
-            if (!this.turnOpen) {
+            // A cycle a hook's running edge armed is exempt while that turn is
+            // still open: handing it back would drop the hook's signal to the
+            // byte threshold for the rest of a sparse-output turn. Only the
+            // arming edge counts, not `turnOpen` alone: a boot paint or a
+            // submitted prompt that never got a settle also leaves the turn
+            // open, and its reveal repaint is still not work.
+            if (!(hookArmed && this.turnOpen)) {
               activityMonitor.endTurn(ptyId);
               return;
             }
@@ -1194,12 +1207,13 @@ export class DaemonPTYBridge extends EventEmitter {
       // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야
       // idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x 등)도 running
       // 상태에서 agentName이 채워진다.
-      // `likelyRepaint`: this passive burst sits inside the resize-redraw
-      // guard window, so it is a TUI repaint, not work. The loose status dot
-      // still updates (the flag travels with the event), but the alarm's
-      // working feed in daemon/index.ts must NOT treat it as turn evidence —
-      // a repaint rebutting a pending completion window would silently kill
-      // a real "finished" alarm.
+      // `likelyRepaint` is true only for a cycle a hook's running edge armed
+      // in a still-open turn whose first output landed inside the
+      // resize-redraw guard window; every other burst in that window returned
+      // above. The status dot shows that hook turn running, but the alarm's
+      // working feed in daemon/index.ts must NOT treat the burst as turn
+      // evidence — a repaint rebutting a pending completion window would
+      // silently kill a real "finished" alarm.
       this.emit('active', {
         sessionId: ptyId,
         agentName: this.agentDetector?.getLastAgent() ?? undefined,
@@ -1600,6 +1614,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.lastEmittedOscCwd = null;
     this.explicitTerminalStatus = false;
     this.submittedTurnPending = false;
+    this.hookArmedCycle = false;
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.inputRevision = 0;
