@@ -10,6 +10,7 @@ import { clearedLaunchLine,
   buildBotWorkerSettings,
   botWorkerSessionRecord,
   forgetBotWorkerSession,
+  guardedLaunchOf,
   guardRefireLine,
   guardSessionLaunch,
   isBotWorkerSession,
@@ -28,6 +29,7 @@ import { withRoleBinding } from '../../../renderer/utils/ptyCreateOptions';
 import { workerLaunchCommand } from '../../worktask/FanOutService';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
+import { toWslPath } from '../../../shared/imagePaste';
 import { wslMcpLaunchOf } from '../../../shared/wslIntegration';
 
 let dir: string;
@@ -200,21 +202,24 @@ describe('which creates are a bot\'s workers: main\'s records, never the rendere
       // A WSL shell: the worker settings and this build's wmux server alone
       // (strict), run in the Windows runtime over interop.
       const runtime = { wslRuntime: () => 'C:\\Program Files\\wmux\\wmux.exe' };
-      const wslLine = withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime }, { wsl: true })!.initialCommand!;
-      const wslFiles = strictFiles(wslLine);
-      expect(wslLine).toBe(`claude --settings="${wslFiles.settings}" --mcp-config="${wslFiles.mcp}" --strict-mcp-config --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
-      expect(JSON.parse(fs.readFileSync(wslFiles.settings, 'utf8'))).toEqual(buildBotWorkerSettings());
-      expect(JSON.parse(fs.readFileSync(wslFiles.mcp, 'utf8'))).toEqual({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', wslMcpLaunchOf('/mnt/c/Program Files/wmux/wmux.exe', ENTRY)] } } });
+      const wslCreate = withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime }, { wsl: true })!;
+      // The line names each file as Linux reaches it; the record keeps main's own path.
+      const wslFiles = guardedLaunchOf(wslCreate).launch!;
+      const linux = (p: string) => toWslPath(p) ?? p;
+      expect(wslCreate.initialCommand).toBe(`claude --settings="${linux(wslFiles.settingsFile)}" --mcp-config="${linux(wslFiles.mcpConfigFile)}" --strict-mcp-config --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
+      expect(JSON.parse(fs.readFileSync(wslFiles.settingsFile, 'utf8'))).toEqual(buildBotWorkerSettings());
+      expect(JSON.parse(fs.readFileSync(wslFiles.mcpConfigFile, 'utf8'))).toEqual({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', wslMcpLaunchOf('/mnt/c/Program Files/wmux/wmux.exe', ENTRY)] } } });
       // A role binding's level reaches it too.
-      const core = strictFiles(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime }, { wsl: true, level: 'role' })!.initialCommand!);
-      expect(JSON.parse(fs.readFileSync(core.mcp, 'utf8')).mcpServers.wmux.args[1]).toBe(wslMcpLaunchOf('/mnt/c/Program Files/wmux/wmux.exe', ENTRY, ['--core']));
+      const core = guardedLaunchOf(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime }, { wsl: true, level: 'role' })).launch!;
+      expect(core.level).toBe('core');
+      expect(JSON.parse(fs.readFileSync(core.mcpConfigFile, 'utf8')).mcpServers.wmux.args[1]).toBe(wslMcpLaunchOf('/mnt/c/Program Files/wmux/wmux.exe', ENTRY, ['--core']));
       // On Windows each file is handed to Linux claude by its /mnt path.
       const winSettings = 'C:\\Users\\me\\.wmux-e2e\\factory\\worker-settings\\0123456789ab.json';
       expect(withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime, writeSettings: () => winSettings }, { wsl: true })!.initialCommand)
         .toMatch(/^claude --settings="\/mnt\/c\/Users\/me\/\.wmux-e2e\/factory\/worker-settings\/0123456789ab\.json" --mcp-config="[^"]+" --strict-mcp-config /);
       // A runtime or file Linux cannot reach, or no bundle, is refused: never the distro's own wmux server.
       expect(() => withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), wslRuntime: () => '\\\\server\\share\\wmux.exe', platform: 'win32' }, { wsl: true })).toThrow(/runtime cannot be reached from WSL/);
-      expect(() => withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime, platform: 'win32' }, { wsl: true })).toThrow(/cannot be reached from WSL/);
+      expect(() => withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime, platform: 'win32', writeSettings: () => '\\\\server\\share\\s.json' }, { wsl: true })).toThrow(/settings and MCP config cannot be reached from WSL/);
       expect(() => withBotWorkerMergeGuard(opts, worker, { dir, ...mcp(), ...runtime, mcpEntry: () => null }, { wsl: true })).toThrow(/MCP bundle was not found/);
       // Another owner, or another folder, is not that spawn.
       expect(botWorkerForCreate({ ...opts, fanoutTaskOf: 'ws-other' }, NOT_BOT)).toBeNull();
