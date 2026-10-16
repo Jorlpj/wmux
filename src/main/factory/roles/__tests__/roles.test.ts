@@ -179,3 +179,14 @@ describe('a bot with nothing to add stays silent', () => {
     }
   });
 });
+
+describe('the owner is spoken to, not named', () => {
+  it('every template says "the owner" is not what the bot calls them, and no title in Korean', () => {
+    for (const template of BOT_TEMPLATES) {
+      const text = rolePrompt(profile(template));
+      expect(text).toContain('"The owner" in these instructions names the person you talk to, not what you call them: speak to them directly, as "you", with no label or title');
+      expect(text).toContain('in Korean, plain sentences with no "owner님", "오너님" or other title');
+      expect(text).toContain('Use their name only when they have told you it.');
+    }
+  });
+});
