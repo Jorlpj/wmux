@@ -4,7 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import { factDedupeKey, type Fact, type FactDraft } from '../../../shared/facts';
 import type { WakeEnqueueInput } from '../wakeQueue';
-import { botNoticeDraft, noticeBot, noticeWorkerStarts, plainStartFailure, type BotNoticePorts } from '../botNotices';
+import { BOT_NOTICE_LIMITS, botNoticeDraft, noticeBot, noticeWorkerStarts, plainStartFailure, type BotNoticePorts } from '../botNotices';
+import { cmdLaunchPathRefusal, promptFileArgument } from '../../../shared/promptFileArgument';
 import { systemCardForFact } from '../roomWriter';
 import { WakeTaint } from '../wakeTaint';
 
@@ -85,5 +86,42 @@ describe('bot notices', () => {
     expect(plainStartFailure('fanout preflight failed (task 1): not a git repository')).toBe('the repository was not ready for a new worker');
     expect(plainStartFailure('prompt file write failed: EACCES')).toBe('its instructions could not be written');
     expect(plainStartFailure('???')).toBe('its setup failed');
+  });
+
+  it('#2256: a Command Prompt path refusal reaches the card with its cause and remedy, not as an unopened pane', () => {
+    const why = cmdLaunchPathRefusal(`claude ${promptFileArgument('C:\\Users\\me\\.wmux-wE9!\\worktrees\\.meta\\t-1\\prompt.md', 'win32')}`, 'C:\\Users\\me\\.wmux-wE9!', true) ?? '';
+    expect(why).toBe('Command Prompt cannot pass the wmux data folder (its path contains "!"), and no other shell can either; move the folder');
+    // As fan-out reports it: the renderer's spawn, the IPC wrapper, then pty:create's refusal.
+    const wrap = (reason: string) => `renderer spawn failed: fanout.spawnWorkspace: PTY create failed — Error invoking remote method 'pty:create': Error: PTY_CREATE: ${reason}`;
+    expect(plainStartFailure(wrap(why))).toBe(why);
+    const p = ports();
+    noticeWorkerStarts(p, 'bot-1', { workspaceId: 'ws-1', threadId: 'general', key: 'wake:w-1:1', tainted: false, tasks: [{ index: 0, title: 'Fix it', started: false, reason: plainStartFailure(wrap(why)), detail: wrap(why) }] });
+    expect(p.facts[0].payload.title).toBe(`Worker for "Fix it" could not start: ${why}`);
+  });
+
+  it('#2256: every Command Prompt path reason reaches the card whole, the task title giving way', () => {
+    const okDir = 'C:\\Users\\me\\.wmux';
+    const line = (prompt: string) => `claude ${promptFileArgument(prompt, 'win32')}`;
+    const reasons = [
+      // The prompt file: each kind of flaw.
+      ...['C:\\a!\\prompt.md', '\\\\server\\share\\prompt.md', 'C:\\a\nb\\prompt.md', 'C:\\a\u201cb\\prompt.md'].map((prompt) => cmdLaunchPathRefusal(line(prompt), okDir, true)),
+      // The data folder: each kind of flaw, the longest (UNC, control character) included.
+      ...['C:\\Tom&Jerry', '\\\\server\\share\\.wmux', 'C:\\a\tb'].map((dir) => cmdLaunchPathRefusal(line('D:\\out\\prompt.md'), dir, true)),
+    ];
+    const p = ports();
+    reasons.forEach((reason, i) => {
+      expect(reason, String(i)).not.toBeNull();
+      for (const title of ['Fix it', 'x'.repeat(120)]) {
+        noticeWorkerStarts(p, 'bot-1', { workspaceId: 'ws-1', threadId: 'general', key: `wake:w-1:${i}:${title.length}`, tainted: false, tasks: [{ index: 0, title, started: false, reason: plainStartFailure(`PTY_CREATE: ${reason}`) }] });
+        const card = String(p.facts[p.facts.length - 1].payload.title);
+        expect(card.endsWith(`could not start: ${reason}`), card).toBe(true);
+        expect(card.length).toBeLessThanOrEqual(BOT_NOTICE_LIMITS.TITLE_MAX);
+        expect(card).toMatch(/^Worker for "(Fix it|x+…)" could not start: /);
+      }
+    });
+    // A reason with no room left for any title still arrives whole.
+    const long = `Command Prompt cannot pass ${'y'.repeat(145)}`;
+    noticeWorkerStarts(p, 'bot-1', { workspaceId: 'ws-1', threadId: 'general', key: 'wake:w-1:long', tainted: false, tasks: [{ index: 0, title: 'Fix it', started: false, reason: plainStartFailure(`PTY_CREATE: ${long}`) }] });
+    expect(p.facts[p.facts.length - 1].payload.title).toBe(`Worker could not start: ${long}`);
   });
 });
