@@ -84,7 +84,11 @@ describe('WSL per-launch Claude integration', () => {
     expect(injected.env.WSLENV).toContain('WMUX_WSL_GATE_FLAG/p');
     expect(fs.readdirSync(dir)).toEqual(['wsl']);
     expect(fs.readFileSync(path.join(dir, 'wsl', 'bashrc.integration'), 'utf8')).toContain('# original shell integration');
-    expect(fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8')).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"');
+    const shim = fs.readFileSync(path.join(dir, 'wsl', 'bin', 'claude'), 'utf8');
+    expect(shim).toContain('"$real" --settings "$WMUX_WSL_SETTINGS" ${mcp_config:+--mcp-config="$mcp_config"} "$@"');
+    // A launch that names its own servers (a bot's worker) keeps them alone.
+    expect(shim).toContain('mcp_config=${WMUX_WSL_MCP_CONFIG:-}');
+    expect(shim).toContain('case $arg in --strict-mcp-config) mcp_config= ;; esac');
   });
 
   describe('account homes across the Windows/WSL boundary', () => {
