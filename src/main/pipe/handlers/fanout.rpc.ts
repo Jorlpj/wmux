@@ -126,12 +126,12 @@ import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { botCwd, getBotRuntime } from '../../factory/BotRuntime';
 import { getWmuxDir } from '../../../daemon/config';
 import { RESEARCH_PRESET } from '../../../shared/ledger';
-import { GENERAL_THREAD, parseThreadId, taskOriginThread, type ThreadId } from '../../../shared/room';
+import { GENERAL_THREAD, parseThreadId, prThreadId, taskOriginThread, type ThreadId } from '../../../shared/room';
 import { getFactorySettings } from '../../factory/factorySettings';
 import { getBotFanoutReceipts } from '../../factory/botFanoutReceipts';
 import { noticeWorkerStarts, plainStartFailure, type BotWorkerStartOutcome } from '../../factory/botNotices';
 import { runningWakeTainted } from '../../factory/wakeTaint';
-import { resolveRoomPorts, runningWake } from '../../factory/roomWriter';
+import { botThreadRefusal, resolveRoomPorts, runningWake } from '../../factory/roomWriter';
 import { emitBotHook } from '../../factory/botHooks';
 import { checkWorkers, recordWorkerStart, type BotUsage, type BudgetRefusalReason } from '../../factory/budget';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
@@ -680,7 +680,8 @@ export interface FanOutBotPort {
   /** The wake the bot is running now, or null between turns. */
   currentWakeId(botId: string): string | null;
   /** The room thread of that running wake, or null (main's wake state, read
-   *  with the wake id: the tasks the wake starts report in this thread). */
+   *  with the wake id: the tasks the wake starts report in this thread unless
+   *  the bot names another or they check out a PR). */
   currentWakeThread(botId: string): ThreadId | null;
   /** The handoff that running wake delivers (a dispatch the bot was given,
    *  or the one its task wake answers), or null. Its tasks record it, so
@@ -1188,7 +1189,8 @@ export function registerFanOutRpc(
     let botPort: FanOutBotPort | null = null;
     let botProfile: BotProfile | null = null;
     let botWakeId = '';
-    // The thread of the wake that asks: its tasks' wakes and cards go there.
+    // The thread its tasks' wakes and cards go to: the one the bot names,
+    // else the PR its tasks check out, else the asking wake's.
     let botWakeThread: ThreadId | undefined;
     // Whether that wake carried outside text: its tasks are marked tainted.
     let botWakeTainted = false;
@@ -1197,6 +1199,8 @@ export function registerFanOutRpc(
     // Where the bot was talking when it asked (general included): how its
     // workers' start went is told there.
     let botNoticeThread: ThreadId = GENERAL_THREAD;
+    // The thread the bot named for its tasks, if any.
+    let botNamedThread: ThreadId | undefined;
     if (bot) {
       try {
         botPort = (deps.bot ?? defaultBotPort)();
@@ -1227,6 +1231,15 @@ export function registerFanOutRpc(
       const wakeThread = botPort.currentWakeThread(bot.botId);
       botWakeThread = taskOriginThread(wakeThread);
       botNoticeThread = parseThreadId(wakeThread) ?? GENERAL_THREAD;
+      // The bot may name its workers' subject instead (a wake about one PR
+      // starting the next queued one), as freely as it names a post's thread.
+      if (params['threadId'] !== undefined) {
+        const named = parseThreadId(params['threadId']);
+        if (named === null) return deny('INVALID_ARGUMENT', 'threadId is not a thread id');
+        const refused = botThreadRefusal(resolveRoomPorts(), bot, named);
+        if (refused) return deny('INVALID_ARGUMENT', `threadId: ${refused}`);
+        botNamedThread = named;
+      }
       // A researcher's tasks read outside text whatever woke it.
       botWakeTainted = botPort.currentWakeTainted(bot.botId) !== false || botTemplate(botProfile) === 'researcher';
       botWakeHandoff = botPort.currentWakeHandoff?.(bot.botId) ?? undefined;
@@ -1244,6 +1257,18 @@ export function registerFanOutRpc(
       const c = parseCheckout(params['checkout']);
       if ('error' in c) return deny('INVALID_ARGUMENT', c.error);
       checkout = c;
+    }
+    if (params['threadId'] !== undefined && !bot) return deny('INVALID_ARGUMENT', 'task.fanout.start accepts threadId only from a factory bot');
+    if (bot) {
+      // The PR a task checks out is its subject, unless the wake is a
+      // conversation (a handoff's, a 1:1, a group chat) the flow stays in.
+      const inConversation = /^(handoff|dm|group):/.test(botWakeThread ?? '');
+      const pr = inConversation ? undefined : /^pull\/([1-9][0-9]*)\/head$/.exec(checkout?.fetchRef ?? '')?.[1];
+      const repoKey = botProfile?.repo?.repoKey;
+      const prThread = pr && repoKey ? parseThreadId(prThreadId(repoKey, Number(pr))) ?? undefined : undefined;
+      // General names no subject: such tasks keep a thread of their own, as
+      // from a wake in General.
+      botWakeThread = taskOriginThread(botNamedThread ?? prThread ?? botWakeThread);
     }
     // A bot's named secrets for its workers (factory/secretGrants.ts): names
     // only, each stored now; the values reach each worker's process alone.
