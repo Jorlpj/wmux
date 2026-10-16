@@ -46,7 +46,7 @@ export interface WakeContextPorts {
   /** The connection library (default: the running one). */
   connectors?: () => Pick<ConnectorStore, 'forBot'> | null;
   /** The bot skills store (default: the running one). */
-  skills?: () => Pick<BotSkillStore, 'index'> | null;
+  skills?: () => Partial<Pick<BotSkillStore, 'index' | 'archivedNames' | 'approvalStatus'>> | null;
   /** Cards of a room (a thread, or every thread), oldest first: the newest
    *  `limit`, or with `sinceSeq` the first `limit` after it. */
   cards: (workspaceId: string, threadId: ThreadId | null, limit: number, sinceSeq?: number) => readonly RoomCard[];
@@ -55,7 +55,7 @@ export interface WakeContextPorts {
   /** The workspace's approval requests, newest first. */
   approvals?: (workspaceId: string) => ReadonlyArray<{
     action: string; prNumber?: number; issueNumber?: number; repoKey: string; state: string;
-    skill?: { name: string; version: string };
+    skill?: { name: string; version: string; hash?: string };
     botId: string; createdAt: number; updatedAt: number; refusal?: string;
   }>;
   botName: (botId: string) => string | null;
@@ -204,14 +204,28 @@ export function wakeApprovals(ports: WakeContextPorts, profile: BotProfile, now:
     .slice(0, WAKE_CONTEXT_LIMITS.APPROVALS)
     .map((r) => {
       const subject = r.skill ? `${r.skill.name} ${r.skill.version}` : r.prNumber !== undefined ? `PR #${r.prNumber}` : r.issueNumber !== undefined ? `issue #${r.issueNumber}` : r.repoKey;
+      const skill = r.action === 'skill' && r.state === 'approved' && r.skill ? approvedSkillStatus(ports, r.botId, r.skill) : undefined;
       return {
         what: `${ACTION_WORDS[r.action] ?? r.action} ${subject}`,
         state: r.state,
+        action: r.action,
         askedBy: r.botId === profile.id ? 'you' : ports.botName(r.botId) ?? r.botId,
         at: r.updatedAt,
         ...(r.refusal ? { refusal: r.refusal } : {}),
+        ...(skill ? { skill } : {}),
       };
     });
+}
+
+/** Where the skill an approved `skill` request loaded stands now (by its
+ *  content hash): undefined when the store cannot tell. */
+function approvedSkillStatus(ports: WakeContextPorts, botId: string, skill: { name: string; hash?: string }): WakeApprovalSummary['skill'] {
+  if (!skill.hash) return undefined;
+  try {
+    return (ports.skills ?? getBotSkillStore)()?.approvalStatus?.(botId, skill.name, skill.hash) ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** On an owner message to the whole room: the other bots' cards posted
@@ -248,6 +262,7 @@ export function wakeContext(ports: WakeContextPorts, profile: BotProfile, item: 
     clock: wakeClock(now, ports.timeZone?.()),
     connectors: wakeConnectors(ports, profile),
     skills: wakeSkills(ports, profile),
+    archivedSkills: wakeArchivedSkills(ports, profile),
     group: wakeGroup(ports, profile, item),
     now,
   };
@@ -284,7 +299,16 @@ export function wakeConnectors(ports: WakeContextPorts, profile: BotProfile): Wa
  *  proposal waiting for the owner is never listed. */
 export function wakeSkills(ports: WakeContextPorts, profile: BotProfile): SkillIndexEntry[] {
   try {
-    return (ports.skills ?? getBotSkillStore)()?.index(profile.id) ?? [];
+    return (ports.skills ?? getBotSkillStore)()?.index?.(profile.id) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** The skills the owner archived after approving them, for its wake. */
+export function wakeArchivedSkills(ports: WakeContextPorts, profile: BotProfile): string[] {
+  try {
+    return (ports.skills ?? getBotSkillStore)()?.archivedNames?.(profile.id) ?? [];
   } catch {
     return [];
   }

@@ -111,6 +111,8 @@ export interface WakePromptInput {
   connectors?: readonly WakeConnectorSummary[];
   /** The bot's approved skills (wakeContext.ts); proposals never. */
   skills?: readonly SkillIndexEntry[];
+  /** Skills the owner archived after approving them (wakeContext.ts). */
+  archivedSkills?: readonly string[];
   /** The group chat the wake's thread is (wakeContext.ts): its roster is
    *  the group's members only. */
   group?: WakeGroup | null;
@@ -145,6 +147,10 @@ export interface WakeApprovalSummary {
   at: number;
   /** Why main refused it, when it did. */
   refusal?: string;
+  /** The approval's act (shared/botApproval.ts ApprovalAction). */
+  action?: string;
+  /** An approved `skill`: where that skill stands now (wakeContext.ts). */
+  skill?: 'loaded' | 'archived' | 'changed' | 'replaced';
 }
 
 /** Another bot's reply to the same owner message. */
@@ -272,6 +278,13 @@ export function buildWakePrompt(input: WakePromptInput): string {
     lines.push(
       'Your skills (approved by the owner; read one with skill_read before work it covers — Claude Code workers you start in a worktree get copies too, research workers do not):',
       fenceData(skillIndexText(skills), 'skills'),
+    );
+  }
+  const archived = input.archivedSkills ?? [];
+  if (archived.length > 0) {
+    lines.push(
+      'Skills the owner archived (no longer loaded; do not apply them, even where an earlier message or an open question of yours cites them):',
+      fenceData(archived.join('\n'), 'archived-skills'),
     );
   }
   if (item.threadId) lines.push(`Thread: ${item.threadId} (your room posts in this wake go to this thread unless you name another; this id is for your tools, never for the owner's eyes).`);
@@ -428,7 +441,7 @@ export function buildWakePrompt(input: WakePromptInput): string {
       '',
       'Approval requests in this workspace as they stand now (this is current; older cards may say otherwise). '
         + 'Never ask the owner to approve one that is approved, executed or denied:',
-      ...approvals.map((a) => `- ${a.what}: ${approvalStateText(a.state)}${a.refusal ? ` (${a.refusal})` : ''}; asked by ${oneLineName(a.askedBy)}, ${ago(a.at, input.now ?? Date.now())}`),
+      ...approvals.map((a) => `- ${a.what}: ${approvalStateText(a)}${a.refusal ? ` (${a.refusal})` : ''}; asked by ${oneLineName(a.askedBy)}, ${ago(a.at, input.now ?? Date.now())}`),
     );
   }
   const lang = input.language;
@@ -475,7 +488,18 @@ function noticeLines(f: Fact): string[] {
   return out;
 }
 
-function approvalStateText(state: string): string {
+/** An approved skill's request, worded by where the skill stands now. */
+const SKILL_APPROVED_TEXT: Readonly<Record<NonNullable<WakeApprovalSummary['skill']>, string>> = {
+  loaded: 'approved by the owner; loaded',
+  archived: 'archived by the owner; do not apply it',
+  changed: 'approved, but its files changed since; not loaded unless the owner approves a new proposal of it',
+  replaced: 'approved, since replaced by another approved version',
+};
+
+function approvalStateText(a: Pick<WakeApprovalSummary, 'state' | 'action' | 'skill'>): string {
+  const state = a.state;
+  if (state === 'approved' && a.action === 'skill') return a.skill ? SKILL_APPROVED_TEXT[a.skill] : 'approved by the owner';
+  if (state === 'approved' && a.action !== undefined && a.action !== 'merge') return 'approved by the owner (recorded; wmux does not carry this act out yet)';
   switch (state) {
     case 'pending': return 'waiting for the owner';
     case 'approved': return 'approved by the owner, merging after the Undo window';
