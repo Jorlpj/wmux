@@ -196,6 +196,9 @@ const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
   kind: new Set(['research']),
 };
 
+/** Why wmux moved a task to input_required (roomWriter.ts inputRequiredWhy). */
+const INPUT_REQUIRED_WHY: ReadonlySet<string> = new Set(['trustDialog', 'firstRun', 'launchFailed']);
+
 /** Why a gate was skipped (TaskGateRunner.ts GateSkipReason). */
 const GATE_SKIP_REASONS: ReadonlySet<string> = new Set(['deps_missing', 'no_gate_command', 'gate_unavailable']);
 
@@ -275,6 +278,10 @@ export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t:
   if (notice.code === 'worker.waiting') {
     const holders = slotHoldersText(args, t);
     if (holders !== null) vars.holders = holders;
+  }
+  // Why wmux moved a task to input_required, worded (roomWriter inputRequiredWhy).
+  if (notice.code === 'task.inputRequired' && typeof args.why === 'string' && INPUT_REQUIRED_WHY.has(args.why)) {
+    return { title: t(`room.notice.${notice.code}`, vars), body: t(`room.notice.task.inputRequired.why.${args.why}`, vars) };
   }
   const budget = budgetNoticeKeys(notice.code, args);
   if (budget) return { title: t(budget.title, vars), body: t(budget.body, vars) };

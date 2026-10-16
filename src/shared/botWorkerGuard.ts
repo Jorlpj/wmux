@@ -221,6 +221,20 @@ export function isSingleCommand(command: string): boolean {
   return quote === null;
 }
 
+/**
+ * A launch line for a cmd.exe pane. cmd has its own quoting: only `"…"`
+ * (and `^` escapes) quote, and `%`/`!` expand even inside double quotes, so
+ * isSingleCommand's reading does not hold there. With wmux's own prompt
+ * argument taken out, the rest may hold none of `'`, `&`, `|`, `^`, `%`, `!`,
+ * `<`, `>` or a line break. A `$(` anywhere is refused too: cmd evaluates
+ * none, so a prompt argument left in the PowerShell or POSIX shape (a prompt
+ * path cmdPromptFileArgument cannot name) would reach claude as its prompt.
+ * Pure.
+ */
+export function isPlainCmdLaunchLine(line: string): boolean {
+  return !line.includes('$(') && !/['&|^%!<>\r\n]/.test(stripPromptFileArgument(line));
+}
+
 /** Command or process substitution, quoted or not. */
 const SUBSTITUTION = /\$\(|`|<\(|>\(/;
 
