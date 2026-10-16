@@ -136,10 +136,11 @@ if [ -z "$real" ]; then
 fi
 # Retain the pane PATH for subprocesses; only command lookup excludes the shim.
 # A launch that names its own servers (--strict-mcp-config: a bot's worker,
-# main/agents/botWorkerMergeGuard.ts) keeps them alone.
+# main/agents/botWorkerMergeGuard.ts) keeps them alone. Only its options
+# count: the scan stops at --, where the prompt starts.
 mcp_config=\${WMUX_WSL_MCP_CONFIG:-}
 for arg in "$@"; do
-  case $arg in --strict-mcp-config) mcp_config= ;; esac
+  case $arg in --) break ;; --strict-mcp-config) mcp_config= ;; esac
 done
 # --mcp-config is variadic: the = form keeps it from swallowing a prompt argument.
 exec "$real" --settings "$WMUX_WSL_SETTINGS" \${mcp_config:+--mcp-config="$mcp_config"} "$@"
