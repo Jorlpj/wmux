@@ -335,6 +335,10 @@ export interface WorkerReclaimPorts {
    *  daemon cannot stop by itself (`unsupported`: a WSL pane's Linux agent).
    *  Absent: such a worker is not stopped. */
   closePane?: (sessionId: string) => Promise<void>;
+  /** The conversation a pane's launch line pinned and the mode it started it
+   *  in, as recorded when wmux created the pane as a bot worker; null when
+   *  none was. Absent: no mode is filled in. */
+  launchedConversation?: (sessionId: string) => { sessionId: string; permissionMode?: PermissionMode } | null;
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   /** The Bots page re-reads (BOT_EVENT). */
   changed?: () => void;
@@ -503,6 +507,19 @@ export async function reclaimWorker(ports: WorkerReclaimPorts, entry: LedgerEntr
         p.resumeSessionId = old.resumeSessionId;
         if (old.permissionMode) p.permissionMode = old.permissionMode;
       }
+    }
+    // A conversation whose mode no hook carried (a WSL worker whose task ended
+    // at its own report, before its first Stop) resumes in the mode wmux
+    // launched it in: only the conversation the pane's own launch line pinned.
+    for (const p of panes) {
+      if (!p.resumeSessionId || p.permissionMode) continue;
+      let launched: { sessionId: string; permissionMode?: PermissionMode } | null = null;
+      try {
+        launched = ports.launchedConversation?.(p.sessionId) ?? null;
+      } catch {
+        launched = null;
+      }
+      if (launched?.permissionMode && launched.sessionId === p.resumeSessionId) p.permissionMode = launched.permissionMode;
     }
     const rec: ReclaimedWorker = {
       taskId: entry.id,

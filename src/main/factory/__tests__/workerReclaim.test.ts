@@ -141,6 +141,38 @@ describe('reclaimWorker', () => {
     expect(store.all()).toEqual([]);
   });
 
+  it('a conversation no hook gave a mode (only SessionStart) resumes in the mode its launch line started it in', async () => {
+    const store = ReclaimedWorkers.at(dir);
+    const noMode = session({ agentProcessAlive: false, resumeBinding: { agent: 'claude', sessionId: UUID, cwd: wt } });
+    const launchedConversation = vi.fn((id: string) => (id === 'daemon-1' ? { sessionId: UUID, permissionMode: 'bypassPermissions' as const } : null));
+    const rec = await reclaimWorker(reclaimPorts(store, [noMode], { launchedConversation }).ports, row('completed'), 'completed');
+    expect(rec?.sessions[0]).toMatchObject({ resumeSessionId: UUID, permissionMode: 'bypassPermissions' });
+    const typeLine = vi.fn(() => true);
+    const r = await resumeWorker({ store, listSessions: async () => [noMode], typeLine, now: () => 9_000 }, 'wtask-abc-12345678', { kind: 'owner' });
+    expect(r).toMatchObject({ ok: true });
+    expect(typeLine).toHaveBeenCalledWith('daemon-1', `claude --resume ${UUID} --dangerously-skip-permissions`);
+  });
+
+  it('fills no mode for another conversation or a pane wmux did not launch, and keeps a mode a hook recorded', async () => {
+    const OTHER = '3fdb815c-c5dd-4354-92e7-78b232462903';
+    const noMode = session({ resumeBinding: { agent: 'claude', sessionId: UUID, cwd: wt } });
+    const cases: Array<[string, WorkerReclaimPorts['launchedConversation'], WorkerSessionInfo, string | undefined]> = [
+      // The pane's launch pinned another conversation (a later `claude` typed in it).
+      ['other', () => ({ sessionId: OTHER, permissionMode: 'bypassPermissions' }), noMode, undefined],
+      // No bot worker record for the pane (one the owner opened in the worktree).
+      ['owner', () => null, noMode, undefined],
+      // The launch line carried no mode flag.
+      ['flagless', () => ({ sessionId: UUID }), noMode, undefined],
+      // A hook recorded the mode: it is kept.
+      ['hook', () => ({ sessionId: UUID, permissionMode: 'bypassPermissions' }), session({ resumeBinding: { agent: 'claude', sessionId: UUID, cwd: wt, permissionMode: 'acceptEdits' } }), 'acceptEdits'],
+    ];
+    for (const [name, launchedConversation, pane, want] of cases) {
+      const store = ReclaimedWorkers.at(path.join(dir, name));
+      const rec = await reclaimWorker(reclaimPorts(store, [pane], { launchedConversation }).ports, row('completed'), 'completed');
+      expect(rec?.sessions[0].permissionMode, name).toBe(want);
+    }
+  });
+
   it('persists the record across a reload', async () => {
     const store = ReclaimedWorkers.at(dir);
     await reclaimWorker(reclaimPorts(store, [session()]).ports, row('cancelled'), 'cancelled');
