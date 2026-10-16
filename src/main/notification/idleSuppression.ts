@@ -77,7 +77,43 @@ export function recentlySettled(
   return now - (lastSettleAt.get(ptyId) ?? 0) < windowMs;
 }
 
+/**
+ * Per-PTY time of the last lone Escape key written to the pane.
+ *
+ * A single Escape is how Claude Code interrupts a running turn, but it also
+ * closes a completion popup or leaves vim INSERT mode without touching the
+ * turn. On its own it proves nothing; the agent's "Interrupted" row printed
+ * within ESC_INTERRUPT_CONFIRM_MS of it does. The window also keeps an old
+ * turn's row, reprinted by a full redraw, from settling the current turn.
+ */
+const lastEscapeAt = new Map<string, number>();
+
+export const ESC_INTERRUPT_CONFIRM_MS = 3_000;
+
+export function markEscapeKey(ptyId: string, now: number = Date.now()): void {
+  if (!ptyId) return;
+  lastEscapeAt.set(ptyId, now);
+}
+
+export function recentlyEscaped(
+  ptyId: string,
+  windowMs: number = ESC_INTERRUPT_CONFIRM_MS,
+  now: number = Date.now(),
+): boolean {
+  return now - (lastEscapeAt.get(ptyId) ?? -Infinity) < windowMs;
+}
+
+/**
+ * Forget the pane's Escape: once it settled a turn, and when a new turn starts.
+ * Left in place, one Escape would still confirm a redraw of the old row after
+ * the next prompt and settle a turn that is running.
+ */
+export function clearEscapeKey(ptyId: string): void {
+  lastEscapeAt.delete(ptyId);
+}
+
 export function clearPty(ptyId: string): void {
   lastResizeAt.delete(ptyId);
   lastSettleAt.delete(ptyId);
+  lastEscapeAt.delete(ptyId);
 }

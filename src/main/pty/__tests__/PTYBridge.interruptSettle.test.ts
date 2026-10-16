@@ -37,7 +37,7 @@ import { PTYBridge } from '../PTYBridge';
 import type { PTYManager, PTYInstance } from '../PTYManager';
 import { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { SignalLatencyMeter } from '../../../shared/hooks/SignalLatencyMeter';
-import { clearPty as clearSuppression, SETTLE_REDRAW_GUARD_MS } from '../../notification/idleSuppression';
+import { clearPty as clearSuppression, recentlyEscaped, SETTLE_REDRAW_GUARD_MS } from '../../notification/idleSuppression';
 
 interface MockProcess {
   onData: (cb: (data: string) => void) => void;
@@ -113,6 +113,25 @@ describe('PTYBridge interrupt edge (Ctrl+C / ESC ESC settles a latched pane)', (
 
     expect(router.governsRunningState('p1')).toBe(true);
     expect(mocks.broadcastMetadataUpdate).not.toHaveBeenCalled();
+  });
+
+  it('records a lone ESC for the agent\'s "Interrupted" row to confirm', () => {
+    const { bridge } = makeBridge();
+    clearSuppression('p1');
+    expect(recentlyEscaped('p1')).toBe(false);
+
+    bridge.noteInterruptInput('p1', '\x1b[A');
+    expect(recentlyEscaped('p1')).toBe(false);
+    bridge.noteInterruptInput('p1', '\x1b');
+    expect(recentlyEscaped('p1')).toBe(true);
+  });
+
+  it('records a kitty Escape that arrives glued to its release', () => {
+    const { bridge } = makeBridge();
+    clearSuppression('p1');
+
+    bridge.noteInterruptInput('p1', '\x1b[27u\x1b[27;1:3u');
+    expect(recentlyEscaped('p1')).toBe(true);
   });
 
   it('releases the latch on ESC ESC', () => {
@@ -210,5 +229,40 @@ describe('PTYBridge settle-redraw guard (the burst that follows a settle)', () =
     burst(proc);
 
     expect(runningBroadcasts('p1')).toBe(1);
+  });
+});
+
+describe('PTYBridge lone Escape confirmed by the agent\'s "Interrupted" row', () => {
+  const ROW = '  \u001b[2m⎿\u001b[0m  Interrupted · What should Claude do instead?\r\n';
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.broadcastMetadataUpdate.mockClear();
+    mocks.lastBroadcastAgentStatus.clear();
+    clearSuppression('p1');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('settles the interrupted turn once, and not the next one when the row is redrawn', () => {
+    const { bridge, router, proc } = makeBridge();
+    bridge.setupDataForwarding('p1');
+    proc.emitData('Claude Code v2.1.172\r\n  bypass permissions on\r\n');
+    vi.advanceTimersByTime(50);
+
+    router.noteHookTurnStart('p1', Date.now(), 'claude');
+    bridge.noteInterruptInput('p1', '\x1b');
+    proc.emitData(ROW);
+    vi.advanceTimersByTime(50);
+    expect(router.governsRunningState('p1')).toBe(false);
+    expect(recentlyEscaped('p1')).toBe(false);
+
+    // The next turn starts inside the Escape window; a repaint prints the row again.
+    vi.advanceTimersByTime(1_500);
+    router.noteHookTurnStart('p1', Date.now(), 'claude');
+    proc.emitData(ROW);
+    vi.advanceTimersByTime(50);
+    expect(router.governsRunningState('p1')).toBe(true);
   });
 });
