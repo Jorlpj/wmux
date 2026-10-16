@@ -1929,3 +1929,9 @@ export function isReclaimedWorkerPane(botId: string, owner: string, workspaceId:
   return (store?.all() ?? []).some((r) => r.botId === botId && r.ownerWorkspaceId === owner
     && workerWorkspaceOf(r) === workspaceId && r.sessions.some((s) => s.sessionId === ptyId));
 }
+
+/** The reclaimed worker of a bot's task whose recorded pane `ptyId` is, in
+ *  the workspace that worker runs in (that pane only), or null. */
+export function reclaimedWorkerOfPane(workspaceId: string, ptyId: string, store: Pick<ReclaimedWorkers, 'all'> | null | undefined = resumePorts?.store): ReclaimedWorker | null {
+  return (store?.all() ?? []).find((r) => workerWorkspaceOf(r) === workspaceId && r.sessions.some((s) => s.sessionId === ptyId)) ?? null;
+}

@@ -33,18 +33,18 @@ import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import {
   BOT_WORKER_SESSIONS_VERSION,
+  buildBotWorkerSettings,
   botWorkerSessionsPath,
   namesClaude,
   readBotWorkerSessions,
-  spliceSettingsFlag,
   workerProjectSettingsRefusal,
-  writeBotWorkerSettings,
   type BotWorkerLaunchFiles,
   type BotWorkerSessionRecord,
 } from '../../shared/botWorkerGuard';
 import {
   buildWorkerMcpConfig,
   buildWorkerSettings,
+  buildWslWorkerMcpConfig,
   contentFileName,
   spliceWorkerLaunch,
   workerWmuxLevel,
@@ -94,6 +94,10 @@ export interface BotWorkerGuardDeps {
   /** A re-fire's or resume's other folders the line may start in (the pane's
    *  live and spawn folders), checked with the recorded one. */
   folders?: readonly string[];
+  /** The Windows runtime a WSL worker's wmux server runs in (default: this
+   *  build's own executable). */
+  wslRuntime?: () => string;
+  platform?: NodeJS.Platform;
 }
 
 /** pty.handler points the guard at the app's MCP bundle and the owner's
@@ -303,9 +307,10 @@ export function withBotWorkerMergeGuard<T extends { initialCommand?: string; exe
   if (launch.wsl && connectors.length > 0) throw guardError('PTY_CREATE', 'a task with connections does not run in a WSL shell');
   const cwd = typeof options.cwd === 'string' && options.cwd ? path.resolve(options.cwd) : '';
   if (!launch.wsl && !cwd) throw guardError('PTY_CREATE', 'no folder to check the worker\'s settings in');
+  const level = workerWmuxLevel(launch.level, (deps.registeredLevel ?? defaultRegisteredLevel)());
   const plan: LaunchPlan = launch.wsl
-    ? { kind: 'legacy' }
-    : { kind: 'strict', connectors, level: workerWmuxLevel(launch.level, (deps.registeredLevel ?? defaultRegisteredLevel)()), cwd };
+    ? { kind: 'legacy', level }
+    : { kind: 'strict', connectors, level, cwd };
   const guarded = guardLaunchLine('PTY_CREATE', options.initialCommand, deps, plan);
   const next = guarded.line === options.initialCommand ? { ...options } : { ...options, initialCommand: guarded.line };
   launchOfCreate.set(next, { ...(guarded.files ? { launch: guarded.files, cwd } : {}), ...(launch.wsl ? { wsl: true } : {}) });
@@ -363,11 +368,12 @@ function guardError(where: string, why: string): Error {
   return new Error(`${where}: a bot's fan-out worker starts only with the merge-lane guard (${why})`);
 }
 
-/** How a launch is guarded: the worker settings file alone (a WSL shell, as
- *  before connections), or per-launch files for these connections, in a
- *  folder whose project settings are checked first. */
+/** How a launch is guarded: the worker settings file and this build's wmux
+ *  server alone (a WSL shell, which takes no connections), or per-launch
+ *  files for these connections, in a folder whose project settings are
+ *  checked first. */
 type LaunchPlan =
-  | { kind: 'legacy' }
+  | { kind: 'legacy'; level: WorkerWmuxLevel }
   | { kind: 'strict'; connectors: readonly Connector[]; level: WorkerWmuxLevel; cwd: string; folders?: readonly string[]; strayKeys?: readonly string[] };
 
 function guardLaunchLine(where: string, line: string, deps: BotWorkerGuardDeps, plan: LaunchPlan): { line: string; files?: BotWorkerLaunchFiles } {
@@ -375,15 +381,36 @@ function guardLaunchLine(where: string, line: string, deps: BotWorkerGuardDeps, 
   if (plan.kind === 'legacy') {
     let settingsPath: string;
     try {
-      settingsPath = (deps.writeSettings ?? writeBotWorkerSettings)(dir);
+      // A per-launch copy, so the session record names it as main's own.
+      settingsPath = deps.writeSettings
+        ? deps.writeSettings(dir)
+        : writeContentFile(path.join(dir, 'factory', 'worker-settings'), `${JSON.stringify(buildBotWorkerSettings(), null, 2)}\n`);
     } catch (err) {
       throw guardError(where, `the worker settings could not be written: ${String(err)}`);
     }
-    // The legacy plan is a WSL pane's: Linux claude opens the file through
-    // its /mnt mount, never by the Windows path.
-    const guarded = spliceSettingsFlag(line, toWslPath(settingsPath) ?? settingsPath);
-    if (guarded === null) throw guardError(where, 'the launch line cannot carry the worker settings');
-    return { line: guarded };
+    // The legacy plan is a WSL pane's: Linux claude opens each file through
+    // its /mnt mount, never by the Windows path, and loads this build's wmux
+    // server alone (--strict-mcp-config), run in the Windows runtime like a
+    // WSL pane's own: never whichever wmux server the distro's claude config
+    // names. A path Linux cannot reach is refused, not guessed.
+    const platform = deps.platform ?? process.platform;
+    const inWsl = (p: string): string | null => toWslPath(p) ?? (platform === 'win32' ? null : p);
+    const entry = (deps.mcpEntry ?? defaultMcpEntry)();
+    if (!entry) throw guardError(where, 'the wmux MCP bundle was not found, so the worker could not report');
+    const runtime = inWsl((deps.wslRuntime ?? (() => process.execPath))());
+    if (!runtime) throw guardError(where, 'this build\'s runtime cannot be reached from WSL, so the worker could not load its wmux server');
+    let mcpConfigFile: string;
+    try {
+      mcpConfigFile = writeContentFile(path.join(dir, 'factory', 'worker-mcp'), `${JSON.stringify(buildWslWorkerMcpConfig(runtime, entry, plan.level), null, 2)}\n`);
+    } catch (err) {
+      throw guardError(where, `the worker's MCP config could not be written: ${String(err)}`);
+    }
+    const settingsInWsl = inWsl(settingsPath);
+    const mcpInWsl = inWsl(mcpConfigFile);
+    if (!settingsInWsl || !mcpInWsl) throw guardError(where, 'the worker\'s settings and MCP config cannot be reached from WSL');
+    const guarded = spliceWorkerLaunch(line, settingsInWsl, mcpInWsl);
+    if (guarded === null) throw guardError(where, 'the launch line cannot carry the worker\'s MCP config and rules');
+    return { line: guarded, files: { settingsFile: settingsPath, mcpConfigFile, level: plan.level } };
   }
   const unsafe = [plan.cwd, ...(plan.folders ?? [])].map(workerProjectSettingsRefusal).find((r) => r !== null);
   if (unsafe) throw guardError(where, `the worker's folder has Claude settings a bot's worker does not start with (${unsafe})`);
@@ -582,14 +609,15 @@ export function guardRefireLine(sessionId: string, line: string, deps: BotWorker
   return guardLaunchLine('worktask:refire', line, deps, recordedPlan('worktask:refire', sessionId, deps)).line;
 }
 
-/** A recorded session's launch: the worker settings alone in a WSL shell;
+/** A recorded session's launch: in a WSL shell the worker settings and this
+ *  build's wmux server, at its recorded level;
  *  otherwise new files for the folder it was launched in, at its recorded
  *  wmux level (the owner's registered one for a record without files), with
  *  the task's connections that are still its bot's now. A session with no
  *  folder on record (or a record that cannot be read) is refused. */
 function recordedPlan(where: string, sessionId: string, deps: BotWorkerGuardDeps): LaunchPlan {
   const rec = loadSessions(deps.dir ?? getWmuxDir()).get(sessionId);
-  if (rec?.wsl) return { kind: 'legacy' };
+  if (rec?.wsl) return { kind: 'legacy', level: rec.launch?.level ?? workerWmuxLevel((deps.registeredLevel ?? defaultRegisteredLevel)()) };
   if (!rec?.cwd) throw guardError(where, 'the session has no folder on record to check the worker\'s settings in');
   return {
     kind: 'strict',
