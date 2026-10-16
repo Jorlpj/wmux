@@ -30,6 +30,10 @@ type TestState = WorkspaceSlice & {
   notificationSoundEnabled: boolean;
   toastEnabled: boolean;
   notificationRingEnabled: boolean;
+  paneRingEnabled: boolean;
+  paneFlashEnabled: boolean;
+  taskbarFlashEnabled: boolean;
+  paneGlowOpacity: number;
   anthropicUsageEnabled: boolean;
   usageLimitAutoResume: boolean;
   claudeResumeOnStart: boolean;
@@ -90,6 +94,10 @@ function createTestStore() {
       notificationSoundEnabled: true,
       toastEnabled: true,
       notificationRingEnabled: true,
+      paneRingEnabled: true,
+      paneFlashEnabled: true,
+      taskbarFlashEnabled: true,
+      paneGlowOpacity: 0.6,
       anthropicUsageEnabled: false,
       usageLimitAutoResume: false,
       claudeResumeOnStart: false,
@@ -815,6 +823,70 @@ describe('loadSession — UI scale (#822)', () => {
     expect(store.getState().uiScale).toBe(1.6);
     store.getState().loadSession(sessionWith(-3));
     expect(store.getState().uiScale).toBe(0.8);
+  });
+});
+
+describe('loadSession — notification surface settings', () => {
+  function sessionWith(fields: Record<string, unknown>): SessionData {
+    const ws: Workspace = {
+      id: 'ws-notify',
+      name: 'Notify',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      ...fields,
+    } as unknown as SessionData;
+  }
+
+  it('restores explicit false toggles and a non-default glow opacity', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith({
+      paneRingEnabled: false,
+      paneFlashEnabled: false,
+      taskbarFlashEnabled: false,
+      paneGlowOpacity: 0.8,
+    }));
+    expect(store.getState()).toMatchObject({
+      paneRingEnabled: false,
+      paneFlashEnabled: false,
+      taskbarFlashEnabled: false,
+      paneGlowOpacity: 0.8,
+    });
+  });
+
+  it('keeps the defaults for a session saved before these fields', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith({}));
+    expect(store.getState()).toMatchObject({
+      paneRingEnabled: true,
+      paneFlashEnabled: true,
+      taskbarFlashEnabled: true,
+      paneGlowOpacity: 0.6,
+    });
+  });
+
+  it('ignores malformed values and clamps an out-of-range opacity', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith({
+      paneRingEnabled: 'false',
+      paneFlashEnabled: 0,
+      taskbarFlashEnabled: null,
+      paneGlowOpacity: 'dim',
+    }));
+    expect(store.getState()).toMatchObject({
+      paneRingEnabled: true,
+      paneFlashEnabled: true,
+      taskbarFlashEnabled: true,
+      paneGlowOpacity: 0.6,
+    });
+    store.getState().loadSession(sessionWith({ paneGlowOpacity: 0.2 }));
+    expect(store.getState().paneGlowOpacity).toBe(0.6);
+    store.getState().loadSession(sessionWith({ paneGlowOpacity: 3 }));
+    expect(store.getState().paneGlowOpacity).toBe(1);
   });
 });
 

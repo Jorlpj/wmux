@@ -1007,6 +1007,12 @@ export interface SessionData {
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
   notificationRingEnabled?: boolean;
+  /** Settings › Notifications pane ring, its flash and the taskbar flash. Absent = on. */
+  paneRingEnabled?: boolean;
+  paneFlashEnabled?: boolean;
+  taskbarFlashEnabled?: boolean;
+  /** #949 — opacity of a pane holding the unread glow. Absent = 0.6; clamped to [0.6, 1] on load. */
+  paneGlowOpacity?: number;
   /** Whether the user opted in to Anthropic usage polling (#896). No credentials are persisted. */
   anthropicUsageEnabled?: boolean;
   /** Arm a pane held at a usage limit to continue after the reset, unless the pane decided otherwise. */

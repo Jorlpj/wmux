@@ -144,6 +144,39 @@ describe('AppLayout — axis A session-save invariants', () => {
     expect(source).toMatch(/fleetLayout:\s*state\.fleetLayout/);
   });
 
+  it('persists the pane ring, flash, taskbar flash and glow opacity, including false', () => {
+    // Settings › Notifications: these reset to their defaults on every restart
+    // while they were left out of the session.
+    const tree = ts.createSourceFile('AppLayout.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const builder = tree.statements.find(
+      (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'buildSessionData',
+    );
+    const code = ts.transpileModule(builder!.getText(tree), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const build = new Function('useStore', 'selectPcRailPersisted', `${code}; return buildSessionData(new Map());`);
+    const snapshot = build({ getState: () => ({
+      paneRingEnabled: false,
+      paneFlashEnabled: false,
+      taskbarFlashEnabled: false,
+      paneGlowOpacity: 0.8,
+      workspaces: [],
+      archivedWorkspaces: [],
+      orchestratorRoleBindings: {},
+      layoutTemplates: [],
+      recentCommands: [],
+      toolbarSnippets: [],
+      surfaceDismissedQuestion: {},
+    }) }, selectPcRailPersisted);
+    const persisted = JSON.parse(JSON.stringify(snapshot));
+    expect(persisted).toMatchObject({
+      paneRingEnabled: false,
+      paneFlashEnabled: false,
+      taskbarFlashEnabled: false,
+      paneGlowOpacity: 0.8,
+    });
+  });
+
   // Fix B — cap-skipped suspended promote. Boot recovery honours a session cap,
   // so a workspace beyond the cap came back with its ptyId absent and reconcile
   // destructively cleared it (losing the pane's scrollback and identity). The

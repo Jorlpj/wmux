@@ -699,10 +699,10 @@ export interface UISlice {
 
   // ─── Notification surface toggles (T5) ───────────────────────────────────
   // Distinct knobs so users can quiet individual surfaces without disabling
-  // the underlying notification feature. Mirrors the non-persisting shape of
-  // notificationRingEnabled / notificationSoundEnabled rather than the
-  // IPC-persisting toastEnabled — the SettingsPanel reset path lives in the
-  // same family as the other notification toggles.
+  // the underlying notification feature. Mirrors notificationRingEnabled /
+  // notificationSoundEnabled rather than toastEnabled: renderer-only state,
+  // persisted in the session (AppLayout.buildSessionData / loadSession) with
+  // no main-side setting.
   //
   // paneRingEnabled: master gate for the pane border ring animation that
   //   triggers on notifications. When false, NotifyEvents that would normally
@@ -729,8 +729,8 @@ export interface UISlice {
   //   which reads as "the pane is shadowed" and makes an inactive session
   //   hard to monitor. 1 disables the dimming entirely (the border-color
   //   glow stays); 0.6 is the historical look. Clamped to [0.6, 1] — below
-  //   0.6 would only make the readability complaint worse. Same
-  //   non-persisting family as paneRingEnabled above.
+  //   0.6 would only make the readability complaint worse. Persisted in the
+  //   session like paneRingEnabled above; loadSession applies the same clamp.
   paneGlowOpacity: number;
   setPaneGlowOpacity: (opacity: number) => void;
 
