@@ -364,14 +364,16 @@ describe('task.push: a repository inside WSL', () => {
 
 describe('task.push RPC', () => {
   type Handler = (params: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown>;
-  const setup = (over: { row?: unknown; tasks?: unknown[]; caller?: string | null; repoDefault?: string | null; botRepo?: string } = {}) => {
+  const setup = (over: { row?: unknown; tasks?: unknown[]; caller?: string | null; repoDefault?: string | null; botRepo?: string; ended?: unknown; reclaimed?: (ws: string, pty: string) => { taskId: string; botId: string; ownerWorkspaceId: string } | null } = {}) => {
     const handlers = new Map<string, Handler>();
     const push = vi.fn(async (i: { branch: string }) => ({ ok: true as const, branch: i.branch, remote: 'origin' as const, head: 'abc', output: '' }));
-    const row = over.row === undefined ? { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } : over.row;
+    const row = over.row === undefined ? { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', dispatch: { origin: { kind: 'pane' }, repoKey: 'github.com/acme/app' } } : over.row;
     registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {
       getWindow: () => null,
       daemon: { rpc: vi.fn(async () => ({ ok: true, tasks: over.tasks ?? [{ id: 'wtask-1', status: 'open', branch: 'wtask/one', worktreePath: '/w/one' }] })) },
-      getLedger: () => ({ findOpenByTaskWorkspace: (ws: string) => (ws === 'ws-task' ? row : null) }) as never,
+      getLedger: () => ({ findOpenByTaskWorkspace: (ws: string) => (ws === 'ws-task' ? row : null), get: (id: string) => (id === 'wtask-1' ? over.ended ?? null : null) }) as never,
+      reclaimedWorkerOfPane: over.reclaimed ?? (() => null),
+      exists: () => true,
       resolveCallerWorkspace: async () => (over.caller === undefined ? 'ws-task' : over.caller),
       wmuxDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-rpc-')),
       push: push as never,
@@ -402,7 +404,21 @@ describe('task.push RPC', () => {
     await call({ senderPtyId: 'pty-1' }, local);
     const given = push.mock.calls[0][0] as unknown as { repoDefaultBranch: (k: string) => Promise<string | null>; expectedRepoKey?: string };
     expect(await given.repoDefaultBranch('github.com/o/r')).toBe('trunk');
-    expect(given.expectedRepoKey).toBeUndefined();
+    // The origin main recorded for the task.
+    expect(given.expectedRepoKey).toBe('github.com/acme/app');
+  });
+
+  it('applies the same origin pin as task_fetch: a task with no recorded origin is refused; a resumed worker\'s pane pushes its own task', async () => {
+    const none = setup({ row: { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } });
+    expect(await none.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringMatching(/recorded no origin/) } });
+    expect(none.push).not.toHaveBeenCalled();
+    const ended = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', dispatch: { origin: { kind: 'bot', botId: 'bot-1' }, repoKey: 'github.com/acme/app' } };
+    const reclaimed = (ws: string, pty: string) => (ws === 'ws-task' && pty === 'pty-1' ? { taskId: 'wtask-1', botId: 'bot-1', ownerWorkspaceId: 'ws-owner' } : null);
+    const tasks = [{ id: 'wtask-1', status: 'closed', branch: 'wtask/one', worktreePath: '/w/one' }];
+    const resumed = setup({ row: null, ended, reclaimed, tasks });
+    expect(await resumed.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: true, branch: 'wtask/one', taskId: 'wtask-1' });
+    expect(resumed.push).toHaveBeenCalledWith(expect.objectContaining({ expectedRepoKey: 'github.com/acme/app', worktreePath: '/w/one' }));
+    expect(await setup({ row: null, ended, reclaimed, tasks }).call({ senderPtyId: 'pty-2' }, local)).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
   });
 
   it('pins a bot\'s task to the bot\'s repository, and refuses a bot that names none', async () => {
