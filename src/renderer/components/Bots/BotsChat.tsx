@@ -87,7 +87,7 @@ import { BotConnections } from './BotConnections';
 import { BotSkills } from './BotSkills';
 import { BotToday } from './BotToday';
 import { BrainModelLine, WorkerModelLine } from './BotModelLines';
-import { stopBotSummary, type BotsStopPort } from './botsStop';
+import { stopBotSummary, useWorkerStopUnfinished, type BotsStopPort } from './botsStop';
 import { InlineConfirm } from './InlineConfirm';
 import BotsWorkerPanel from './BotsWorkerPanel';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
@@ -1132,12 +1132,15 @@ function workerState(worker: BotWorker): string {
  *  worker's name and state (needs-you text while it waits), else its row in
  *  the list's tree (in review, done, failed or cancelled, with its folder
  *  note, and whether it can resume), else a task's rail state, else its
- *  workspace's name with no state. */
-function workerPanelView(workspaceId: string, workers: readonly BotWorker[], tree: readonly BotTreeRow[], tasks: readonly BotTaskView[], t: T): { name: string; state: string | null; attention: boolean; resumeTaskId?: string } {
+ *  workspace's name with no state. `stopTaskId`: a live worker whose task
+ *  is still open (its row's), which Stop worker stops; `taskId`: the shown
+ *  row's task, whatever its state. */
+function workerPanelView(workspaceId: string, workers: readonly BotWorker[], tree: readonly BotTreeRow[], tasks: readonly BotTaskView[], t: T): { name: string; state: string | null; attention: boolean; resumeTaskId?: string; stopTaskId?: string; taskId?: string } {
   const live = workers.find((w) => w.workspaceId === workspaceId);
-  if (live) return { name: live.name, state: t(workerState(live)), attention: live.waiting };
   const row = tree.find((r) => r.workspaceId === workspaceId);
-  if (row) return { name: row.title, state: treeRowLabel(row, t), attention: row.state === 'needsYou', ...(row.resumable && row.taskId ? { resumeTaskId: row.taskId } : {}) };
+  const taskId = row?.taskId ?? live?.taskId;
+  if (live) return { name: live.name, state: t(workerState(live)), attention: live.waiting, ...(taskId ? { taskId } : {}), ...(row?.stoppable && row.taskId ? { stopTaskId: row.taskId } : {}) };
+  if (row) return { name: row.title, state: treeRowLabel(row, t), attention: row.state === 'needsYou', ...(taskId ? { taskId } : {}), ...(row.resumable && row.taskId ? { resumeTaskId: row.taskId } : {}) };
   const task = tasks.find((x) => (x.workerWorkspaceId ?? x.taskWorkspaceId) === workspaceId);
   if (task) return { name: task.title, state: taskRailState(task, t), attention: false };
   const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId);
@@ -2270,6 +2273,10 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   useEffect(() => { if (shownId) setOpenThread(null); }, [shownId]);
   const tree = conversation.kind === 'bot' ? conversation.tree : EMPTY_TREE;
   const shown = shownId && !openThread ? workerPanelView(shownId, workers, tree, tasks, t) : null;
+  // A Stop worker under way, or one main answered partial, keeps the item
+  // offered once its task is cancelled, so the owner can stop again.
+  const stopUnfinished = useWorkerStopUnfinished(shown?.taskId);
+  const shownStopTaskId = shown?.stopTaskId ?? (stopUnfinished ? shown?.taskId : undefined);
   // The rail lists only the tasks with no row in the list's tree.
   const openWorkspaceIds = useStore(useShallow((s) => s.workspaces.map((w) => w.id)));
   // An ended task is never a rail row (owner decision 2026-10-16), only one
@@ -2445,6 +2452,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
         t={t}
         onClose={() => useStore.getState().setBotsWorkerPanel(null)}
         onResume={shown.resumeTaskId && !readOnly && resumePort?.resumeWorker ? () => resumeShown(shown.resumeTaskId!) : undefined}
+        stop={shownStopTaskId && stopPort.stopTask ? { taskId: shownStopTaskId, stopTask: stopPort.stopTask } : undefined}
         style={sideStyle}
       />
     )}
