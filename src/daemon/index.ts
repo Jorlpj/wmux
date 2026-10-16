@@ -131,7 +131,7 @@ import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
 import { decideLaunchPresence, launchPresenceNeedsProcessRead, type IdleShellRead } from './launchPresence';
 import { Watchdog } from './Watchdog';
-import { selectRecoverableSessions } from './recoverySelector';
+import { selectRecoverableSessions, startLeftoverShellReaps } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
 import {
   classifyReapIdentity,
@@ -1878,6 +1878,32 @@ async function recoverSessions(
     );
   }
 
+  // Stop each live session's previous shell if it is still running and is
+  // ours. Each check costs a tasklist call, plus a process probe when the pid
+  // is alive: 0.6-1.2 s per session on Windows. Asked one at a time inside the
+  // loop below, a 25-pane recovery kept the daemon from answering for 25 s
+  // ("Restoring panes..." the whole time). Run them up front, a few at a time;
+  // each one confirms the identity and kills right after that check, and the
+  // loop waits for a session's entry before recreating it. WSL and
+  // scheduled-run sessions keep their own paths below.
+  const leftoverShells = rebooted
+    ? new Map<string, Promise<void>>()
+    : startLeftoverShellReaps(
+      state.sessions.filter((s) =>
+        s.state !== 'dead' && s.state !== 'suspended' && recoverableIds.has(s.id)
+        && !automationRunPtyIds.has(s.id) && !isWslShell(s.cmd)),
+      {
+        limit: 6,
+        isAlive: (pid) => ProcessMonitor.isAlive(pid),
+        reap: (s) => reapIfIdentityConfirmed({
+          pid: s.pid,
+          cmd: s.cmd,
+          storedStartTime: s.pidStartTime,
+          reason: `recovery of ${s.id}`,
+        }),
+      },
+    );
+
   for (const session of state.sessions) {
     if (session.state === 'dead') {
       // #646: a tombstone is supposed to mean "the process is gone". Before
@@ -2065,15 +2091,9 @@ async function recoverSessions(
     } else {
       // Non-suspended live session — check for periodic snapshot buf file
       // (written every 30s, survives forced kills / power loss)
-      if (!rebooted && await ProcessMonitor.isAlive(session.pid)) {
-        // Guard against PID recycling: verify the process is actually
-        // the shell we spawned, not an unrelated system process.
-        if (await isOurShellProcess(session.pid, session.cmd)) {
-          try { process.kill(session.pid); } catch { /* ignore */ }
-        } else {
-          log('warn', `PID ${session.pid} is alive but not our shell (${session.cmd}) — skipping kill`);
-        }
-      }
+      // The previous shell was stopped above (only after its identity was
+      // confirmed); wait for that before recreating the session.
+      await leftoverShells.get(session.id);
 
       const snapshotPath = stateWriter.getBufferDumpPath(session.id);
       if (fs.existsSync(snapshotPath)) {
