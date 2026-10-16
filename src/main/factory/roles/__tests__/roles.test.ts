@@ -113,6 +113,14 @@ describe('bot prompts (job, powers and outputs)', () => {
     expect(line(profile('reviewer'))[0]).toMatch(/Your own reading informs, the verify task's gate decides the verdict\./);
   });
 
+  it('a bot tells its workers to bring in fresh main with task_fetch, never a git fetch of their own', () => {
+    for (const template of ['coordinator', 'developer', 'issue', 'custom'] as const) {
+      expect(rolePrompt(profile(template))).toContain('with its task_fetch tool (wmux fetches with its own credentials), then `git merge origin/<default branch>`');
+    }
+    expect(rolePrompt({ ...profile('custom'), template: 'custom', role: 'maintainer' })).toContain('task_fetch');
+    expect(rolePrompt(profile('developer'))).toContain('A PR that conflicts with the default branch goes back to its worker (worker_message, or worker_resume once it ended): run task_fetch, then `git merge origin/<default branch>`');
+  });
+
   it('each template words its own work', () => {
     expect(rolePrompt(profile('reviewer'))).toMatch(/pr_verdict: .*evidence \{taskId\}/);
     expect(rolePrompt(profile('reviewer'))).toMatch(/UI recipes are outside it/);
