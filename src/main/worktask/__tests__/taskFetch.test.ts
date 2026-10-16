@@ -124,15 +124,18 @@ describe('fetchTaskRefs', () => {
 
 describe('task.fetch RPC', () => {
   type Handler = (params: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown>;
-  const setup = (over: { tasks?: unknown[]; caller?: string | null; botRepo?: string; row?: unknown } = {}) => {
+  type Rec = { taskId: string; botId: string; ownerWorkspaceId: string };
+  const setup = (over: { tasks?: unknown[]; caller?: string | null; botRepo?: string; row?: unknown; ended?: unknown; reclaimed?: (ws: string, pty: string) => Rec | null; exists?: boolean } = {}) => {
     const handlers = new Map<string, Handler>();
     const fetch = vi.fn(async () => ({ ok: true as const, remote: 'origin' as const, defaultBranch: 'main', fetched: [{ ref: 'origin/main', sha: 'abc' }], missing: [] }));
     const push = vi.fn();
-    const row = over.row === undefined ? { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } : over.row;
+    const row = over.row === undefined ? { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', dispatch: { origin: { kind: 'pane' }, repoKey: 'github.com/acme/app' } } : over.row;
     registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {
       getWindow: () => null,
       daemon: { rpc: vi.fn(async () => ({ ok: true, tasks: over.tasks ?? [{ id: 'wtask-1', status: 'open', branch: 'wtask/one', worktreePath: '/w/one' }] })) },
-      getLedger: () => ({ findOpenByTaskWorkspace: (ws: string) => (ws === 'ws-task' ? row : null) }) as never,
+      getLedger: () => ({ findOpenByTaskWorkspace: (ws: string) => (ws === 'ws-task' ? row : null), get: (id: string) => (id === 'wtask-1' ? over.ended ?? null : null) }) as never,
+      reclaimedWorkerOfPane: over.reclaimed ?? (() => null),
+      exists: () => over.exists ?? true,
       resolveCallerWorkspace: async () => (over.caller === undefined ? 'ws-task' : over.caller),
       wmuxDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-fetch-rpc-')),
       fetch: fetch as never,
@@ -148,8 +151,36 @@ describe('task.fetch RPC', () => {
     const { call, fetch, push } = setup();
     const r = await call({ senderPtyId: 'pty-1', branch: 'main', worktreePath: '/elsewhere' }, local);
     expect(r).toMatchObject({ ok: true, defaultBranch: 'main', fetched: [{ ref: 'origin/main', sha: 'abc' }], taskId: 'wtask-1' });
-    expect(fetch).toHaveBeenCalledWith(expect.objectContaining({ branch: 'wtask/one', worktreePath: '/w/one' }));
+    expect(fetch).toHaveBeenCalledWith(expect.objectContaining({ branch: 'wtask/one', worktreePath: '/w/one', expectedRepoKey: 'github.com/acme/app' }));
     expect(push).not.toHaveBeenCalled();
+  });
+
+  it('fetch uses the origin main recorded for the task: a task with none is refused', async () => {
+    const none = setup({ row: { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } });
+    expect(await none.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringMatching(/recorded no origin/) } });
+    expect(none.fetch).not.toHaveBeenCalled();
+    // A bot's task: its dispatch's repository first, over the bot's profile now.
+    const bot = setup({ row: { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', dispatch: { origin: { kind: 'bot', botId: 'bot-1' }, repoKey: 'github.com/acme/app' } }, botRepo: 'github.com/acme/other' });
+    await bot.call({ senderPtyId: 'pty-1' }, local);
+    expect(bot.fetch).toHaveBeenCalledWith(expect.objectContaining({ expectedRepoKey: 'github.com/acme/app' }));
+  });
+
+  it('a bot\'s worker resumed after its task ended fetches from its recorded pane, for that task only', async () => {
+    const ended = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'completed', dispatch: { origin: { kind: 'bot', botId: 'bot-1' }, repoKey: 'github.com/acme/app' } };
+    const rec = { taskId: 'wtask-1', botId: 'bot-1', ownerWorkspaceId: 'ws-owner' };
+    const reclaimed = (ws: string, pty: string) => (ws === 'ws-task' && pty === 'pty-1' ? rec : null);
+    const closed = [{ id: 'wtask-1', status: 'closed', branch: 'wtask/one', worktreePath: '/w/one' }];
+    const ok = setup({ row: null, ended, reclaimed, tasks: closed });
+    expect(await ok.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: true, taskId: 'wtask-1' });
+    expect(ok.fetch).toHaveBeenCalledWith(expect.objectContaining({ branch: 'wtask/one', worktreePath: '/w/one', expectedRepoKey: 'github.com/acme/app' }));
+    // Another pane in that workspace is not that worker.
+    expect(await setup({ row: null, ended, reclaimed, tasks: closed }).call({ senderPtyId: 'pty-2' }, local)).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    // A record whose task is another bot's, or another owner's, stands for nothing.
+    expect(await setup({ row: null, ended, reclaimed: () => ({ ...rec, botId: 'bot-2' }), tasks: closed }).call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    expect(await setup({ row: null, ended, reclaimed: () => ({ ...rec, ownerWorkspaceId: 'ws-x' }), tasks: closed }).call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
+    // Its worktree branch must still be there, and a detached task is not its own.
+    expect(await setup({ row: null, ended, reclaimed, tasks: closed, exists: false }).call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    expect(await setup({ row: null, ended, reclaimed, tasks: [{ ...closed[0], detachedAt: 1 }] }).call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
   });
 
   it('refuses a pane that is not the task\'s worker: remote, a brain, a bot, an unresolvable pane, a pane with no task', async () => {
@@ -163,6 +194,7 @@ describe('task.fetch RPC', () => {
 
   it('refuses a task that is not open, and a detached checkout', async () => {
     for (const status of ['closed', 'merged']) {
+      // An open task's worker whose mission record says otherwise.
       const { call, fetch } = setup({ tasks: [{ id: 'wtask-1', status, branch: 'wtask/one', worktreePath: '/w/one' }] });
       expect(await call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringMatching(/not open/) } });
       expect(fetch).not.toHaveBeenCalled();
