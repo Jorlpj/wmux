@@ -70,6 +70,32 @@ describe('pushTaskBranch', () => {
     expect(git(origin, 'tag', '--list')).toBe('');
   });
 
+  it('applies the same remote and ref checks as task_fetch: a remote named by origin\'s URL is refused, a symbolic upstream ref is replaced', async () => {
+    const other = path.join(root, 'other.git');
+    execFileSync('git', ['init', '-q', '--bare', other]);
+    git(work, 'config', `remote.${origin}.pushurl`, other);
+    expect(await pushTaskBranch(input())).toMatchObject({ ok: false, reason: 'config-refused', error: expect.stringContaining(`remote.${origin.toLowerCase()}.pushurl`) });
+    expect(git(other, 'for-each-ref')).toBe('');
+    expect(git(origin, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
+    git(work, 'config', '--unset', `remote.${origin}.pushurl`);
+    // origin/<task branch> pointing at a local branch: the push sets the ref itself.
+    const main = git(work, 'rev-parse', 'refs/heads/main');
+    git(work, 'symbolic-ref', 'refs/remotes/origin/wtask/one', 'refs/heads/main');
+    expect(await pushTaskBranch(input())).toMatchObject({ ok: true });
+    expect(git(work, 'rev-parse', 'refs/heads/main')).toBe(main);
+    expect(git(work, 'rev-parse', 'refs/remotes/origin/wtask/one')).toBe(git(work, 'rev-parse', 'HEAD'));
+    expect(() => git(work, 'symbolic-ref', '-q', 'refs/remotes/origin/wtask/one')).toThrow();
+  });
+
+  it('stops before pushing when a symbolic upstream ref cannot be dropped', async () => {
+    const main = git(work, 'rev-parse', 'refs/heads/main');
+    git(work, 'symbolic-ref', 'refs/remotes/origin/wtask/one', 'refs/heads/main');
+    fs.writeFileSync(path.join(work, '.git', 'refs', 'remotes', 'origin', 'wtask', 'one.lock'), '');
+    expect(await pushTaskBranch(input())).toMatchObject({ ok: false, reason: 'git-failed', error: expect.stringContaining('update-ref -d refs/remotes/origin/wtask/one') });
+    expect(git(origin, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('refs/heads/main');
+    expect(git(work, 'rev-parse', 'refs/heads/main')).toBe(main);
+  });
+
   it('runs none of the worktree\'s own hooks', async () => {
     const hook = path.join(work, '.git', 'hooks', 'pre-push');
     const marker = path.join(root, 'hook-ran');
@@ -370,20 +396,22 @@ describe('task.push: a repository inside WSL', () => {
 
 describe('task.push RPC', () => {
   type Handler = (params: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown>;
-  const setup = (over: { row?: unknown; tasks?: unknown[]; caller?: string | null; repoDefault?: string | null; botRepo?: string; head?: string; fail?: boolean } = {}) => {
+  const setup = (over: { row?: unknown; tasks?: unknown[]; caller?: string | null; repoDefault?: string | null; botRepo?: string; head?: string; fail?: boolean; ended?: unknown; reclaimed?: (ws: string, pty: string) => { taskId: string; botId: string; ownerWorkspaceId: string } | null } = {}) => {
     const handlers = new Map<string, Handler>();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-task-push-rpc-'));
     const push = vi.fn(async (i: { branch: string }) => (over.fail
       ? { ok: false as const, reason: 'rejected' as const, error: 'non-fast-forward' }
       : { ok: true as const, branch: i.branch, remote: 'origin' as const, head: over.head ?? 'abc', output: '' }));
-    const row = over.row === undefined ? { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } : over.row;
+    const row = over.row === undefined ? { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', dispatch: { origin: { kind: 'pane' }, repoKey: 'github.com/acme/app' } } : over.row;
     registerTaskPushRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, {
       getWindow: () => null,
       daemon: { rpc: vi.fn(async () => ({ ok: true, tasks: over.tasks ?? [{ id: 'wtask-1', status: 'open', branch: 'wtask/one', worktreePath: '/w/one' }] })) },
       getLedger: () => ({
         findOpenByTaskWorkspace: (ws: string) => (ws === 'ws-task' ? row : null),
-        get: (id: string) => (row && (row as { id?: string }).id === id ? row : null),
+        get: (id: string) => (over.ended !== undefined ? (id === 'wtask-1' ? over.ended : null) : row && (row as { id?: string }).id === id ? row : null),
       }) as never,
+      reclaimedWorkerOfPane: over.reclaimed ?? (() => null),
+      exists: () => true,
       resolveCallerWorkspace: async () => (over.caller === undefined ? 'ws-task' : over.caller),
       wmuxDir: () => dir,
       push: push as never,
@@ -395,9 +423,9 @@ describe('task.push RPC', () => {
   const local = { origin: 'local' };
 
   it('refuses a push while the task\'s report stands checked as making no changes; one sent back pushes', async () => {
-    const reported = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'review_requested', reportedAtRev: 2, gate: { exitCode: 0, tail: '', at: 1, command: 'none', skipped: 'no_changes', recordedBy: 'system', reportRev: 2 } };
+    const reported = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', dispatch: { origin: { kind: 'pane' }, repoKey: 'github.com/acme/app' }, status: 'review_requested', reportedAtRev: 2, gate: { exitCode: 0, tail: '', at: 1, command: 'none', skipped: 'no_changes', recordedBy: 'system', reportRev: 2 } };
     const held = setup({ row: reported });
-    expect(await held.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    expect(await held.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringMatching(/no changes/) } });
     expect(held.push).not.toHaveBeenCalled();
     // Its push record is not left "under way" by the refusal.
     expect(taskPushRecordOf(held.dir).get('wtask-1')).toBeNull();
@@ -521,7 +549,21 @@ describe('task.push RPC', () => {
     await call({ senderPtyId: 'pty-1' }, local);
     const given = push.mock.calls[0][0] as unknown as { repoDefaultBranch: (k: string) => Promise<string | null>; expectedRepoKey?: string };
     expect(await given.repoDefaultBranch('github.com/o/r')).toBe('trunk');
-    expect(given.expectedRepoKey).toBeUndefined();
+    // The origin main recorded for the task.
+    expect(given.expectedRepoKey).toBe('github.com/acme/app');
+  });
+
+  it('applies the same origin pin as task_fetch: a task with no recorded origin is refused; a resumed worker\'s pane pushes its own task', async () => {
+    const none = setup({ row: { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task' } });
+    expect(await none.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringMatching(/recorded no origin/) } });
+    expect(none.push).not.toHaveBeenCalled();
+    const ended = { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', dispatch: { origin: { kind: 'bot', botId: 'bot-1' }, repoKey: 'github.com/acme/app' } };
+    const reclaimed = (ws: string, pty: string) => (ws === 'ws-task' && pty === 'pty-1' ? { taskId: 'wtask-1', botId: 'bot-1', ownerWorkspaceId: 'ws-owner' } : null);
+    const tasks = [{ id: 'wtask-1', status: 'closed', branch: 'wtask/one', worktreePath: '/w/one' }];
+    const resumed = setup({ row: null, ended, reclaimed, tasks });
+    expect(await resumed.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: true, branch: 'wtask/one', taskId: 'wtask-1' });
+    expect(resumed.push).toHaveBeenCalledWith(expect.objectContaining({ expectedRepoKey: 'github.com/acme/app', worktreePath: '/w/one' }));
+    expect(await setup({ row: null, ended, reclaimed, tasks }).call({ senderPtyId: 'pty-2' }, local)).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } });
   });
 
   it('pins a bot\'s task to the bot\'s repository, and refuses a bot that names none', async () => {
@@ -535,8 +577,8 @@ describe('task.push RPC', () => {
   });
 
   it('refuses a detached checkout (verify) and a closed or branchless task', async () => {
-    const detached = setup({ row: { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', dispatch: { checkout: { sha: 'a'.repeat(40), detached: true } } } });
-    expect(await detached.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    const detached = setup({ row: { id: 'wtask-1', ownerWorkspaceId: 'ws-owner', dispatch: { origin: { kind: 'pane' }, repoKey: 'github.com/acme/app', checkout: { sha: 'a'.repeat(40), detached: true } } } });
+    expect(await detached.call({ senderPtyId: 'pty-1' }, local)).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION', message: expect.stringMatching(/detached checkout/) } });
     expect(detached.push).not.toHaveBeenCalled();
     expect(await setup({ tasks: [{ id: 'wtask-1', status: 'closed', branch: 'b', worktreePath: '/w' }] }).call({ senderPtyId: 'p' }, local))
       .toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
