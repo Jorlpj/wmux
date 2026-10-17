@@ -144,6 +144,9 @@ export interface WorkerSessionInfo {
   agentProcessAlive?: boolean;
   /** OSC 133: a foreground command owns the pane (absent: unknown). */
   commandRunning?: boolean;
+  /** The daemon respawned the pane at its own restart and has seen no agent
+   *  there since (absent from a daemon that does not say). */
+  recoveredAgentUnconfirmed?: boolean;
   /** The pane runs in WSL (its Linux agent is not always attributed). */
   wslTarget?: { distribution?: unknown };
   /** An exec unit: the pane's process is the command itself. */
@@ -186,6 +189,23 @@ export function isTaskOwnWorkerPane(
     return sessionRecordOf?.(session.id)?.taskId === taskId;
   } catch {
     return false;
+  }
+}
+
+/** A conversation whose mode no hook carried (a WSL worker whose task ended
+ *  at its own report, before its first Stop) resumes in the mode wmux
+ *  launched it in: only the conversation the pane's own launch line pinned.
+ *  Fills `panes` in place. */
+export function fillLaunchedModes(panes: ReclaimedSession[], launchedConversation: WorkerReclaimPorts['launchedConversation']): void {
+  for (const p of panes) {
+    if (!p.resumeSessionId || p.permissionMode) continue;
+    let launched: { sessionId: string; permissionMode?: PermissionMode } | null = null;
+    try {
+      launched = launchedConversation?.(p.sessionId) ?? null;
+    } catch {
+      launched = null;
+    }
+    if (launched?.permissionMode && launched.sessionId === p.resumeSessionId) p.permissionMode = launched.permissionMode;
   }
 }
 
@@ -368,9 +388,10 @@ export interface WorkerReclaimPorts {
    *  in, as recorded when wmux created the pane as a bot worker; null when
    *  none was. Absent: no mode is filled in. */
   launchedConversation?: (sessionId: string) => { sessionId: string; permissionMode?: PermissionMode } | null;
-  /** A pane's bot worker session record (its task), null when none: a WSL
-   *  pane counts as the task's worker only when identified
-   *  (isTaskOwnWorkerPane). Absent: only the reclaim record identifies one. */
+  /** A pane's bot worker session record (its task), null when none. Given:
+   *  only a pane whose record names the task is recorded, stopped or closed
+   *  as its worker (a WSL pane too, isTaskOwnWorkerPane). Absent: every pane
+   *  started in the task folder counts. */
   sessionRecordOf?: WorkerSessionRecordOf;
   note?: (workspaceId: string, threadId: ThreadId, title: string, body: string, notice?: CardNotice, taskId?: string) => void;
   /** The Bots page re-reads (BOT_EVENT). */
@@ -829,6 +850,17 @@ export async function reclaimWorker(
         if (s && s.agentProcessAlive !== true && !isTaskOwnWorkerPane(s, entry.id, recorded, ports.sessionRecordOf)) ids.delete(id);
       }
     }
+    // Only the task's own worker panes: its bot worker session record names
+    // the task (written for the task's fan-out or resume spawn only). A shell
+    // the owner started in the task folder is never recorded, stopped or
+    // closed as the worker, whatever runs in it; a record an older version
+    // wrote with such a shell drops it here.
+    const ownPane = (id: string): boolean => !ports.sessionRecordOf || isTaskOwnWorkerPane({ id }, entry.id, [], ports.sessionRecordOf);
+    for (const id of [...ids]) if (!ownPane(id)) ids.delete(id);
+    // A pane the record kept whose session is gone (a closed pane, whose
+    // session record went with it) stays: nothing of it can be stopped or
+    // closed any more, and its conversation is what Resume reopens.
+    const keepRecorded = (id: string): boolean => ownPane(id) || !sessions.some((x) => x.id === id);
     const panes = sessions.filter((s) => ids.has(s.id)).map(reclaimedSessionOf).filter((s): s is ReclaimedSession => !!s);
     if (movedOn(ports, entry, ended)) return null;
     const prior = ports.store.get(entry.id);
@@ -836,13 +868,13 @@ export async function reclaimWorker(
     // the record follows the task (a gate written after the stop, the end
     // that came later), with no second stop and no second card.
     if (prior?.ended === 'reported' && prior.state === 'stopped' && !sessions.some((s) => ids.has(s.id) && s.agentProcessAlive === true)) {
-      await ports.store.put({ ...prior, ended, endRev: entry.rev, at: now() });
+      await ports.store.put({ ...prior, sessions: prior.sessions.filter((x) => keepRecorded(x.sessionId)), ended, endRev: entry.rev, at: now() });
       ports.changed?.();
       return ports.store.get(entry.id);
     }
     // An earlier attempt that did not finish: its recorded conversations are
     // kept (a stopped agent may no longer show its binding).
-    const kept = prior?.state === 'stopping' ? prior.sessions : [];
+    const kept = prior?.state === 'stopping' ? prior.sessions.filter((x) => keepRecorded(x.sessionId)) : [];
     for (const p of panes) {
       const old = kept.find((k) => k.sessionId === p.sessionId);
       if (!p.resumeSessionId && old?.resumeSessionId) {
@@ -850,19 +882,7 @@ export async function reclaimWorker(
         if (old.permissionMode) p.permissionMode = old.permissionMode;
       }
     }
-    // A conversation whose mode no hook carried (a WSL worker whose task ended
-    // at its own report, before its first Stop) resumes in the mode wmux
-    // launched it in: only the conversation the pane's own launch line pinned.
-    for (const p of panes) {
-      if (!p.resumeSessionId || p.permissionMode) continue;
-      let launched: { sessionId: string; permissionMode?: PermissionMode } | null = null;
-      try {
-        launched = ports.launchedConversation?.(p.sessionId) ?? null;
-      } catch {
-        launched = null;
-      }
-      if (launched?.permissionMode && launched.sessionId === p.resumeSessionId) p.permissionMode = launched.permissionMode;
-    }
+    fillLaunchedModes(panes, ports.launchedConversation);
     const rec: ReclaimedWorker = {
       taskId: entry.id,
       botId: entry.dispatch?.origin.botId ?? '',
@@ -1239,6 +1259,17 @@ export function resumedWorkersLive(botId?: string): number {
  *  cleared: one of either at a time per task. */
 const resuming = new Set<string>();
 const clearing = new Set<string>();
+/** Hold a task's worker panes for a close made elsewhere (deadWorkerPanes.ts),
+ *  as a clear holds them: a resume of the task waits until the close is over.
+ *  null while a resume or a clear of it is under way. Returns the release. */
+export function holdWorkerPanes(taskId: string): (() => void) | null {
+  if (resuming.has(taskId) || clearing.has(taskId)) return null;
+  clearing.add(taskId);
+  return () => {
+    clearing.delete(taskId);
+  };
+}
+
 /** botId → its resumes past the budget check, until each is counted as
  *  resumed or ends. */
 const botStarting = new Map<string, number>();
@@ -1357,8 +1388,11 @@ async function resumeOnce(
   if (live.agentProcessAlive === true || live.commandRunning === true) {
     return refuse('already_running', 'an agent or another command is running in the worker\'s pane');
   }
-  // No observed agent exit and no shell prompt seen: what runs there is not known.
-  if (live.agentProcessAlive !== false && live.commandRunning !== false) {
+  // No observed agent exit and no shell prompt seen: what runs there is not
+  // known. A shell the daemon respawned at its restart, with no agent seen
+  // since, runs no agent (a fresh shell reports its prompt only after its
+  // first command).
+  if (live.agentProcessAlive !== false && live.recoveredAgentUnconfirmed !== true && live.commandRunning !== false) {
     return refuse('unknown_state', 'what runs in the worker\'s pane cannot be told; open it and resume from there');
   }
   // A pane a resume opened earlier whose task was not moved to it then.
