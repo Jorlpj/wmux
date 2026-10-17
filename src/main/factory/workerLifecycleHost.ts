@@ -39,6 +39,8 @@ import {
   createDaemonTurnSeed,
   createResumedIdleSweep,
   createWorkerClear,
+  dormantTaskWorkspaceSet,
+  endedTaskAgentRuns,
   installWorkerReclaim,
   isReclaimableReport,
   isReclaimedSince,
@@ -55,7 +57,6 @@ import {
   type WorkerSessionInfo,
   unreclaimedEndedWorkers,
   workerPanesIdle,
-  workerWorkspaceOf,
 } from './workerReclaim';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { createDeadPaneSweep } from './deadWorkerPanes';
@@ -84,6 +85,9 @@ export interface WorkerLifecycleDeps {
    *  on the bot worker spawn. Absent: such a resume is refused. */
   fanOutService?: Pick<FanOutService, 'spawnBotTaskPane'>;
 }
+
+/** Whether a ledger status is an end (the row is closed). */
+const isEndedStatus = (status: LedgerEntry['status']): boolean => status === 'completed' || status === 'cancelled' || status === 'failed';
 
 /** Which open workspaces run no agent any more is read at most this often. */
 const LIVENESS_REFRESH_MS = 10_000;
@@ -143,18 +147,35 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
   // (the daemon's sessions, read at most every LIVENESS_REFRESH_MS; until
   // the first read, none). A cap check awaits a fresh read (refreshSlotLiveness).
   let busyWorkspaces: ReadonlySet<string> = new Set();
+  // Open task workspaces whose task ended (completed, cancelled, failed: the
+  // owner's stop too) with no agent running in them (endedTaskAgentRuns), as
+  // of the same read: they hold no live fan-out slot, whether or not the
+  // dead-pane sweep closed them yet.
+  let endedNoAgentWorkspaces: ReadonlySet<string> = new Set();
+  // Open workspaces where an agent is seen running (endedTaskAgentRuns, a
+  // silent pane not counted), as of the same read: they hold their slot even
+  // when a reclaim record says stopped.
+  let agentWorkspaces: ReadonlySet<string> = new Set();
   const idle = new IdleSnapshot(async () => {
     const byId = new Map((await listSessions()).map((x) => [x.id, x]));
     const next = new Set<string>();
     const busy = new Set<string>();
+    const endedNoAgent = new Set<string>();
+    const withAgent = new Set<string>();
     for (const e of getWorkspaceMirror().getEntries() ?? []) {
       const ptys = Array.isArray(e.ptyIds) ? e.ptyIds : [];
       if (ptys.some((id) => paneShowsWork(byId.get(id)))) busy.add(e.id);
       // Gone, seen to exit, or respawned by the daemon's restart with no agent
       // since; an agent never attributed otherwise is not known dead.
       if (ptys.length > 0 && ptys.every((id) => paneRunsNoAgent(byId.get(id)))) next.add(e.id);
+      const row = ledger.findByTaskWorkspace(e.id);
+      const recorded = row ? reclaimedStore?.get(row.id)?.sessions.map((x) => x.sessionId) ?? [] : [];
+      if (endedTaskAgentRuns(ptys, row?.id ?? '', recorded, byId, botWorkerSessionRecord, false)) withAgent.add(e.id);
+      else if (row && isEndedStatus(row.status) && !endedTaskAgentRuns(ptys, row.id, recorded, byId, botWorkerSessionRecord)) endedNoAgent.add(e.id);
     }
     busyWorkspaces = busy;
+    endedNoAgentWorkspaces = endedNoAgent;
+    agentWorkspaces = withAgent;
     return next;
   }, LIVENESS_REFRESH_MS);
   // Bot tasks whose worker main stopped since the row last changed (paused
@@ -205,6 +226,20 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
     reclaimOn = false;
     console.warn(`[factory] worker reclaim off: ${String(err)}`);
   }
+  // Task workspaces that hold no live fan-out slot (dormantTaskWorkspaceSet).
+  // Installed whether or not the reclaim is on: an ended task with no agent
+  // left needs no reclaim record.
+  setDormantTaskWorkspaces(() => {
+    idle.get();
+    return dormantTaskWorkspaceSet({
+      records: reclaimOn ? reclaimed.all() : [],
+      row: (taskId) => ledger.get(taskId),
+      workspaceRow: (ws) => ledger.findByTaskWorkspace(ws),
+      endedNoAgent: endedNoAgentWorkspaces,
+      agentWorkspaces,
+    });
+  });
+  offs.push(() => setDormantTaskWorkspaces(null));
   if (reclaimOn) {
     // Clear: an ended task's workspace closes once its agent is stopped.
     const mirror = getWorkspaceMirror();
@@ -498,13 +533,6 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         getAgentSlots()?.kick();
       },
     });
-    // A reclaimed worker's workspace still open (a failed task the owner has
-    // not looked at, one they are viewing, one with a busy pane) runs no
-    // agent: it holds no live fan-out slot (unless its task reopened).
-    // So does a reported task's stopped worker while its task waits for review.
-    setDormantTaskWorkspaces(() => new Set(reclaimed.all().filter((r) => r.state === 'stopped'
-      && (!taskOpen(r.taskId) || (r.ended === 'reported' && ledger.get(r.taskId)?.status === 'review_requested'))).map((r) => workerWorkspaceOf(r))));
-    offs.push(() => setDormantTaskWorkspaces(null));
     offs.push(() => setWorkerResumePorts(null));
     // A resumed worker runs on its bot's worker budget: counted live by the
     // fan-out's check, and its run (resume to stop) in the bot's hours.
