@@ -22,12 +22,13 @@ concurrency:
 
 jobs:
   # Jobs run in parallel: `checks` (type checks, builds, lint, the lockfile
-  # guard — OS-independent, so on Linux), `validate` (the unit suite, split in
-  # two shards) and `validate-runtime` (the runtime suite). validate and
-  # validate-runtime together run exactly what `npm test` does (test:parallel,
-  # then test:runtime), so wall time is the slowest job rather than the sum
-  # (#1685). The checks used to run on shard 2 ahead of its tests, which made
-  # that shard the longest job by ~3 min; on their own job they overlap.
+  # guard — OS-independent, so on Linux) and `validate` (the unit suite,
+  # `npm run test:parallel`, split in two shards). The checks used to run on
+  # shard 2 ahead of its tests, which made that shard the longest job by
+  # ~3 min; on their own job they overlap. The runtime suite (`npm run
+  # test:runtime`: real Chrome, ConPTY, the bundled daemon) is not here: it
+  # runs nightly, on every push to main and on demand in runtime.yml, so its
+  # timing-sensitive tests never block a pull request.
   checks:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
@@ -75,9 +76,9 @@ jobs:
           git diff --exit-code package-lock.json
 
       # Every type-check program except mcp and daemon, which CI compiles with
-      # the same tsconfig anyway: `build:mcp` below and `build:daemon` in
-      # validate-runtime both start with `tsc -p` (so a daemon type error
-      # fails validate-runtime). cli has no build step here, so it is checked.
+      # the same tsconfig anyway: `build:mcp` and `build:daemon` below both
+      # start with `tsc -p` (so a daemon type error fails the daemon build).
+      # cli has no build step here, so it is checked.
       # Locally, `npm run typecheck` still runs all of them.
       # scripts/__tests__/typecheckSlices.test.mjs ties this list to those
       # build steps.
@@ -86,6 +87,13 @@ jobs:
 
       - name: Build and probe MCP protocol
         run: npm run build:mcp && npm run probe:mcp
+
+      # The daemon bundle the runtime suite drives. That suite left the pull
+      # request path (runtime.yml), but the build did not: it compiles the
+      # daemon program the type check above skips, and a bundle that no longer
+      # builds must fail the pull request that broke it, not the next nightly.
+      - name: Build daemon bundle
+        run: npm run build:daemon
 
       # The push relay is a separate Cloudflare Worker deployment with its own
       # tsconfig (WebWorker libs, no @types/node — node-only code must not
@@ -162,7 +170,7 @@ jobs:
         run: npm ci
 
       # The type checks, builds and lint run on the checks job above. The
-      # runtime suites (`*.runtime.test.*`) run in validate-runtime below.
+      # runtime suites (`*.runtime.test.*`) run in runtime.yml.
       - name: Test (unit suite, shard ${{ matrix.shard }}/2)
         run: npm run test:parallel -- --shard=${{ matrix.shard }}/2
 
@@ -183,50 +191,6 @@ jobs:
           name: test-report-validate-${{ matrix.shard }}
           path: test-results/
           if-no-files-found: ignore
-
-  validate-runtime:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: windows-latest
-    # The runtime suite takes ~4-5 min plus setup; the cap only stops a hang.
-    timeout-minutes: 25
-    steps:
-      # Same pins and toolchain as validate; see the comments there.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        id: node
-        with:
-          node-version: '>=24.21.0 <25'
-          cache: npm
-
-      - name: Use npm 11
-        run: npm install -g npm@11
-
-      # See the checks job for the key.
-      - name: Restore node_modules
-        id: node-modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: node_modules
-          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'patches/**', 'scripts/fix-node-pty.js', 'scripts/apply-patches.mjs') }}
-
-      - name: Install dependencies
-        if: steps.node-modules.outputs.cache-hit != 'true'
-        run: npm ci
-
-      # Two runtime suites drive the REAL bundled daemon (#546 boot marker,
-      # #596 web restore). Both skip when `dist/daemon-bundle/index.js` is
-      # absent, and a skip reads as green, so this step is what gives those
-      # suites any signal at all.
-      - name: Build daemon bundle (the runtime suites drive it)
-        run: npm run build:daemon
-
-      - name: Test (runtime suite)
-        run: npm run test:runtime
-        env:
-          # Tells those suites the bundle was promised, so removing the step
-          # above fails a test instead of silently retiring both files.
-          WMUX_REQUIRE_DAEMON_BUNDLE: '1'
 
   # The native Windows computer-use helper (native/computer-use-windows): the
   # C# unit tests, the NativeAOT publish main spawns in dev builds, and a smoke
