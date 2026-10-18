@@ -82,9 +82,9 @@ import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, cap
 import { readSessionTextReplay } from './sessionTextReplay';
 import type { TerminalPty } from '../shared/terminalPty';
 import { serializeSession } from './sessionSerialize';
-import { AwaitingScreenVerifier, questionInFlight, renderPaneScreen } from './AwaitingScreenVerifier';
+import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen } from './AwaitingScreenVerifier';
 import { snapshotRingTextUnqueued } from './nativeRingSnapshot';
-import { screenShowsAgentDialog } from './transcript/chatScreenGate';
+import { screenShowsAgentDialog, screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
 import { readPendingToolUse } from './transcript/pendingToolUse';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
@@ -164,7 +164,7 @@ import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResume
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
-import { HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
+import { DIALOG_RECHECK_MS, HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
 import { DetectionAgreementLog } from './diagnostics/detectionAgreementLog';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
@@ -394,6 +394,14 @@ let noteCodexTurnFailed: ((id:string, threadId:string, turn:unknown)=>void) | un
 let pushTurnFailed: ((sessionId:string, failure:TurnFailure)=>void) | undefined;
 /** Re-run a pane's awaiting verification (#1901), set by wireEvents. */
 let reverifyAwaiting: ((sessionId: string) => void) | undefined;
+/**
+ * Is a dialog on the pane's screen now (null: grid unreadable or too narrow to
+ * judge)? Set by wireEvents; HookIngest's second layer asks it for a Claude
+ * PermissionRequest that got no permission_prompt Notification.
+ */
+let dialogOnScreen: ((sessionId: string) => Promise<boolean | null>) | undefined;
+/** Retire a lapsed tentative PermissionRequest's phone record (set by wireEvents). */
+let tentativeDialogLapsed: ((sessionId: string) => void) | undefined;
 // Late-bound: the pipe server that carries notices exists only after boot.
 let notifyCodexIdentityRefused: ((id:string,reason:string)=>void) | undefined;
 const codexRefusalNoticedAt = new Map<string,number>();
@@ -4522,6 +4530,8 @@ function registerRpcHandlers(
       onResolvedSignal: (sessionId, signal) => {
         if (signal.ptyId === sessionId) usageLimits?.noteHookSignal(sessionId, signal);
       },
+      dialogOnScreen: (sessionId) => dialogOnScreen?.(sessionId) ?? Promise.resolve(null),
+      onTentativeDialogLapsed: (sessionId) => { tentativeDialogLapsed?.(sessionId); },
       // Chat View P1 — the tail nudge rides the existing hook signals rather
       // than a new hook. Fired for every resolved kind; a no-op for panes with
       // no Chat surface open.
@@ -6453,6 +6463,72 @@ function wireEvents(
     }
   });
   reverifyAwaiting = (sessionId) => awaitingVerifier.trigger(sessionId, 'signal');
+  // One render on the shared snapshot queue (two on a miss), only for a
+  // PermissionRequest on a pane that has never sent the permission_prompt
+  // Notification, PERMISSION_NOTIFY_GRACE_MS after the first one. The
+  // same two predicates the verifier releases a pane on: the dialog owns the
+  // bottom of the screen, or its cursor row sits there with no agent output
+  // after it. A grid narrower than the dialog's footer wraps it beyond what
+  // either test can see (#1901), so it is not judged.
+  dialogOnScreen = async (sessionId) => {
+    const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+    if (!frame || frame.rows.every((row) => row.trim().length === 0)) return null;
+    if (typeof frame.cols === 'number' && frame.cols < AWAITING_NARROW_DIALOG_COLS) return null;
+    return screenShowsActiveDialog(frame.rows) || screenShowsPermissionDialog(frame.rows);
+  };
+  // A tentative PermissionRequest that raised no alert still holds the
+  // terminal_prompt record minted when it landed, and the awaiting verifier
+  // never looks at a pane that was not marked awaiting. Retired like a
+  // screen-cleared answer, once two reads a moment apart show no dialog (one
+  // read is one sample). A dialog still up (someone typing at it, which
+  // defers Claude's Notification) is looked at again every few seconds,
+  // since its answer may come with no hook and no awaiting state to report
+  // it; bounded, and the Notification takes over once the typing stops.
+  // A newer PermissionRequest owns whatever record is pending (its dialog may
+  // not be drawn yet): the sweep expires nothing until that request's own
+  // lapse rebases it. Records are not tracked by id, since the registry
+  // replaces the same dialog's record with a new one as it re-reads it.
+  const LAPSE_SWEEP_GAP_MS = 3_000;
+  const LAPSE_SWEEP_LOOKS = 40;
+  const sweepDelay = (ms: number): Promise<void> => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); });
+  // One sweep per pane at a time. A later lapse while it runs rebases it onto
+  // that request.
+  const lapseSweeps = new Map<string, { rebase: boolean }>();
+  tentativeDialogLapsed = (sessionId) => {
+    const registry = approvalRegistry;
+    if (!registry) return;
+    const running = lapseSweeps.get(sessionId);
+    if (running) {
+      running.rebase = true;
+      return;
+    }
+    const hasPrompt = (): boolean => registry.list().pending
+      .some((r) => r.sessionId === sessionId && r.kind === 'terminal_prompt');
+    const requests = (): number => hookIngest?.permissionRequestCount(sessionId) ?? 0;
+    if (!hasPrompt()) return;
+    let baseline = requests();
+    const sweep = { rebase: false };
+    lapseSweeps.set(sessionId, sweep);
+    void (async () => {
+      for (let look = 0; look < LAPSE_SWEEP_LOOKS; look++) {
+        if (look > 0) await sweepDelay(LAPSE_SWEEP_GAP_MS);
+        if (sweep.rebase) {
+          sweep.rebase = false;
+          baseline = requests();
+          look = 0;
+        }
+        if (!hasPrompt() || !sessionManager.getSession(sessionId)) return;
+        if (requests() !== baseline) continue;
+        if (!(await registry.dialogGoneFromScreen(sessionId))) continue;
+        await sweepDelay(DIALOG_RECHECK_MS);
+        if (!(await registry.dialogGoneFromScreen(sessionId))) continue;
+        if (sweep.rebase || requests() !== baseline) continue;
+        await registry.expireForSession(sessionId, 'screen-cleared', 'terminal_prompt');
+        return;
+      }
+    })().catch((err: unknown) => log('warn', `[approvals] lapsed permission request sweep failed for ${sessionId}: ${String(err)}`))
+      .finally(() => { lapseSweeps.delete(sessionId); });
+  };
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
   sessionManager.on('session:died', forgetAwaiting);
   sessionManager.on('session:destroyed', forgetAwaiting);
