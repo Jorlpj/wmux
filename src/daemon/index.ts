@@ -159,7 +159,7 @@ import { newerTimestamp } from './util/idleAnchor';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { isWslDistroSpawnArgs } from '../shared/wslDistro';
-import { gitWatchCwdFor } from './gitWatchCwd';
+import { gitDirMapperFor, gitWatchCwdFor } from './gitWatchCwd';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
@@ -7416,13 +7416,19 @@ function wireContextWatchers(
   });
 
   // #2407: a WSL pane reports a Linux cwd; the watcher reads with Windows fs,
-  // so it is handed the Windows name of that directory (gitWatchCwdFor).
+  // so it is handed the Windows name of that directory (gitWatchCwdFor), and
+  // a way to read a worktree's Linux gitdir the same way (gitDirMapperFor).
   const onCreated = (payload: { session: { id: string; cwd: string; cmd?: string; wslTarget?: { distribution?: unknown } } }) => {
-    gitWatcher.update(payload.session.id, gitWatchCwdFor(payload.session));
+    gitWatcher.update(payload.session.id, gitWatchCwdFor(payload.session), gitDirMapperFor(payload.session));
   };
   const onCwd = (payload: { sessionId: string; cwd: string }) => {
     const meta = sessionManager.getSession(payload.sessionId)?.meta;
-    gitWatcher.update(payload.sessionId, gitWatchCwdFor({ cwd: payload.cwd, cmd: meta?.cmd, wslTarget: meta?.wslTarget }));
+    // Only a live session is watched. A WSL pane's share is polled, and its own
+    // wsl.exe is what keeps the distro running; a cwd adopted for a pane that
+    // has exited (adoptAgentCwd) must not start a poll that would wake it.
+    if (meta?.state !== 'attached' && meta?.state !== 'detached') return;
+    const session = { cwd: payload.cwd, cmd: meta?.cmd, wslTarget: meta?.wslTarget };
+    gitWatcher.update(payload.sessionId, gitWatchCwdFor(session), gitDirMapperFor(session));
   };
   const onGone = (payload: { id: string }) => {
     gitWatcher.remove(payload.id);
@@ -7430,13 +7436,16 @@ function wireContextWatchers(
   sessionManager.on('session:created', onCreated);
   sessionManager.on('session:cwd', onCwd);
   sessionManager.on('session:died', onGone);
+  // An involuntary exit leaves the session suspended, not died: its watch
+  // (and any share poll) goes too.
+  sessionManager.on('session:interrupted', onGone);
   sessionManager.on('session:destroyed', onGone);
 
   portWatcher.start();
 
   // Seed git context for sessions recovered before this wiring ran.
   for (const s of sessionManager.listLiveSessions()) {
-    gitWatcher.update(s.id, gitWatchCwdFor(s));
+    gitWatcher.update(s.id, gitWatchCwdFor(s), gitDirMapperFor(s));
   }
 
   resyncContextWatchers = () => { portWatcher.resync(); gitWatcher.resync(); };
@@ -7445,6 +7454,7 @@ function wireContextWatchers(
     sessionManager.off('session:created', onCreated);
     sessionManager.off('session:cwd', onCwd);
     sessionManager.off('session:died', onGone);
+    sessionManager.off('session:interrupted', onGone);
     sessionManager.off('session:destroyed', onGone);
     portWatcher.stop();
     gitWatcher.dispose();
