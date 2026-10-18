@@ -317,6 +317,10 @@ export interface HookIngestDeps {
     kind: AgentSignalKind,
     /** The signal's own agent session id, when it carried one. */
     agentSessionId?: string,
+    /** When the hook fired (the bridge's clock). */
+    ts?: number,
+    /** Claude Code's `prompt_id` on the hook, when it carried one. */
+    promptId?: string,
   ) => void;
   /**
    * CompletionAlarm — emit a DETECTOR-sourced `agent.event` whose completion
@@ -374,6 +378,13 @@ export interface HookIngestDeps {
    * approval mode). Registry membership, never the id prefix.
    */
   isAutomationPane?: (sessionId: string) => boolean;
+  /**
+   * One turn has one end. The daemon's id for the pane's latest episode when
+   * that episode is over for good (DaemonPTYBridge.endedTurnId: a hard close;
+   * a soft close resumes under the same id), else null. Optional: without it
+   * no turn end is deduplicated.
+   */
+  latestEndedTurn?: (sessionId: string) => string | null;
 }
 
 /**
@@ -725,6 +736,18 @@ function eventShapeFor(
   }
 }
 
+/**
+ * What a lead turn end says: its kind, the prompt it belongs to (Claude
+ * Code's `prompt_id`, on every hook until the next user prompt; the
+ * transcript stand-in reads the same id from the turn's user entry), Claude's
+ * error code and its last message (trimmed and bounded as the stand-in
+ * bounds it, see daemon/transcript/apiErrorTurnEnd). Two ends of one turn
+ * say the same.
+ */
+function turnEndSignature(signal: AgentSignal): string {
+  const field = (key: string): string => (typeof signal.payload?.[key] === 'string' ? signal.payload[key] as string : '');
+  return `${signal.kind}|${field('prompt_id')}|${field('error')}|${field('last_assistant_message').trim().slice(0, 2000)}`;
+}
 /** OpenCode's request id on a bridge 0.3.0 signal (`payload.permId`), when well-formed. */
 function openCodeRequestId(signal: AgentSignal): string | undefined {
   const raw = signal.payload?.['permId'];
@@ -750,6 +773,20 @@ export class HookIngest {
    * `broadcast`, the one place every status this ingest writes passes through.
    */
   private readonly leadTurnEnded = new Set<string>();
+  /**
+   * Per pane, the daemon's id of the latest episode whose end this ingest
+   * delivered, and that end closed for good. A further end while that is
+   * still the pane's latest episode is a duplicate and is dropped: the real
+   * StopFailure after the transcript's stand-in for it
+   * (daemon/transcript/apiErrorTurnEnd), the stand-in after the real hook, or
+   * any repeat. Keyed on the episode id, never on time: no hook timestamp is
+   * read, so a hook clock off the daemon's cannot misplace an end. The end
+   * must also say the same thing (`turnEndSignature`): a turn that opened no
+   * episode (an autonomous turn with no hook before its end) ends with its
+   * own reply and is not taken for a repeat. An end that arrives after a
+   * newer episode opened is not caught; it never was.
+   */
+  private readonly endedTurn = new Map<string, { turn: string; signature: string }>();
   /**
    * When each session's latest UserPromptSubmit landed. An interrupted-turn
    * Stop from the Claude Code mod (integrations/claude-mod) is sent a second
@@ -1021,7 +1058,7 @@ export class HookIngest {
 
     // Transcript nudge: a PreToolUse means the agent is active.
     try {
-      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId);
+      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId, signal.ts, typeof signal.payload?.['prompt_id'] === 'string' ? signal.payload['prompt_id'] : undefined);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] transcript nudge failed for ${sessionId}: ${String(err)}`);
     }
@@ -1209,9 +1246,13 @@ export class HookIngest {
     // replace a real dialog's pending window (a tentative request's, or a
     // Notification the second layer already raised).
     if (signal.kind === 'agent.input_answered' || signal.kind === 'agent.permission_answered') this.bumpDialogEpoch(sessionId);
+    // One turn, one end: checked before the alarm is fed, so a duplicate
+    // changes no window another cue opened. It still reaches the binding
+    // capture and the transcript nudge below; only its outcome is dropped.
+    const duplicateEnd = this.isDuplicateTurnEnd(sessionId, signal);
     const claudeNotification = signal.kind === 'agent.awaiting_input'
       && signal.payload?.['hook_event_name'] === 'Notification' && isClaudeFamilyAgent(signal.agent);
-    if (!isClaudePermissionRequest(signal) && !claudeNotification) {
+    if (!isClaudePermissionRequest(signal) && !claudeNotification && !duplicateEnd) {
       this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
     }
     if (signal.kind === 'agent.input_answered') {
@@ -1354,7 +1395,7 @@ export class HookIngest {
     // hook, and is wrapped because a projector failure must not turn into a
     // fatal hook — the bridge treats an RPC error as one.
     try {
-      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId);
+      this.deps.onTranscriptNudge?.(sessionId, signal.kind, signal.agentSessionId, signal.ts, typeof signal.payload?.['prompt_id'] === 'string' ? signal.payload['prompt_id'] : undefined);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] transcript nudge failed for ${sessionId}: ${String(err)}`);
     }
@@ -1430,6 +1471,7 @@ export class HookIngest {
     // status dot and nothing else, and a later same-turn candidate can still
     // arbitrate cleanly instead of finding a ghost 'emit'.
     const cue = normalizeHookCue(signal);
+    if (duplicateEnd) return { ok: true };
     // Only a stop that ends the turn: one with background work still running
     // (#1096) is not, and a background agent's dialog may be up behind it.
     if (cue.class === 'stop' && !cue.child && cue.leftoverWork === 0) this.bumpDialogEpoch(sessionId);
@@ -1711,6 +1753,14 @@ export class HookIngest {
     } catch (err) {
       this.deps.log?.('warn', `[hooks] agent.event broadcast failed for ${sessionId}: ${String(err)}`);
       return { ok: false, reason: 'internal-error' };
+    }
+    // A delivered turn outcome (not status-only or held) that the daemon took
+    // as a close for good: that episode has had its end. A soft close (a Codex
+    // stop the rollout has not confirmed) records nothing.
+    if ((data.hookKind === 'agent.stop' || data.hookKind === 'agent.stop_failure') && data.status !== 'running'
+      && !['internal', 'veto', 'pending'].includes(data.decision ?? '')) {
+      const ended = this.deps.latestEndedTurn?.(sessionId) ?? null;
+      if (ended !== null) this.endedTurn.set(sessionId, { turn: ended, signature: turnEndSignature(data.signal) });
     }
     return { ok: true };
   }
@@ -2126,6 +2176,7 @@ export class HookIngest {
     this.permissionRequests.delete(sessionId);
     this.router.dropPty(sessionId);
     this.leadTurnEnded.delete(sessionId);
+    this.endedTurn.delete(sessionId);
     this.lastPromptAt.delete(sessionId);
     // Cancel any open provisional window for the disposed pane — a reused id
     // must start from an empty gate, not an inherited pending confirmation.
@@ -2134,6 +2185,18 @@ export class HookIngest {
     // phone would keep listing a request whose only possible outcome is a
     // 'prompt-gone' refusal — and a reused session id could inherit it.
     this.deps.approvals?.expireForSession(sessionId, 'pane-gone');
+  }
+
+  /** A lead turn end while the pane's latest episode already had its end. */
+  private isDuplicateTurnEnd(sessionId: string, signal: AgentSignal): boolean {
+    if (signal.kind !== 'agent.stop' && signal.kind !== 'agent.stop_failure') return false;
+    const cue = normalizeHookCue(signal);
+    if (signal.kind === 'agent.stop' && !(cue.class === 'stop' && !cue.child && cue.leftoverWork === 0)) return false;
+    const ended = this.deps.latestEndedTurn?.(sessionId) ?? null;
+    const last = this.endedTurn.get(sessionId);
+    if (ended === null || last?.turn !== ended || last.signature !== turnEndSignature(signal)) return false;
+    this.deps.log?.('info', `[hooks] ${signal.kind} for ${sessionId} dropped: turn ${ended} already ended`);
+    return true;
   }
 
   dispose(): void {
