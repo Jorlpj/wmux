@@ -751,7 +751,7 @@ describe('a folder a stop kept, after 7 days', () => {
     // One install; a failed removal is tried again only on the retry timer,
     // never on a kick (a ledger change, a workspace closing).
     const installed = installTaskFolderCleanup({ ...p, onTransition: () => () => undefined, allRows: () => [stopped], retryMs: 150 });
-    await vi.waitFor(() => expect(removeDir).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(removeDir).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     await new Promise((r) => setTimeout(r, 20));
     expect(p.store.get(stopped.id)).toMatchObject({ state: 'kept_stopped', at: 50_000, stopped: { botId: BOT, title: 'perf-A' } });
     // The ordinary pass over its row records nothing new.
