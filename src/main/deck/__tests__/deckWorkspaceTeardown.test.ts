@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // Teardown, archive and race logic is what these cases check, not crash
 // durability. deckWorkStore writes with `durable: true`; on windows-latest each
@@ -181,7 +182,7 @@ describe('surfaceStrandedWork shared function', () => {
     };
 
     surfaceStrandedWork('ws-test-2', work, 'cleared', dir);
-    await new Promise((r) => setTimeout(r, 20));
+    await deliberateSleep(20, 'negative: no decision is raised');
 
     expect(loadWorkspaceDecision('ws-test-2', dir)).toBeNull();
   });
