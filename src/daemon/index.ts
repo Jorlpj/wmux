@@ -124,7 +124,7 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type AgentStatus, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
-import { liveRecoveryHint } from './recoveryHint';
+import { liveRecoveryHint, namedAgentAlive } from './recoveryHint';
 import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
 import { GateFlagFile } from './gateFlagFile';
 import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
@@ -3043,7 +3043,7 @@ function registerRpcHandlers(
     const activeSessions = sessionManager.listSessions().map((s) => {
       // The slug is held in the map (captured from the persisted session at
       // recovery) — NOT read off the live meta, which is a fresh shell here.
-      const resumeAgent = liveRecoveryHint(s.id, (id) => agentProcessTracker.statusFor(id), recoveredAgentShellIds, recoveredResumeBindings);
+      const resumeAgent = liveRecoveryHint(s.id, (id) => namedAgentAlive(agentProcessTracker.identityFor(id)), recoveredAgentShellIds, recoveredResumeBindings);
       // X6 ③: the captured binding for the EXACT-session resume, also recovery-
       // only (same transient-map reasoning as resumeAgent) and guarded by the
       // cwd-match + transcript existence-probe at recovery time.
@@ -4588,6 +4588,12 @@ function registerRpcHandlers(
         if (recordPaneIdentity(managed.meta, canonical, Date.now())) {
           stateWriter.saveImmediate(buildState(sessionManager));
         }
+        // A hook that resolves to a live agent (hook or process tier) is the
+        // other evidence that consumes a recovered pane's resume offer.
+        if (canonical && canonical.source !== 'screen') {
+          recoveredAgentShellIds.delete(sessionId);
+          recoveredResumeBindings.delete(sessionId);
+        }
         const wslTarget = managed.meta.wslTarget;
         if (!wslTarget) {
           agentProcessTracker.arm(sessionId, managed.meta.pid);
@@ -4968,7 +4974,7 @@ function registerRpcHandlers(
     // for a pane recovered this boot whose agent has not been re-detected. The
     // web stream stamps it on the snapshot meta so its stale-replay gate reads
     // exactly the desktop's inputs.
-    const resumeAgent = liveRecoveryHint(id, (pid) => agentProcessTracker.statusFor(pid), recoveredAgentShellIds, recoveredResumeBindings);
+    const resumeAgent = liveRecoveryHint(id, (pid) => namedAgentAlive(agentProcessTracker.identityFor(pid)), recoveredAgentShellIds, recoveredResumeBindings);
     return {
       ...(binding ? { binding } : {}),
       ...(commandRunning !== undefined ? { commandRunning } : {}),
@@ -6952,10 +6958,7 @@ function wireEvents(
     // A banner names Codex before (or without) the process probe: try the cwd bind.
     if (slug === 'codex') codexCwdBinder?.arm(payload.sessionId);
     if (slug) {
-      // The agent is live again → this pane is no longer a "resume me" shell.
-      recoveredAgentShellIds.delete(payload.sessionId);
       sessionManager.confirmAgent(payload.sessionId);
-      recoveredResumeBindings.delete(payload.sessionId);
       // Resume-chip edge trigger: a live banner PROVES the agent is running
       // right now — attach the process watch so the chip can hide on process
       // truth and reappear exactly on the agent's exit edge. Covers codex,
@@ -7000,6 +7003,18 @@ function wireEvents(
       // transition (effectively once per idle agent pane), so the cost is
       // negligible vs. the durability it buys.
       stateWriter.saveImmediate(buildState(sessionManager));
+    }
+    // The agent is live again → this pane is no longer a "resume me" shell.
+    // Only a hook or a live process proves that. A screen-tier read is a row
+    // that looks like an agent's chrome: output quoting a banner on a
+    // recovered shell would otherwise consume the recovery offer and its
+    // exact binding, and the pill would be gone after the next reconnect.
+    // A real relaunch reaches process truth on the tracker's launch edge,
+    // where liveRecoveryHint drops the pair on its next read; until then the
+    // renderer hides the pill on its own live-agent and running-command state.
+    if (slug && canonical && canonical.source !== 'screen') {
+      recoveredAgentShellIds.delete(payload.sessionId);
+      recoveredResumeBindings.delete(payload.sessionId);
     }
     // M1: the daemon owns hook-vs-detector arbitration now — the hook lands
     // here, not in main, so main can no longer run it and reads the outcome
@@ -8663,9 +8678,26 @@ async function main(): Promise<void> {
         data: { slug: state.slug ?? null },
       });
     }
+    // A named agent's launch edge is the process evidence that consumes a
+    // recovered pane's resume offer (the banner path leaves it to the process
+    // or hook tier). Done here, not left to liveRecoveryHint's next read: an
+    // agent launched and exited between two reads would leave the old offer
+    // and binding standing for the next reconnect.
+    if (state.alive && state.slug) {
+      recoveredAgentShellIds.delete(sessionId);
+      recoveredResumeBindings.delete(sessionId);
+    }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
     if (state.alive) sessionManager.confirmAgent(sessionId);
+    // A slugless pick (a `tail -f`, an unknown child) that dies while the
+    // screen names an agent: arm() skipped probing while that pick read
+    // alive, so an agent launched in the meantime was never attributed.
+    // Probe again, or the launch edge that consumes the recovery offer and
+    // names the pane never comes.
+    if (!state.alive && state.slug === undefined && managed.bridge.getLastAgent()) {
+      agentProcessTracker.arm(sessionId, managed.meta.pid);
+    }
     // A death edge, or a launch edge for a different agent than the last one
     // seen here, ends the previous agent's running episode.
     const previousSlug = managed.meta.lastDetectedAgent;
