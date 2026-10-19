@@ -283,7 +283,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
   /** `parentArgv[0]` is the parent script, relative to the fixture directory. */
   function run(
     parentArgv: string[],
-    opts: { shim?: boolean; identity?: boolean; handed?: string[]; agentProc?: string } = {},
+    opts: { shim?: boolean; identity?: boolean; handed?: string[]; agentProc?: string; budgetMs?: number } = {},
   ): Promise<number | null> {
     const payload = JSON.stringify({ type: 'agent-turn-complete', 'thread-id': THREAD_ID, 'turn-id': 'turn-1', cwd: dir });
     const child = opts.shim
@@ -302,7 +302,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
       // keeps pane delivery, so a refusal here would hinge on how fast a
       // loaded runner starts PowerShell (Windows). These tests are about the
       // classification, so give the real lookup room to finish.
-      WMUX_CODEX_ORIGIN_LOOKUP_BUDGET_MS: String(ORIGIN_LOOKUP_BUDGET_MS),
+      WMUX_CODEX_ORIGIN_LOOKUP_BUDGET_MS: String(opts.budgetMs ?? ORIGIN_LOOKUP_BUDGET_MS),
     });
     if (opts.identity !== false) {
       // The identity of the pane that happened to start the shared server.
@@ -356,6 +356,26 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     expect(await run(['app-server', '--listen', 'stdio://'])).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
     expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'unknown' })]);
+  }, SPAWN_TEST_TIMEOUT_MS);
+
+  // #2376 — a lookup that runs out of its budget reads as 'unknown' and keeps
+  // pane delivery, so even a shared server's turn goes to the inherited pane.
+  // The log line is all that tells it from a parent that is not Codex.
+  it('logs how long the origin lookup took, and no timeout when it finished', async () => {
+    writeToken();
+    expect(await run(['parent.cjs', 'resume', THREAD_ID])).toBe(0);
+    const [line] = logLines();
+    expect(line).toEqual(expect.objectContaining({ outcome: 'ok', origin: 'unknown', originLookupMs: expect.any(Number) }));
+    expect(line).not.toHaveProperty('originLookupTimedOut');
+  }, SPAWN_TEST_TIMEOUT_MS);
+
+  // Linux reads /proc with no spawn, so a 1 ms budget does not reliably run out there.
+  it.skipIf(process.platform === 'linux')('logs a lookup that ran out of its budget', async () => {
+    writeToken();
+    expect(await run(SERVER_ARGV, { budgetMs: 1 })).toBe(0);
+    // Today's fail-open: delivered to the pane, as the issue describes.
+    expect(received).toEqual([delivered(PANE)]);
+    expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'unknown', originLookupTimedOut: true })]);
   }, SPAWN_TEST_TIMEOUT_MS);
 
   it('attributes a Codex process that runs the turn itself, whatever words it was given', async () => {

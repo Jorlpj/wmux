@@ -53,7 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import {
-  inspectCodexThread, codexSessionsRoot, codexRolloutMissing, notifierOrigin, attributeThread,
+  inspectCodexThread, codexSessionsRoot, codexRolloutMissing, notifierOrigin, attributeThread, originLookupLog,
 } from './wmux-codex-thread.mjs';
 
 // Hard cap on the RPC walk so we never stall a Codex turn. Only a stop whose
@@ -471,7 +471,7 @@ async function main() {
   // Endpoints to try, daemon first (see resolveTargets).
   const targets = resolveTargets();
   if (targets.length === 0) {
-    logEvent('no-auth-token', { origin, ...threadLog, paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
+    logEvent('no-auth-token', { origin, ...originLookupLog(), ...threadLog, paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     // Still spool so a later daemon boot reconciles the capture. A sub-agent
     // completion carries no id to spool (#1697 review, "should fix" #5): it
     // must never replace an older, valid agent.stop spool for this pane, and
@@ -521,10 +521,11 @@ async function main() {
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
 
   if (innerOk) {
-    logEvent('ok', { sessionId, ...threadLog, target: target?.name, origin });
+    logEvent('ok', { sessionId, ...threadLog, target: target?.name, origin, ...originLookupLog() });
   } else {
     logEvent(outerOk ? 'rpc-rejected' : 'rpc-failed', {
       origin,
+      ...originLookupLog(),
       ...threadLog,
       target: target?.name,
       reason: rpcResult?.result?.reason,
