@@ -319,6 +319,11 @@ export class ReclaimedWorkers {
     return this.save();
   }
 
+  /** Resolves once every change made so far is on disk. */
+  flush(): Promise<void> {
+    return this.persister.schedule();
+  }
+
   /** Told of every state change made through setState (the agent budget
    *  counts a resumed worker's run from these). */
   onStateChange: ((rec: { taskId: string; botId: string }, from: ReclaimedWorker['state'], to: ReclaimedWorker['state'], at: number) => void) | null = null;
