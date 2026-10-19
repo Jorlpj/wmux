@@ -39,10 +39,38 @@ function row(status: LedgerEntry['status'], over: Partial<LedgerEntry> = {}): Le
 }
 
 let dir: string;
+const stores: ReclaimedWorkers[] = [];
+const openStore = (): ReclaimedWorkers => {
+  const store = ReclaimedWorkers.at(dir);
+  stores.push(store);
+  return store;
+};
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-idle-'));
 });
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }));
+// A stop's state write is not awaited. Node 22's rmSync lists a folder's
+// children once and then only retries the rmdir, so a write that lands
+// mid-removal fails it with ENOTEMPTY: let the writes finish first.
+afterEach(async () => {
+  await Promise.all(stores.splice(0).map((s) => s.flush().catch(() => undefined)));
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+});
+
+describe('ReclaimedWorkers.flush', () => {
+  it('resolves once a change whose write was not awaited is on disk', async () => {
+    const store = openStore();
+    await store.put({
+      taskId: TASK, botId: BOT, ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', title: 'perf-A', threadId: `task:${TASK}` as never,
+      ended: 'completed', state: 'resumed', at: 0, endRev: 3, sessions: [{ sessionId: 'daemon-1', cwd: dir, resumeSessionId: UUID }],
+    });
+    // As the idle stop does: the write is started, not awaited.
+    expect(store.setState(TASK, 'stopped', MIN)).toBe(true);
+    await store.flush();
+    const reread = ReclaimedWorkers.at(dir);
+    reread.load();
+    expect(reread.get(TASK)?.state).toBe('stopped');
+  });
+});
 
 describe('workerPanesIdle', () => {
   const ended = (over: Partial<PaneActivity> = {}): PaneActivity => ({ status: 'complete', turnStartAt: 0, turnEndAt: 0, ...over });
@@ -94,7 +122,7 @@ describe('the reported-task stop counts idle from the pane, not the row', () => 
     const pane: PaneActivity = { status: 'complete', turnStartAt: T - MIN, turnEndAt: T };
     let viewing = false;
     const current = row('review_requested', { updatedAt: T });
-    const store = ReclaimedWorkers.at(dir);
+    const store = openStore();
     const stopAgent = vi.fn(async () => ({ ok: true, stopped: true }));
     const sessions: WorkerSessionInfo[] = [{ id: 'daemon-1', spawnCwd: dir, agentProcessAlive: true, resumeBinding: { agent: 'claude', sessionId: UUID, cwd: dir } }];
     const install = () => installWorkerReclaim({
@@ -141,7 +169,7 @@ describe('the reported-task stop counts idle from the pane, not the row', () => 
 describe('the idle stop of resumed workers', () => {
   let store: ReclaimedWorkers;
   beforeEach(async () => {
-    store = ReclaimedWorkers.at(dir);
+    store = openStore();
     await store.put({
       taskId: TASK, botId: BOT, ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', title: 'perf-A', threadId: `task:${TASK}` as never,
       ended: 'completed', state: 'resumed', at: 0, endRev: 3, sessions: [{ sessionId: 'daemon-1', cwd: dir, resumeSessionId: UUID }],
@@ -268,7 +296,7 @@ describe('a shown worker is protected only for 30 minutes after the owner\'s las
   describe('the idle stop of a resumed worker shown in the Bots panel', () => {
     let store: ReclaimedWorkers;
     beforeEach(async () => {
-      store = ReclaimedWorkers.at(dir);
+      store = openStore();
       await store.put({
         taskId: TASK, botId: BOT, ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', title: 'perf-A', threadId: `task:${TASK}` as never,
         ended: 'completed', state: 'resumed', at: 0, endRev: 3, sessions: [{ sessionId: 'daemon-1', cwd: dir, resumeSessionId: UUID }],
