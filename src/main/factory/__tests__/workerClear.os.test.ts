@@ -34,13 +34,23 @@ const TASK = 'wtask-abc-12345678';
 
 let dir: string;
 let wt: string;
+const stores: ReclaimedWorkers[] = [];
+const openStore = (): ReclaimedWorkers => {
+  const store = ReclaimedWorkers.at(dir);
+  stores.push(store);
+  return store;
+};
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w6-clear-'));
   wt = path.join(dir, 'wt');
   fs.mkdirSync(wt);
 });
-afterEach(() => {
+// A clear pass and a resume do not await every state write. Node 22's rmSync
+// lists a folder's children once and then only retries the rmdir, so a write
+// that lands mid-removal fails it with ENOTEMPTY: let the writes finish first.
+afterEach(async () => {
   setFanOutGuardsForTests(null);
+  await Promise.all(stores.splice(0).map((s) => s.flush().catch(() => undefined)));
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -57,7 +67,7 @@ function session(over: Partial<WorkerSessionInfo> = {}): WorkerSessionInfo {
 }
 
 async function reclaimed(ended: 'completed' | 'cancelled' | 'failed'): Promise<ReclaimedWorkers> {
-  const store = ReclaimedWorkers.at(dir);
+  const store = openStore();
   await reclaimWorker({
     onTransition: () => () => undefined,
     store,
