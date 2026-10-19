@@ -65,6 +65,7 @@ import { onBotHook, type BotHookEvent } from './botHooks';
 import { normalizeRepoKey } from './repoWatch';
 import { setFactoryTriggerPorts, type BotDirectoryApi, type FactLogApi, type FactoryTrustApi } from './triggerEngine';
 import { ROOM_ATTACHMENTS_DIRNAME, RoomAttachmentStore, cardImages, getRoomAttachmentStore, setRoomAttachmentStore } from './roomAttachments';
+import { ROOM_FILES_DIRNAME, RoomFileStore, setRoomFileStore } from './roomFiles';
 import { capBody, getRoomWriter, oneLine, setFactoryRoomPorts, type FactoryRoomPorts, type RoomBotHookEvent, type RoomWriter, type RunningWake } from './roomWriter';
 import { getBotRuntime, setBotRuntimePorts } from './BotRuntime';
 import { getHandoffRouter, summarizeHandoff } from './handoffRouter';
@@ -805,6 +806,14 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
   });
   photos.sweep();
   setRoomAttachmentStore(photos);
+  // The files bots attach to their cards: swept by age once the rooms start,
+  // since the sweep keeps every file a kept card lists (roomFiles.ts).
+  const roomFiles = new RoomFileStore({
+    root: path.join(deps.wmuxDir(), 'factory', ROOM_FILES_DIRNAME),
+    // An old file stays while a kept card (an open one) still lists it.
+    referenced: (workspaceId) => getRoomWriter()?.fileIds(workspaceId) ?? null,
+  });
+  setRoomFileStore(roomFiles);
   setFactoryPhoneMessageHandler((payload) => factoryPhoneMessageSaved(payload, { settings, writer: getRoomWriter, ports: roomPorts }));
 
   const morning = new MorningSchedule({
@@ -994,6 +1003,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
       hooks.dispose();
       setFactoryPhoneMessageHandler(null);
       setRoomAttachmentStore(null);
+      setRoomFileStore(null);
       cursor.flush();
     },
   };
