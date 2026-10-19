@@ -88,6 +88,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   inspectCodexThread, codexSessionsRoot, notifierOrigin, attributeThread, recordThreadOwner, invalidatePaneOwner,
+  originLookupLog,
 } from './wmux-codex-thread.mjs';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never stall a Codex turn
@@ -555,7 +556,7 @@ async function main() {
   const targets = resolveTargets();
   const sessionId = envelope.agentSessionId;
   if (targets.length === 0) {
-    logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
+    logEvent('no-auth-token', { ...originLookupLog(), paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     // Still spool so a later daemon boot reconciles the capture — but only for
     // a turn boundary, same gate as the send-failure path below. The record is
     // a RESUME BINDING; one written at SessionStart would name a session with
@@ -589,13 +590,14 @@ async function main() {
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
 
   if (innerOk) {
-    logEvent('ok', { kind: envelope.kind, target: target?.name });
+    logEvent('ok', { kind: envelope.kind, target: target?.name, ...originLookupLog() });
     return;
   }
 
   logEvent(outerOk ? 'rpc-rejected' : 'rpc-failed', {
     kind: envelope.kind,
     target: target?.name,
+    ...originLookupLog(),
     reason: rpcResult?.result?.reason,
     error: rpcResult?.error,
     detail: rpcResult?.detail,

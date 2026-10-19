@@ -244,6 +244,21 @@ function ancestorChainWindows(startPid, timeout) {
     .map((line) => tokenizeCommandLine(line.slice(1)));
 }
 
+// What the last ancestor walk cost (#2376). A walk that runs out of its budget
+// reads as 'unknown', the same as a parent that is not Codex, and keeps pane
+// delivery, so only the log can tell the two apart.
+let lastOriginLookup;
+
+/** Log fields for the last walk: `originLookupMs`, plus `originLookupTimedOut`
+ *  when it ran out. Empty when no walk ran (no identity, or a handed argv). */
+export function originLookupLog() {
+  if (!lastOriginLookup) return {};
+  return {
+    originLookupMs: lastOriginLookup.ms,
+    ...(lastOriginLookup.timedOut ? { originLookupTimedOut: true } : {}),
+  };
+}
+
 /**
  * The argv of this process's ancestors, nearest first, up to the first one
  * that is not a wrapper of this script — or the one argv the WSL launcher
@@ -256,22 +271,27 @@ export function readAncestorChain(startPid = process.ppid) {
   const handed = process.env[HANDED_ARGV_ENV];
   if (typeof handed === 'string' && handed.length > 0) return [parseHandedArgv(handed)];
   const budget = originLookupBudgetMs();
-  const deadline = Date.now() + budget;
+  const started = Date.now();
+  const deadline = started + budget;
   const chain = [];
+  let timedOut = false;
   try {
     if (process.platform === 'win32') return ancestorChainWindows(startPid, budget);
     let pid = startPid;
     for (let hop = 0; hop < MAX_ORIGIN_HOPS && pid > 1; hop++) {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) break;
+      if (remaining <= 0) { timedOut = true; break; }
       const entry = process.platform === 'linux' ? procEntryLinux(pid) : procEntryPs(pid, remaining);
       if (!entry) break;
       chain.push(entry.argv);
       if (!entry.argv.some(isSelfToken)) break;
       pid = entry.ppid;
     }
-  } catch {
+  } catch (err) {
     // An unreadable ancestor ends the walk; what was read still counts.
+    timedOut = err?.code === 'ETIMEDOUT';
+  } finally {
+    lastOriginLookup = { ms: Date.now() - started, timedOut };
   }
   return chain;
 }
