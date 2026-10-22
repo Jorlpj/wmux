@@ -1,0 +1,10 @@
+{
+  "entry": [
+    "src/main/index.ts!", "src/preload/preload.ts!", "src/preload/quickLaunchPreload.ts!",
+    "src/renderer/index.tsx!", "src/renderer/launcher/index.tsx!", "src/renderer/web/main.tsx!",
+    "src/daemon/index.ts!", "src/cli/index.ts!", "src/mcp/entry.ts!", "src/mcp/broker.ts!", "src/mcp/shim.ts!"
+  ],
+  "project": ["src/**/*.{ts,tsx}!"],
+  "ignore": ["**/*.d.ts", "src/test-utils/**"],
+  "vitest": false, "vite": false
+}
