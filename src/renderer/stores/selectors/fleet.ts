@@ -909,6 +909,10 @@ interface WorkspaceRollups {
  */
 const rollupCache = new WeakMap<FleetSelectorState, WorkspaceRollups>();
 
+// A stopped turn without a question renders as idle, so in the workspace rollup it
+// ranks just above idle: any sibling with something to show wins over it.
+const ROLLUP_RANK: Record<AgentStatus, number> = { ...STATUS_RANK, waiting: STATUS_RANK.running + 0.5 };
+
 function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
   const cached = rollupCache.get(state);
   if (cached) return cached;
@@ -918,12 +922,8 @@ function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
   const quietest: Record<string, number> = {};
   const verifiableRunning = new Set<string>();
   for (const pane of selectFleetPanes(state)) {
-    // A stopped turn without a question is idle in the sidebar. Normalize
-    // before ranking so it cannot hide a sibling's running indicator.
-    // Pending questions and open dialogs already resolve to awaiting_input.
-    const paneStatus = pane.agentStatus === 'waiting' ? 'idle' : pane.agentStatus;
     const cur = status[pane.workspaceId] ?? 'idle';
-    if (STATUS_RANK[paneStatus] < STATUS_RANK[cur]) status[pane.workspaceId] = paneStatus;
+    if (ROLLUP_RANK[pane.agentStatus] < ROLLUP_RANK[cur]) status[pane.workspaceId] = pane.agentStatus;
     if (pane.agentStatus !== 'running') continue;
     if (!pane.unverifiable) { verifiableRunning.add(pane.workspaceId); continue; }
     const mins = Math.floor((pane.staleForMs ?? 0) / 60_000);
